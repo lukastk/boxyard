@@ -1,0 +1,29 @@
+[project]
+name = "repoyard"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.12.4",
+    "toml>=0.10.2",
+    "typer>=0.20.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+ignore-vcs = true
+packages = ["repoyard"]
+include = ["repoyard/static/**"]
+
+[dependency-groups]
+dev = [
+    "jupyterlab>=4.4.0",
+    "nblite>=0.2.0",
+]
+
+[project.scripts]
+repoyard = "repoyard._cli.app:app"

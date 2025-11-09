@@ -1,0 +1,13 @@
+export_pipeline = """
+nbs -> pts
+pts -> lib
+"""
+
+[cl.lib]
+path="repoyard"
+
+[cl.nbs]
+format="ipynb"
+
+[cl.pts]
+format="percent"
