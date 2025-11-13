@@ -15,3 +15,4 @@ import typer
 # %%
 #|export
 app = typer.Typer(invoke_without_command=True)
+app_state = {}

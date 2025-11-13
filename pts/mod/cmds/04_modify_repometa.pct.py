@@ -16,7 +16,7 @@ import subprocess
 import os
 from typing import Literal, Any
 
-from repoyard._utils import get_synced_repo_full_name_from_sub_path
+from repoyard._utils import get_repo_full_name_from_sub_path
 from repoyard._utils.bisync_helper import bisync_helper, SyncSetting, Sync_RequiresForce, Sync_Conflict, Sync_Error
 from repoyard.config import get_config, StorageType
 from repoyard import const

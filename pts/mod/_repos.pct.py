@@ -12,7 +12,7 @@ import repoyard._repos as this_module
 # %%
 #|export
 from typing import Callable
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pathlib import Path
 import toml, json
 from datetime import datetime, timezone
@@ -73,6 +73,12 @@ class RepoMeta(const.StrictModel):
         del model_dump['ulid']
         del model_dump['name']
         save_path.write_text(toml.dumps(model_dump))
+        
+    @model_validator(mode='after')
+    def validate_config(self):
+        if len(self.groups) != len(set(self.groups)):
+            raise ValueError("Groups must be unique.")
+        return self
 
 
 # %%
