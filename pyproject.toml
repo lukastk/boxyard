@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.12.4",
+    "python-ulid[pydantic]>=3.1.0",
     "toml>=0.10.2",
     "typer>=0.20.0",
 ]
@@ -23,6 +24,7 @@ include = ["repoyard/static/**"]
 dev = [
     "jupyterlab>=4.4.0",
     "nblite>=0.2.0",
+    "pytest>=9.0.0",
 ]
 
 [project.scripts]

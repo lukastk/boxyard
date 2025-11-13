@@ -1,8 +1,8 @@
-test_folder/
+tmp_tests/
 
 # nblite
 repoyard/**/*.py 
-repoyard/store
+tests/**/*.py 
 !__main__.py
 !__init__.py
 
