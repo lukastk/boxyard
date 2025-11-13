@@ -23,7 +23,7 @@ include = ["repoyard/static/**"]
 [dependency-groups]
 dev = [
     "jupyterlab>=4.4.0",
-    "nblite>=0.2.0",
+    "nblite>=0.6.7",
     "pytest>=9.0.0",
 ]
 
