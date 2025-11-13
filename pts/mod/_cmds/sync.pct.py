@@ -137,8 +137,9 @@ repo_meta = repoyard_meta.by_full_name[repo_name]
 #|export
 from repoyard._utils import rclone_bisync, rclone_sync, BisyncResult, rclone_mkdir, rclone_path_exists
 _repoyard_ignore_path = repo_meta.get_included_repo_path(config) / ".repoyard_ignore"
-_exclude_file = repo_meta.get_included_repo_path(config) / ".repoyard_ignore" if _repoyard_ignore_path.exists() else None
-_filters_file = repo_meta.get_included_repo_path(config) / ".repoyard_filters" if _repoyard_filters_path.exists() else None
+_repoyard_filters_path = repo_meta.get_included_repo_path(config) / ".repoyard_filters"
+_exclude_file = _repoyard_ignore_path if _repoyard_ignore_path.exists() else None
+_filters_file = _repoyard_filters_path if _repoyard_filters_path.exists() else None
 
 def bisync_helper(dry_run: bool, resync: bool, force: bool, return_command: bool=False) -> BisyncResult:
     # if not dry_run:
@@ -189,7 +190,7 @@ if remote_repo_exists and not remote_repo_is_dir:
 # %%
 #|export
 if not replace_remote and not is_local and remote_repo_exists:
-    res, _, _ = bisync_helper(
+    res, stdout, stderr = bisync_helper(
         dry_run=True,
         resync=False,
         force=False,
@@ -239,7 +240,8 @@ if (replace_remote or not remote_repo_exists) and not is_local:
         dest=repo_meta.storage_location,
         dest_path=repo_meta.get_remote_repo_path(config),
         exclude=[],
-        exclude_files=_exclude_files,
+        exclude_file=_exclude_file,
+        filters_file=_filters_file,
         dry_run=False,
         verbose=False,
     )
@@ -252,7 +254,8 @@ if (replace_remote or not remote_repo_exists) and not is_local:
         dest=repo_meta.storage_location,
         dest_path=config.storage_locations[repo_meta.storage_location].repometa_path,
         exclude=[],
-        exclude_files=_exclude_files,
+        exclude_file=_exclude_file,
+        filters_file=_filters_file,
         dry_run=False,
         verbose=False,
     )
