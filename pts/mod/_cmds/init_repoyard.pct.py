@@ -1,14 +1,13 @@
 # %% [markdown]
-# # init
+# # init_repoyard
 
 # %%
-#|default_exp _cmds.init
+#|default_exp _cmds.init_repoyard
 #|export_as_func true
 
 # %%
 #|hide
 import nblite; from nblite import show_doc; nblite.nbl_export()
-import repoyard._cmds.init as this_module
 
 # %%
 #|top_export
@@ -24,7 +23,7 @@ from repoyard import const
 
 # %%
 #|set_func_signature
-def init(
+def init_repoyard(
     config_path: Path|None = None,
     data_path: Path|None = None,
 ):
@@ -41,7 +40,7 @@ def init(
 
 # %%
 tests_working_dir = const.pkg_path.parent / "tmp_tests"
-test_folder_path = tests_working_dir / "_cmds" / "init"
+test_folder_path = tests_working_dir / "_cmds" / "init_repoyard"
 # !rm -rf {test_folder_path}
 
 # %%
@@ -77,12 +76,12 @@ if not config_path.exists():
 config = get_config(config_path)
 
 # %% [markdown]
-# Create the default `.repoyard_ignore` file
+# Create the default `.repoyard_exclude` file
 
 # %%
 #|export
-if not config.default_repoyard_ignore_path.exists():
-    config.default_repoyard_ignore_path.write_text(const.DEFAULT_REPOYARD_IGNORE)
+if not config.default_repoyard_exclude_path.exists():
+    config.default_repoyard_exclude_path.write_text(const.DEFAULT_REPOYARD_EXCLUDE)
 
 # %% [markdown]
 # For testing purposes, modify the config

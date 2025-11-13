@@ -46,9 +46,13 @@ def bisync_helper(
     remote: str,
     remote_path: str,
     force: bool,
+    mkdir_if_missing: bool = True,
     include_path: Path|None = None,
     exclude_path: Path|None = None,
     filters_path: Path|None = None,
+    include: list[str]|None = None,
+    exclude: list[str]|None = None,
+    filter: list[str]|None = None,
 ):
     """
     Helper to execute the standard routine for bisyncing a local and remote folder.
@@ -101,9 +105,13 @@ local_path = my_local_path
 remote = "my_remote"
 remote_path = ""
 force = False
+mkdir_if_missing = True
 include_path = None
 exclude_path = None
 filters_path = None
+include = None
+exclude = None
+filter = None
 
 # %% [markdown]
 # # Function body
@@ -133,8 +141,9 @@ def _bisync(dry_run: bool, resync: bool, force: bool, return_command: bool=False
         source_path=local_path,
         dest=remote,
         dest_path=remote_path,
-        include=[],
-        exclude=[],
+        include=include or [],
+        exclude=exclude or [],
+        filter=filter or [],
         include_file=include_path,
         exclude_file=exclude_path,
         filters_file=filters_path,
@@ -152,8 +161,9 @@ def _sync(dry_run: bool, source: str, source_path: str, dest: str, dest_path: st
         source_path=source_path,
         dest=dest,
         dest_path=dest_path,
-        include=[],
-        exclude=[],
+        include=include or [],
+        exclude=exclude or [],
+        filter=filter or [],
         include_file=include_path,
         exclude_file=exclude_path,
         filters_file=filters_path,
@@ -162,6 +172,20 @@ def _sync(dry_run: bool, source: str, source_path: str, dest: str, dest_path: st
         verbose=False,
     )
 
+
+# %%
+#|export
+if mkdir_if_missing:
+    rclone_mkdir(
+        rclone_config_path=rclone_config_path,
+        source="",
+        source_path=local_path,
+    )
+    rclone_mkdir(
+        rclone_config_path=rclone_config_path,
+        source=remote,
+        source_path=remote_path,
+    )
 
 # %%
 #|export

@@ -30,13 +30,14 @@ DEFAULT_USER_REPOS_PATH = Path("~") / "repos"
 DEFAULT_USER_REPO_GROUPS_PATH = Path("~") / "repo_groups"
 
 REPO_METAFILE_REL_PATH = "repometa.toml"
+REPO_CONF_REL_PATH = "conf"
 REPO_DATA_REL_PATH = "data"
 
-DEFAULT_LOCAL_STORE_REL_PATH = "fake_store"
+DEFAULT_FAKE_STORE_REL_PATH = "fake_store"
 
 # %%
 #|export
-DEFAULT_REPOYARD_IGNORE = inspect.cleandoc("""
+DEFAULT_REPOYARD_EXCLUDE = inspect.cleandoc("""
 .venv/
 node_modules/
 __pycache__/

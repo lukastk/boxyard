@@ -1,14 +1,13 @@
 # %% [markdown]
-# # new
+# # new_repo
 
 # %%
-#|default_exp _cmds.new
+#|default_exp _cmds.new_repo
 #|export_as_func true
 
 # %%
 #|hide
 import nblite; from nblite import show_doc; nblite.nbl_export()
-import repoyard._cmds.new as this_module
 
 # %%
 #|top_export
@@ -21,7 +20,7 @@ from repoyard.config import StorageType
 
 # %%
 #|set_func_signature
-def new(
+def new_repo(
     config_path: Path|None = None,
     storage_location: str|None = None,
     repo_name: str|None = None,
@@ -41,7 +40,7 @@ def new(
 # %%
 # Set up test environment
 tests_working_dir = const.pkg_path.parent / "tmp_tests"
-test_folder_path = tests_working_dir / "_cmds" / "new"
+test_folder_path = tests_working_dir / "_cmds" / "new_repo"
 data_path = test_folder_path / ".repoyard"
 # !rm -rf {test_folder_path}
 
@@ -52,13 +51,13 @@ storage_location = None
 repo_name = "test_repo"
 from_path = None
 creator_hostname = None
-add_repoyard_ignore = True
+add_repoyard_exclude = True
 initialise_git = True
 
 # %%
 # Run init
-from repoyard._cmds.init import init
-init(config_path=config_path, data_path=data_path)
+from repoyard._cmds import init_repoyard
+init_repoyard(config_path=config_path, data_path=data_path)
 
 # %% [markdown]
 # # Function body
@@ -113,7 +112,9 @@ repo_meta.save(config)
 #|export
 repo_path = repo_meta.get_local_path(config)
 repo_data_path = repo_meta.get_local_repodata_path(config)
+repo_conf_path = repo_meta.get_local_repoconf_path(config)
 repo_path.mkdir(parents=True, exist_ok=True)
+repo_conf_path.mkdir(parents=True, exist_ok=True)
 
 if from_path is not None:
     from_path.rename(repo_data_path)
@@ -121,11 +122,11 @@ else:
     repo_data_path.mkdir(parents=True, exist_ok=True)
 
 # %% [markdown]
-# Add `.repoyard_ignore`
+# Add `.repoyard_exclude`
 
 # %%
 #|export
-(repo_path / ".repoyard_ignore").write_text(const.DEFAULT_REPOYARD_IGNORE);
+(repo_conf_path / ".repoyard_exclude").write_text(const.DEFAULT_REPOYARD_EXCLUDE);
 
 # %% [markdown]
 # Run `git init`
@@ -134,3 +135,18 @@ else:
 #|export
 if initialise_git:
     subprocess.run(["git", "init"], check=True, cwd=repo_data_path)
+
+# %% [markdown]
+# Refresh the repoyard meta file
+
+# %%
+#|export
+from repoyard._repos import refresh_repoyard_meta
+refresh_repoyard_meta(config)
+
+# %% [markdown]
+# Return repo full name
+
+# %%
+#|func_return
+repo_meta.full_name;

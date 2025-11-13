@@ -35,11 +35,17 @@ class RepoMeta(const.StrictModel):
     def full_name(self) -> str:
         return f"{str(self.ulid)}__{self.name}"
 
+    def get_storage_location_config(self, config: repoyard.config.StorageConfig) -> repoyard.config.StorageConfig:
+        return config.storage_locations[self.storage_location]
+
     def get_remote_path(self, config: repoyard.config.Config) -> Path:
         return config.storage_locations[self.storage_location].store_path / self.full_name
     
     def get_remote_repometa_path(self, config: repoyard.config.Config) -> Path:
         return self.get_remote_path(config) / const.REPO_METAFILE_REL_PATH
+    
+    def get_remote_repoconf_path(self, config: repoyard.config.Config) -> Path:
+        return self.get_remote_path(config) / const.REPO_CONF_REL_PATH
     
     def get_remote_repodata_path(self, config: repoyard.config.Config) -> Path:
         return self.get_remote_path(config) / const.REPO_DATA_REL_PATH
@@ -47,11 +53,14 @@ class RepoMeta(const.StrictModel):
     def get_local_path(self, config: repoyard.config.Config) -> Path:
         return config.local_store_path / self.storage_location / self.full_name
     
-    def get_local_repodata_path(self, config: repoyard.config.Config) -> Path:
-        return self.get_local_path(config) / const.REPO_DATA_REL_PATH
-    
     def get_local_repometa_path(self, config: repoyard.config.Config) -> Path:
         return self.get_local_path(config) / const.REPO_METAFILE_REL_PATH
+    
+    def get_local_repoconf_path(self, config: repoyard.config.Config) -> Path:
+        return self.get_local_path(config) / const.REPO_CONF_REL_PATH
+    
+    def get_local_repodata_path(self, config: repoyard.config.Config) -> Path:
+        return self.get_local_path(config) / const.REPO_DATA_REL_PATH
 
     def check_included(self, config: repoyard.config.Config) -> bool:
         included_repo_path = self.get_local_repodata_path(config)
@@ -109,13 +118,21 @@ def create_repoyard_meta(
 
 # %%
 #|export
+def refresh_repoyard_meta(
+    config: repoyard.config.Config,
+) -> RepoyardMeta:
+    repoyard_meta = create_repoyard_meta(config)
+    config.repoyard_meta_path.write_text(repoyard_meta.model_dump_json())
+
+
+# %%
+#|export
 def get_repoyard_meta(
     config: repoyard.config.Config,
     force_create: bool=False,
 ) -> RepoyardMeta:
     if not config.repoyard_meta_path.exists() or force_create:
-        repoyard_meta = create_repoyard_meta(config)
-        config.repoyard_meta_path.write_text(repoyard_meta.model_dump_json())
+        refresh_repoyard_meta(config)
     return RepoyardMeta.model_validate_json(config.repoyard_meta_path.read_text())
 
 

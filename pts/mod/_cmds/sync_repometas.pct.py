@@ -1,5 +1,5 @@
 # %% [markdown]
-# # sync
+# # sync_repometas
 
 # %%
 #|default_exp _cmds.sync_repometas
@@ -8,28 +8,24 @@
 # %%
 #|hide
 import nblite; from nblite import show_doc; nblite.nbl_export()
-import repoyard._cmds.sync as this_module
 
 # %%
 #|top_export
-import typer
-from typer import Argument, Option
-from typing_extensions import Annotated
 from pathlib import Path
-import os
 
-from repoyard._cli import app
+from repoyard._utils.bisync_helper import bisync_helper, SyncSetting
+from repoyard.config import get_config, StorageType
 from repoyard import const
 
 
 # %%
 #|set_func_signature
-@app.command(name='sync')
-def sync(
+def sync_repometas(
     config_path: Path|None = None,
-    storage_location: str|None = Option(None, "--location", "-l", help="The storage location to use for the new repository."),
-    repo: str|None = Option(None, "--repo", "-r", help="The full name of the repository, the id or the path of the repo."),
-    repo_id: str|None = Option(None, "--repo-id", "-i", help="The id of the repository to sync."),
+    repo_full_names: list[str]|None = None,
+    storage_locations: list[str]|None = None,
+    sync_setting: SyncSetting = SyncSetting.BISYNC,
+    force: bool = False,
 ):
     """
     """
@@ -37,54 +33,48 @@ def sync(
 
 
 # %% [markdown]
-# **Notes**:
-#     
-# - Check if the repo exists on the location. If not, then do a one-way sync.
-# - Do a dry-run first always and report any errors, especially conflicts.
-
-# %%
-# Set up test environment
-tests_working_dir = const.pkg_path.parent / "tmp_tests"
-test_folder_path = tests_working_dir / "sync_test"
-data_path = test_folder_path / ".repoyard"
-# !rm -rf {test_folder_path}
-
-# %%
-from repoyard._repos import RepoMeta
-repo_meta = RepoMeta(
-    name = "test_repo",
-    storage_location = "local",
-    creator_hostname = "me",
-    groups = [],
-)
-repo_meta.to_toml()
-
-
-
-# %%
-config.local_repometa_path
-
-# %%
-config.local_repostore_path
-
-# %% [markdown]
 # Set up testing args
 
 # %%
-config_path = test_folder_path / ".config" / "repoyard" / "config.toml"
-storage_location = None
+# Set up test environment
+import tempfile
+tests_working_dir = const.pkg_path.parent / "tmp_tests"
+test_folder_path = Path(tempfile.mkdtemp(prefix="sync_repometas", dir="/tmp"))
+test_folder_path.mkdir(parents=True, exist_ok=True)
+symlink_path = tests_working_dir / "_cmds" / "sync_repometas"
+symlink_path.parent.mkdir(parents=True, exist_ok=True)
+if symlink_path.exists() or symlink_path.is_symlink():
+    symlink_path.unlink()
+symlink_path.symlink_to(test_folder_path, target_is_directory=True) # So that it can be viewed from within the project working directory
+data_path = test_folder_path / ".repoyard"
 
-
-
-
+# %%
+# Args (1/2)
+config_path = test_folder_path / "repoyard_config" / "config.toml"
+repo_full_names = None
+storage_locations = None
+sync_setting = SyncSetting.BISYNC
+force = False
 
 # %%
 # Run init
-import subprocess
-subprocess.run(
-    ["repoyard", "init", "--config-path", config_path, "--data-path", data_path],
-    stdout=subprocess.DEVNULL,
-);
+from repoyard._cmds import init_repoyard
+from repoyard._cmds import new_repo
+init_repoyard(config_path=config_path, data_path=data_path)
+
+# Add a storage location 'my_remote'
+import toml
+config_dump = toml.load(config_path)
+remote_rclone_path = Path(tempfile.mkdtemp(prefix="rclone_remote", dir="/tmp"))
+config_dump['storage_locations']['my_remote'] = {
+    'storage_type' : "rclone",
+    'store_path' : "repoyard",
+}
+config_path.write_text(toml.dumps(config_dump))
+
+new_repo(config_path=config_path, repo_name="test_repo1", storage_location="my_remote")
+new_repo(config_path=config_path, repo_name="test_repo2", storage_location="my_remote")
+new_repo(config_path=config_path, repo_name="test_repo3", storage_location="my_remote")
 
 # %% [markdown]
 # # Function body
@@ -94,45 +84,100 @@ subprocess.run(
 
 # %%
 #|export
-from repoyard.config import get_config
 if config_path is None:
     config_path = const.DEFAULT_CONFIG_PATH
 config = get_config(config_path)
-    
-if storage_location is None:
-    storage_location = config.default_storage_location
-    
-if repo_full_name is not None and repo_id is not None:
-    raise ValueError("Cannot provide both repo_full_name and repo_id")
-if repo_full_name is None and repo_id is None:
-    from repoyard._utils import get_synced_repo_full_name_from_sub_path
-    get_synced_repo_full_name_from_sub_path(config, os.getcwd())
+
+if repo_full_names is not None and storage_locations is not None:
+    raise ValueError("Cannot provide both `repo_full_names` and `storage_locations`.")
 
 # %%
-# Create a test repos
-# !mkdir -p {data_path / "test_repo"}
+# Set up a rclone remote path for testing
+config.rclone_config_path.write_text(f"""
+[my_remote]
+type = alias
+remote = {remote_rclone_path}
+""");
 
 # %% [markdown]
-# Find the repo meta
+# Sync
 
 # %%
 #|export
-from repoyard._repos import load_repo_meta
 
-load_repo_meta(config, Path("my_repo_meta.toml"))
+# Sync by storage location
+if repo_full_names is None:
+    # Get all paths to all storage locations to sync
+    storage_locations_to_sync = [sl_name for sl_name in config.storage_locations if config.storage_locations[sl_name].storage_type != StorageType.LOCAL]
+    if storage_locations is not None:
+        storage_locations_to_sync = [sl_name for sl_name in storage_locations_to_sync if sl_name in storage_locations]
+        
+    # Sync each storage location
+    for sl_name in storage_locations_to_sync:
+        local_path = config.local_store_path / sl_name
+        remote_path = config.storage_locations[sl_name].store_path
+        bisync_helper(
+            rclone_config_path=config.rclone_config_path,
+            sync_setting=sync_setting,
+            local_path=local_path,
+            remote=sl_name,
+            remote_path=remote_path,
+            force=force,
+            include=[f"/*/{const.REPO_METAFILE_REL_PATH}"]
+        )
+            
+# Sync by repo name     
+else:
+    from repoyard._repos import get_repoyard_meta
+    repoyard_meta = get_repoyard_meta(config)
+    
+    # Ensure all repo names are present in repoyard_meta
+    for repo_full_name in repo_full_names:
+        if repo_full_name not in repoyard_meta.by_full_name:
+            raise ValueError(f"Repo '{repo_full_name}' not found.")
+        
+    # Sync each storage location
+    for sl_name in config.storage_locations:
+        if config.storage_locations[sl_name].storage_type == StorageType.LOCAL: continue
+        sl_repo_full_names = [repo_full_name for repo_full_name in repo_full_names if repoyard_meta.by_full_name[repo_full_name].storage_location == sl_name]
+        local_path = config.local_store_path / sl_name
+        remote_path = config.storage_locations[sl_name].store_path
+        if len(sl_repo_full_names) == 0: continue
+        includes = [
+            f"/{repo_full_name}/{const.REPO_METAFILE_REL_PATH}"
+            for repo_full_name in sl_repo_full_names
+        ]
+        bisync_helper(
+            rclone_config_path=config.rclone_config_path,
+            sync_setting=sync_setting,
+            local_path=local_path,
+            remote=sl_name,
+            remote_path=remote_path,
+            force=force,
+            include=includes,
+        )
+
+# %% [markdown]
+# Refresh the repoyard meta file
 
 # %%
 #|export
-from repoyard._utils import rclone_path_exists
+from repoyard._repos import refresh_repoyard_meta
+refresh_repoyard_meta(config)
 
-rclone_path_exists(
-    config.rclone_config_path,
-    "my_remote",
-    "file1.txt",
-)
+# %% [markdown]
+# Check that the sync worked
 
 # %%
-#|export
-from repoyard._repos import get_all_repo_metas
+# Check that the synced worked
+from repoyard._utils import rclone_lsjson
+sl_name = "my_remote"
+_repo_full_names = [p.name for p in (data_path / "local_store" / "my_remote").glob("*")]
 
-repo_metas = get_all_repo_metas(config)
+for _repo_full_name in _repo_full_names:
+    _lsjson = rclone_lsjson(
+        rclone_config_path=config.rclone_config_path,
+        source=sl_name,
+        source_path=config.storage_locations[sl_name].store_path / _repo_full_name
+    )
+    assert const.REPO_METAFILE_REL_PATH in {f["Name"] for f in _lsjson}

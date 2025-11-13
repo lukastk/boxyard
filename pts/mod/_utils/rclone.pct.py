@@ -163,7 +163,6 @@ def rclone_copy(
 # %%
 _path = setup_test_folder('copy')
 
-
 res = rclone_copy(
     _path / "rclone.conf",
     source="",
@@ -181,7 +180,7 @@ res = rclone_copy(
 )
 
 assert res
-ls = [f.name for f in (_path / "my_remote").ls()]
+ls = [f.name for f in (_path / "my_remote").iterdir()]
 assert "file1.txt" in ls
 assert "file2.txt" in ls
 
@@ -239,7 +238,7 @@ res = rclone_sync(
 )
 
 assert res
-ls = [f.name for f in (_path / "my_remote").ls()]
+ls = [f.name for f in (_path / "my_remote").iterdir()]
 assert "file1.txt" in ls
 assert "file2.txt" in ls
 
@@ -278,7 +277,6 @@ def rclone_bisync(
     cmd = _rclone_cmd_helper("bisync", rclone_config_path, source, source_path, dest, dest_path, include, exclude, filter, include_file, exclude_file, filters_file, dry_run)
     if resync: cmd.append("--resync")
     if force: cmd.append("--force")
-        
     if not return_command:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if verbose:
@@ -381,6 +379,9 @@ def rclone_mkdir(
     source: str,
     source_path: str,
 ) -> dict|None:
+    """
+    Create a directory in rclone. Will not fail if the directory already exists. If parent directories are missing, they will be created.
+    """
     source_str = f"{source}:{source_path}" if source else source_path
     cmd = ["rclone", "mkdir", '--config', rclone_config_path, source_str]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -491,3 +492,30 @@ assert rclone_path_exists(
     source="",
     source_path=_path / "my_remote",
 ) == (True, True)
+
+# %%
+#|hide
+show_doc(this_module.rclone_purge)
+
+
+# %%
+#|export
+def rclone_purge(
+    rclone_config_path: str,
+    source: str,
+    source_path: str,
+) -> bool:
+    source_str = f"{source}:{source_path}" if source else source_path
+    cmd = ["rclone", "purge", '--config', rclone_config_path, source_str]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return result.returncode == 0
+
+
+# %%
+_path = setup_test_folder('purge')
+
+assert rclone_purge(
+    _path / "rclone.conf",
+    source="my_remote",
+    source_path="",
+)

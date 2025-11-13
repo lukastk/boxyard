@@ -77,8 +77,8 @@ class Config(const.StrictModel):
         return Path(self.config_path).parent / "repoyard_rclone.conf"
     
     @property
-    def default_repoyard_ignore_path(self) -> str:
-        return self.config_path.parent / "default.repoyard_ignore"
+    def default_repoyard_exclude_path(self) -> str:
+        return self.config_path.parent / "default.repoyard_exclude"
     
     @model_validator(mode='after')
     def validate_config(self):
@@ -130,7 +130,7 @@ def _get_default_config_dict(config_path=None, data_path=None) -> Config:
         storage_locations = {
             "fake": dict(
                 storage_type=StorageType.LOCAL.value,
-                store_path=(data_path / const.DEFAULT_LOCAL_STORE_REL_PATH).as_posix(),
+                store_path=(data_path / const.DEFAULT_FAKE_STORE_REL_PATH).as_posix(),
             )
         },
         syncing = {
