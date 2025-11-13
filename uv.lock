@@ -1078,7 +1078,7 @@ wheels = [
 
 [[package]]
 name = "nblite"
-version = "0.6.7"
+version = "0.6.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "docstring-parser" },
@@ -1093,9 +1093,8 @@ dependencies = [
     { name = "toml" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/db/ad/77763efc0ac03882ad71a8e63a654e7ac6761ca04fe66a232804c413d62a/nblite-0.6.7.tar.gz", hash = "sha256:9c7ea9304d8a191e51da754cfe7ce1cb54eb5faf4ff56048f830f7fe0a8b1810", size = 31732, upload-time = "2025-11-13T13:03:25.53Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/21/8a/16e7addc86586c2999e9db7e45e9b0fbcad78e0b68ad9e5df91c17d0e847/nblite-0.6.7-py3-none-any.whl", hash = "sha256:2ce405ca9e9deddd713b379a358beacb3da65763b1c23d9a1ed57ba407526f06", size = 37690, upload-time = "2025-11-13T13:03:19.159Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/dc/9df41de0646eb0931922eceea294b2fcfdc8d97a1c4ddcb8fa8f267dcab0/nblite-0.6.8-py3-none-any.whl", hash = "sha256:a4cc58d33b2f9eb759f2d269e8f5d8e89f028b703640af74b677b7b450817006", size = 37694, upload-time = "2025-11-13T13:57:42.07Z" },
 ]
 
 [[package]]
@@ -1610,7 +1609,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "jupyterlab", specifier = ">=4.4.0" },
-    { name = "nblite", specifier = ">=0.2.0" },
+    { name = "nblite", specifier = ">=0.6.7" },
     { name = "pytest", specifier = ">=9.0.0" },
 ]
 
