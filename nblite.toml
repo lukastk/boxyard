@@ -5,6 +5,9 @@ nbs_test -> pts_test
 pts_test -> tests
 """
 
+docs_cl="nbs"
+docs_title="repoyard"
+
 [cl.lib]
 path="repoyard"
 
