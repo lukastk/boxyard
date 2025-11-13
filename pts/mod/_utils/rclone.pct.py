@@ -1,13 +1,13 @@
 # %% [markdown]
-# # _utils
+# # _utils.rclone
 
 # %%
-#|default_exp _utils
+#|default_exp _utils.rclone
 
 # %%
 #|hide
 import nblite; from nblite import show_doc; nblite.nbl_export()
-import repoyard._utils as this_module
+import repoyard._utils.rclone as this_module
 
 # %%
 #|export
@@ -62,7 +62,9 @@ def _rclone_cmd_helper(
     source_path: str,   
     dest: str,
     dest_path: str,
+    include: list[str],
     exclude: list[str],
+    include_file: str|None,
     exclude_file: str|None,
     filters_file: str|None,
     dry_run: bool,
@@ -72,6 +74,12 @@ def _rclone_cmd_helper(
     cmd = ["rclone", cmd_name, '--config', rclone_config_path, source_spec, dest_spec]
     if dry_run:
         cmd.append("--dry-run")
+    for f in include:
+        cmd.append(f"--include")
+        cmd.append(f)
+    if include_file is not None:
+        cmd.append(f"--include-from")
+        cmd.append(include_file)
     for f in exclude:
         cmd.append(f"--exclude")
         cmd.append(f)
@@ -127,14 +135,16 @@ def rclone_copy(
     source_path: str,   
     dest: str,
     dest_path: str,
+    include: list[str],
     exclude: list[str],
+    include_file: str|None,
     exclude_file: str|None,
     filters_file: str|None,
     dry_run: bool,
     return_command: bool=False,
     verbose=True,
 ) -> bool:
-    cmd = _rclone_cmd_helper("copy", rclone_config_path, source, source_path, dest, dest_path, exclude, exclude_file, filters_file, dry_run)
+    cmd = _rclone_cmd_helper("copy", rclone_config_path, source, source_path, dest, dest_path, include, exclude, include_file, exclude_file, filters_file, dry_run)
     if not return_command:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if verbose:
@@ -155,7 +165,9 @@ res = rclone_copy(
     source_path=_path / "my_local",
     dest="my_remote",
     dest_path="",
+    include=[],
     exclude=[],
+    include_file=None,
     exclude_file=None,
     filters_file=None,
     dry_run=False,
@@ -180,14 +192,16 @@ def rclone_sync(
     source_path: str,   
     dest: str,
     dest_path: str,
+    include: list[str],
     exclude: list[str],
+    include_file: str|None,
     exclude_file: str|None,
     filters_file: str|None,
     dry_run: bool,
     return_command: bool=False,
     verbose=True,
 ) -> bool:
-    cmd = _rclone_cmd_helper("sync", rclone_config_path, source, source_path, dest, dest_path, exclude, exclude_file, filters_file, dry_run)
+    cmd = _rclone_cmd_helper("sync", rclone_config_path, source, source_path, dest, dest_path, include, exclude, include_file, exclude_file, filters_file, dry_run)
     if not return_command:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if verbose:
@@ -207,7 +221,9 @@ res = rclone_sync(
     source_path=_path / "my_local",
     dest="my_remote",
     dest_path="",
+    include=[],
     exclude=[],
+    include_file=None,
     exclude_file=None,
     filters_file=None,
     dry_run=False,
@@ -239,7 +255,9 @@ def rclone_bisync(
     source_path: str,   
     dest: str,
     dest_path: str,
+    include: list[str],
     exclude: list[str],
+    include_file: str|None,
     exclude_file: str|None,
     filters_file: str|None,
     dry_run: bool,
@@ -248,7 +266,7 @@ def rclone_bisync(
     return_command: bool=False,
     verbose: bool=False,
 ) -> BisyncResult:
-    cmd = _rclone_cmd_helper("bisync", rclone_config_path, source, source_path, dest, dest_path, exclude, exclude_file, filters_file, dry_run)
+    cmd = _rclone_cmd_helper("bisync", rclone_config_path, source, source_path, dest, dest_path, include, exclude, include_file, exclude_file, filters_file, dry_run)
     if resync: cmd.append("--resync")
     if force: cmd.append("--force")
         
@@ -281,6 +299,8 @@ res, stdout, stderr = rclone_bisync(
     source_path=_path / "my_local",
     dest="my_remote",
     dest_path="",
+    include=[],
+    include_file=None,
     exclude=[],
     exclude_file=None,
     filters_file=None,
@@ -301,7 +321,9 @@ res, stdout, stderr = rclone_bisync(
     source_path=_path / "my_local",
     dest="my_remote",
     dest_path="",
+    include=[],
     exclude=[],
+    include_file=None,
     exclude_file=None,
     filters_file=None,
     dry_run=False,
@@ -322,7 +344,9 @@ res, stdout, stderr = rclone_bisync(
     source_path=_path / "my_local",
     dest="my_remote",
     dest_path="",
+    include=[],
     exclude=[],
+    include_file=None,
     exclude_file=None,
     filters_file=None,
     dry_run=False,
@@ -381,7 +405,9 @@ res, stdout, stderr = rclone_bisync(
     source_path=_path / "my_local",
     dest="my_remote",
     dest_path="",
+    include=[],
     exclude=[],
+    include_file=None,
     exclude_file=None,
     filters_file=None,
     dry_run=False,
@@ -422,6 +448,9 @@ def rclone_path_exists(
     Check if a path exists in rclone.
     Returns a tuple of (exists, is_dir).
     """
+    if Path(source_path).as_posix() == ".": # Special case for the root directory
+        return (True, True)
+    
     parent_path = Path(source_path).parent if len(Path(source_path).parts) > 1 else ""
     ls = rclone_lsjson(
         rclone_config_path,
@@ -432,7 +461,7 @@ def rclone_path_exists(
         return (False, False)
     ls = {f["Name"]: f for f in ls}
     exists = Path(source_path).name in ls
-    is_dir = ls[Path(source_path).name]["IsDir"]
+    is_dir = ls[Path(source_path).name]["IsDir"] if exists else False
     return (exists, is_dir)
 
 
@@ -449,55 +478,3 @@ assert rclone_path_exists(
     source="",
     source_path=_path / "my_remote",
 ) == (True, True)
-
-# %%
-#|hide
-show_doc(this_module.get_synced_repo_full_name_from_sub_path)
-
-
-# %%
-#|export
-def get_synced_repo_full_name_from_sub_path(
-    config: repoyard.config.Config,
-    sub_path: str,
-) -> Path|None:
-    """
-    Get the full name of a synced repo from a path inside of the repo.
-    """
-    sub_path = Path(sub_path).expanduser()
-    is_in_local_store_path = sub_path.is_relative_to(config.local_store_path)
-    
-    if not is_in_local_store_path:
-        return None
-    
-    rel_path = sub_path.relative_to(config.local_store_path)
-    
-    if len(rel_path.parts) < 2: # The path is not inside a repo
-        return None
-    
-    repo_full_name = rel_path.parts[2]
-    return repo_full_name
-
-
-# %%
-#|hide
-show_doc(this_module.get_hostname)
-
-# %%
-#|export
-import platform
-import subprocess
-
-def get_hostname():
-    system = platform.system()
-    hostname = None
-    if system == "Darwin":
-        # Mac
-        try:
-            result = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True, check=True)
-            hostname = result.stdout.strip()
-        except Exception:
-            hostname = None
-    if hostname is None:
-        hostname = platform.node()
-    return hostname
