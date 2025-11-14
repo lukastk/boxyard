@@ -131,7 +131,7 @@ else:
 
 # %%
 #|export
-if initialise_git:
+if initialise_git and not (repo_data_path / '.git').exists():
     subprocess.run(["git", "init"], check=True, cwd=repo_data_path)
 
 # %% [markdown]
