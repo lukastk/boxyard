@@ -1,3 +1,13 @@
+## [0.1.2] - 2025-11-14
+
+### 🐛 Bug Fixes
+
+- Was config.json instead of config.toml
+
+### ⚙️ Miscellaneous Tasks
+
+- Update CHANGELOG.md
+- Update version in pyproject.toml
 ## [0.1.1] - 2025-11-14
 
 ### 🐛 Bug Fixes
