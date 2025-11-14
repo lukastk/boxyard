@@ -1,11 +1,5 @@
 tmp_tests/
 
-# nblite
-repoyard/**/*.py 
-tests/**/*.py 
-!__main__.py
-!__init__.py
-
 envname
 _proc/
 _docs/
