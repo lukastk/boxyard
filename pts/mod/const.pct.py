@@ -24,7 +24,7 @@ pkg_path = Path(proj.__file__).parent
 
 # %%
 #|export
-DEFAULT_CONFIG_PATH = Path("~") / ".config" / "repoyard" / "config.json"
+DEFAULT_CONFIG_PATH = Path("~") / ".config" / "repoyard" / "config.toml"
 DEFAULT_DATA_PATH = Path("~") / ".repoyard"
 DEFAULT_USER_REPOS_PATH = Path("~") / "repos"
 DEFAULT_USER_REPO_GROUPS_PATH = Path("~") / "repo_groups"
