@@ -198,13 +198,14 @@ if sync_setting == SyncSetting.BISYNC and remote_exists:
     )
 
     res = None
-    if BisyncResult.ERROR_NEEDS_RESYNC:
+    
+    if res_dry == BisyncResult.ERROR_NEEDS_RESYNC:
         res, stdout, stderr = _bisync(
             dry_run=False,
             resync=True,
             force=False,
         )
-    elif BisyncResult.ERROR_ALL_FILES_CHANGED:
+    elif res_dry == BisyncResult.ERROR_ALL_FILES_CHANGED:
         if force:
             res_dry, stdout, stderr = _bisync(
                 dry_run=False,
@@ -213,11 +214,11 @@ if sync_setting == SyncSetting.BISYNC and remote_exists:
             )
         else:
             raise Sync_RequiresForce(f"All files in both local and remote have changed. Use `force=True` to force sync.", stdout_dry, stderr_dry)
-    elif BisyncResult.CONFLICTS:
+    elif res_dry == BisyncResult.CONFLICTS:
         raise Sync_Conflict(f"Conflicts found between local and remote.", stdout_dry, stderr_dry)
-    elif BisyncResult.ERROR_OTHER:
+    elif res_dry == BisyncResult.ERROR_OTHER:
         raise Sync_Error(f"Error.", stdout_dry, stderr_dry)
-    elif BisyncResult.SUCCESS:
+    elif res_dry == BisyncResult.SUCCESS:
         res, stdout, stderr = _bisync(
             dry_run=False,
             resync=False,
