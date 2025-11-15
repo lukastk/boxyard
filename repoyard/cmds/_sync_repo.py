@@ -9,7 +9,7 @@ from repoyard._models import SyncStatus, RepoPart
 from repoyard.config import get_config, StorageType
 from repoyard import const
 
-def sync_repo(
+async def sync_repo(
     config_path: Path,
     repo_full_name: str,
     sync_direction: SyncDirection|None = None,
@@ -66,7 +66,7 @@ def sync_repo(
     sync_part = RepoPart.META
     if sync_part in sync_choices:
         if verbose: print(f"Syncing {sync_part.value}.")
-        sync_results[RepoPart.META] = sync_helper(
+        sync_results[RepoPart.META] = await sync_helper(
             rclone_config_path=config.rclone_config_path,
             sync_direction=sync_direction,
             sync_setting=sync_setting,
@@ -83,7 +83,7 @@ def sync_repo(
     sync_part = RepoPart.CONF
     if sync_part in sync_choices:
         if verbose: print("Syncing", sync_part.value)
-        sync_results[sync_part] = sync_helper(
+        sync_results[sync_part] = await sync_helper(
             rclone_config_path=config.rclone_config_path,
             sync_direction=sync_direction,
             sync_setting=sync_setting,
@@ -109,7 +109,7 @@ def sync_repo(
     sync_part = RepoPart.DATA
     if sync_part in sync_choices:
         if verbose: print("Syncing", sync_part.value)
-        sync_results[sync_part] = sync_helper(
+        sync_results[sync_part] = await sync_helper(
             rclone_config_path=config.rclone_config_path,
             sync_direction=sync_direction,
             sync_setting=sync_setting,
@@ -125,7 +125,7 @@ def sync_repo(
             show_rclone_progress=show_rclone_progress,
         )
     
-    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 31
+    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 32
     if RepoPart.META in sync_choices:
         from repoyard._models import refresh_repoyard_meta
         refresh_repoyard_meta(config)

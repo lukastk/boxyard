@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 import shutil
 import toml
+import asyncio
 
 from repoyard import const
 from repoyard.cmds import *
@@ -25,8 +26,14 @@ from tests.utils import *
 
 
 # %%
+#|top_export
+def test_00_sync():
+    asyncio.run(_test_00_sync())
+
+
+# %%
 #|set_func_signature
-def test_00_sync(): ...
+async def _test_00_sync(): ...
 
 
 # %% [markdown]
@@ -63,8 +70,10 @@ for repo_full_name in repo_full_names:
 
 # %%
 #|export
-for repo_full_name in repo_full_names:
+await asyncio.gather(*[
     exclude_repo(config_path=config_path, repo_full_name=repo_full_name)
+    for repo_full_name in repo_full_names
+])
     
 # Verify that the repos have been excluded
 repoyard_meta = get_repoyard_meta(config, force_create=True)
@@ -76,8 +85,10 @@ for repo_full_name in repo_full_names:
 
 # %%
 #|export
-for repo_full_name in repo_full_names:
+await asyncio.gather(*[
     include_repo(config_path=config_path, repo_full_name=repo_full_name)
+    for repo_full_name in repo_full_names
+])
     
 # Verify that the repos are included
 repoyard_meta = get_repoyard_meta(config, force_create=True)
@@ -89,8 +100,10 @@ for repo_full_name in repo_full_names:
 
 # %%
 #|export
-for repo_full_name in repo_full_names:
+await asyncio.gather(*[
     delete_repo(config_path=config_path, repo_full_name=repo_full_name)
+    for repo_full_name in repo_full_names
+])
 
 # Verify that the repos have been deleted
 for repo_meta in repoyard_meta.by_full_name.values():

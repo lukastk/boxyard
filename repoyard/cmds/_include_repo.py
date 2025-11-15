@@ -6,7 +6,7 @@ from pathlib import Path
 from repoyard.config import get_config
 from repoyard import const
 
-def include_repo(
+async def include_repo(
     config_path: Path,
     repo_full_name: str,
 ):
@@ -39,7 +39,7 @@ def include_repo(
     from .._utils.sync_helper import sync_helper, SyncSetting, SyncDirection
     
     # First force sync the data
-    sync_repo(
+    await sync_repo(
         config_path=config_path,
         repo_full_name=repo_full_name,
         sync_direction=SyncDirection.PULL,
@@ -48,7 +48,7 @@ def include_repo(
     )
     
     # Then sync the rest
-    sync_repo(
+    await sync_repo(
         config_path=config_path,
         repo_full_name=repo_full_name,
         sync_direction=None,

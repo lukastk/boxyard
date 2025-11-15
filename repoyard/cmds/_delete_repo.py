@@ -6,7 +6,7 @@ from pathlib import Path
 from repoyard.config import get_config
 from repoyard import const
 
-def delete_repo(
+async def delete_repo(
     config_path: Path,
     repo_full_name: str,
 ):
@@ -39,7 +39,7 @@ def delete_repo(
     from .._utils import rclone_purge
     from ..config import StorageType
     if repo_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL:
-        rclone_purge(
+        await rclone_purge(
             config.rclone_config_path,
             source=repo_meta.storage_location,
             source_path=repo_meta.get_remote_path(config),

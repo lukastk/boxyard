@@ -20,7 +20,7 @@ from repoyard import const
 
 # %%
 #|set_func_signature
-def exclude_repo(
+async def exclude_repo(
     config_path: Path,
     repo_full_name: str,
     skip_sync: bool = False,
@@ -87,7 +87,7 @@ type = alias
 remote = {remote_rclone_path}
 """);
 
-sync_repo(config_path=config_path, repo_full_name=repo_full_name);
+await sync_repo(config_path=config_path, repo_full_name=repo_full_name);
 
 # %% [markdown]
 # Ensure that repo is included
@@ -113,7 +113,7 @@ if not repo_meta.check_included(config):
 from repoyard.cmds import sync_repo
 
 if not skip_sync:
-    sync_repo(
+    await sync_repo(
         config_path=config_path,
         repo_full_name=repo_full_name,
         sync_setting=SyncSetting.CAREFUL,

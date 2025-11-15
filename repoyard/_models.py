@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 from pathlib import Path
 import toml, json
 from datetime import datetime, timezone
+import random
 from ulid import ULID
 from enum import Enum
 import repoyard.config
@@ -24,16 +25,48 @@ class RepoPart(Enum):
     CONF = "conf"
 
 # %% ../../pts/mod/_models.pct.py 6
+def _create_repo_subid(character_set: str, length: int) -> str:
+    return ''.join(random.choices(character_set, k=length))
+
+___repo_timestamp_length = {}
+def _get_repo_timestamp_length(config: repoyard.config.Config) -> int:
+    if config.config_path not in ___repo_timestamp_length:
+        test_repo_meta = RepoMeta.create(config, "test", "test", "test", [])
+        ___repo_timestamp_length[config.config_path] = len(test_repo_meta.creation_timestamp_utc)
+    return ___repo_timestamp_length[config.config_path]
+
+# %% ../../pts/mod/_models.pct.py 7
 class RepoMeta(const.StrictModel):
-    ulid: ULID = Field(default_factory=ULID)
+    creation_timestamp_utc: str
+    repo_subid: str
     name: str
     storage_location: str
     creator_hostname: str
     groups: list[str]
-    
+
+    @classmethod
+    def create(cls, config: repoyard.config.Config, name: str, storage_location_name: str, creator_hostname: str, groups: list[str]) -> 'RepoMeta':
+        creation_timestamp_utc = datetime.now(timezone.utc).strftime(const.REPO_TIMESTAMP_FORMAT)
+        return RepoMeta(
+            creation_timestamp_utc=creation_timestamp_utc,
+            repo_subid=_create_repo_subid(config.repo_subid_character_set, config.repo_subid_length),
+            name=name,
+            storage_location=storage_location_name,
+            creator_hostname=creator_hostname,
+            groups=groups,
+        )
+
+    @property
+    def creation_timestamp_datetime(self) -> datetime:
+        return datetime.strptime(self.creation_timestamp_utc, const.REPO_TIMESTAMP_FORMAT)
+
+    @property
+    def repo_id(self) -> str:
+        return f"{self.creation_timestamp_utc}_{str(self.repo_subid)}"
+
     @property
     def full_name(self) -> str:
-        return f"{str(self.ulid)}__{self.name}"
+        return f"{self.repo_id}__{self.name}"
 
     def get_storage_location_config(self, config: repoyard.config.StorageConfig) -> repoyard.config.StorageConfig:
         return config.storage_locations[self.storage_location]
@@ -80,13 +113,17 @@ class RepoMeta(const.StrictModel):
         save_path = self.get_local_repometa_path(config)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         model_dump = self.model_dump()
-        del model_dump['ulid']
+        del model_dump['creation_timestamp_utc']
+        del model_dump['repo_subid']
         del model_dump['name']
         save_path.write_text(toml.dumps(model_dump))
 
     @classmethod
     def load(cls, config: repoyard.config.Config, storage_location_name: str, repo_full_name: str) -> None:
-        ulid, name = repo_full_name.split('__', 1)
+        repo_id, name = repo_full_name.split('__', 1)
+        timestamp_len =_get_repo_timestamp_length(config)
+        creation_timestamp = repo_id[:timestamp_len]
+        repo_subid = repo_id[timestamp_len+1:]
         
         repometa_path = config.local_store_path / storage_location_name / repo_full_name / const.REPO_METAFILE_REL_PATH
         if not repometa_path.exists():
@@ -94,18 +131,26 @@ class RepoMeta(const.StrictModel):
         
         return RepoMeta(**{
             **toml.loads(repometa_path.read_text()),
-            'ulid': ulid,
+            'creation_timestamp_utc': creation_timestamp,
+            'repo_subid': repo_subid,
             'name': name,
             'storage_location': storage_location_name,
         })
         
     @model_validator(mode='after')
-    def validate_config(self):
+    def validate_repo_meta(self):
         if len(self.groups) != len(set(self.groups)):
             raise ValueError("Groups must be unique.")
+
+        # Test that the creation timestamp is valid
+        try:
+            self.creation_timestamp_datetime
+        except ValueError:
+            raise ValueError("Creation timestamp is not valid.")
+        
         return self
 
-# %% ../../pts/mod/_models.pct.py 8
+# %% ../../pts/mod/_models.pct.py 10
 class RepoyardMeta(const.StrictModel):
     repo_metas: list[RepoMeta]
 
@@ -123,13 +168,13 @@ class RepoyardMeta(const.StrictModel):
         return self.__by_storage_location
 
     @property
-    def by_ulid(self) -> dict[str, RepoMeta]:
-        if not hasattr(self, '__by_ulid'):
-            self.__by_ulid = {
-                repo_meta.ulid: repo_meta
+    def by_id(self) -> dict[str, RepoMeta]:
+        if not hasattr(self, '__by_id'):
+            self.__by_id = {
+                repo_meta.repo_id: repo_meta
                 for repo_meta in self.repo_metas
             }
-        return self.__by_ulid
+        return self.__by_id
 
     @property
     def by_full_name(self) -> dict[str, RepoMeta]:
@@ -142,7 +187,7 @@ class RepoyardMeta(const.StrictModel):
 
 
 
-# %% ../../pts/mod/_models.pct.py 9
+# %% ../../pts/mod/_models.pct.py 11
 def create_repoyard_meta(
     config: repoyard.config.Config
 ) -> RepoyardMeta:
@@ -154,14 +199,14 @@ def create_repoyard_meta(
             repo_metas.append(RepoMeta.load(config, storage_location_name, repo_path.stem))
     return RepoyardMeta(repo_metas=repo_metas)
 
-# %% ../../pts/mod/_models.pct.py 10
+# %% ../../pts/mod/_models.pct.py 12
 def refresh_repoyard_meta(
     config: repoyard.config.Config,
 ) -> RepoyardMeta:
     repoyard_meta = create_repoyard_meta(config)
     config.repoyard_meta_path.write_text(repoyard_meta.model_dump_json())
 
-# %% ../../pts/mod/_models.pct.py 11
+# %% ../../pts/mod/_models.pct.py 13
 def get_repoyard_meta(
     config: repoyard.config.Config,
     force_create: bool=False,
@@ -170,13 +215,13 @@ def get_repoyard_meta(
         refresh_repoyard_meta(config)
     return RepoyardMeta.model_validate_json(config.repoyard_meta_path.read_text())
 
-# %% ../../pts/mod/_models.pct.py 12
+# %% ../../pts/mod/_models.pct.py 14
 def get_virtual_repo_group_filters(
     config: repoyard.config.Config,
 ) -> dict[str, Callable[[RepoMeta], bool]]:
     return {}
 
-# %% ../../pts/mod/_models.pct.py 13
+# %% ../../pts/mod/_models.pct.py 15
 def get_repo_group_configs(
     config: repoyard.config.Config,
     repo_metas: list[RepoMeta],
@@ -189,7 +234,7 @@ def get_repo_group_configs(
                 repo_group_configs[group_name] = RepoGroupConfig(group_name=group_name)
     return repo_group_configs
 
-# %% ../../pts/mod/_models.pct.py 14
+# %% ../../pts/mod/_models.pct.py 16
 def create_user_repos_symlinks(
     config: repoyard.config.Config,
     repo_metas: list[RepoMeta],
@@ -207,7 +252,7 @@ def create_user_repos_symlinks(
             else: continue # already correct
         symlink_path.symlink_to(source_path, target_is_directory=True)
 
-# %% ../../pts/mod/_models.pct.py 15
+# %% ../../pts/mod/_models.pct.py 17
 def create_user_repo_group_symlinks(
     config: repoyard.config.Config,
     repo_metas: list[RepoMeta],
@@ -246,14 +291,11 @@ def create_user_repo_group_symlinks(
         if not any(group_folder_path.iterdir()):
             group_folder_path.rmdir()
 
-# %% ../../pts/mod/_models.pct.py 17
+# %% ../../pts/mod/_models.pct.py 19
 class SyncRecord(const.StrictModel):
     ulid: ULID = Field(default_factory=ULID)
+    timestamp: datetime|None = None # Is set after validation
     creator_hostname: str
-
-    @property
-    def datetime(self) -> datetime:
-        return self.ulid.datetime
 
     @classmethod
     def create(cls, creator_hostname: str|None=None) -> None:
@@ -262,12 +304,12 @@ class SyncRecord(const.StrictModel):
             creator_hostname=creator_hostname or get_hostname(),
         )
 
-    def rclone_save(self, rclone_config_path: str, dest: str, dest_path: str) -> None:
+    async def rclone_save(self, rclone_config_path: str, dest: str, dest_path: str) -> None:
         from repoyard._utils import rclone_copyto
         import tempfile
         temp_path = Path(tempfile.mkstemp(suffix='.json')[1])
         temp_path.write_text(self.model_dump_json())
-        rclone_copyto(
+        await rclone_copyto(
             rclone_config_path=rclone_config_path,
             source="",
             source_path=temp_path.as_posix(),
@@ -277,9 +319,9 @@ class SyncRecord(const.StrictModel):
         )
 
     @classmethod
-    def rclone_read(cls, rclone_config_path: str, source: str, sync_record_path: str) -> str:
+    async def rclone_read(cls, rclone_config_path: str, source: str, sync_record_path: str) -> str:
         from repoyard._utils import rclone_cat
-        sync_record_exists, sync_record = rclone_cat(
+        sync_record_exists, sync_record = await rclone_cat(
             rclone_config_path=rclone_config_path,
             source=source,
             source_path=sync_record_path,
@@ -290,7 +332,15 @@ class SyncRecord(const.StrictModel):
         else:
             return None
 
-# %% ../../pts/mod/_models.pct.py 18
+    @model_validator(mode='after')
+    def validate_timestamp(self):
+        if self.timestamp is None:
+            self.timestamp = self.ulid.datetime
+        if self.timestamp != self.ulid.datetime:
+            raise ValueError("`timestamp` should be set to the ULID's datetime.")
+        return self
+
+# %% ../../pts/mod/_models.pct.py 20
 from typing import NamedTuple
 
 class SyncCondition(Enum):
@@ -307,7 +357,7 @@ class SyncStatus(NamedTuple):
     remote_sync_record: SyncRecord
     is_dir: bool
 
-def get_sync_status(
+async def get_sync_status(
     rclone_config_path: str,
     local_path: str,
     local_sync_record_path: str,
@@ -318,13 +368,13 @@ def get_sync_status(
     from repoyard._utils import check_last_time_modified
     from repoyard._utils import rclone_path_exists
 
-    local_path_exists, local_path_is_dir = rclone_path_exists(
+    local_path_exists, local_path_is_dir = await rclone_path_exists(
         rclone_config_path=rclone_config_path,
         source="",
         source_path=local_path,
     )
 
-    remote_path_exists, remote_path_is_dir = rclone_path_exists(
+    remote_path_exists, remote_path_is_dir = await rclone_path_exists(
         rclone_config_path=rclone_config_path,
         source=remote,
         source_path=remote_path,
@@ -340,13 +390,13 @@ def get_sync_status(
     
     is_dir = local_path_is_dir or remote_path_is_dir
 
-    local_sync_record = SyncRecord.rclone_read(
+    local_sync_record = await SyncRecord.rclone_read(
         rclone_config_path=rclone_config_path,
         source="",
         sync_record_path=local_sync_record_path,
     )
 
-    remote_sync_record = SyncRecord.rclone_read(
+    remote_sync_record = await SyncRecord.rclone_read(
         rclone_config_path=rclone_config_path,
         source=remote,
         sync_record_path=remote_sync_record_path,
@@ -358,7 +408,7 @@ def get_sync_status(
     local_last_modified = check_last_time_modified(local_path)
 
     if sync_records_match:
-        if local_last_modified > local_sync_record.datetime:
+        if local_last_modified > local_sync_record.timestamp:
             sync_condition = SyncCondition.NEEDS_PUSH
         else:
             sync_condition = SyncCondition.SYNCED
@@ -367,7 +417,7 @@ def get_sync_status(
             if not remote_path_exists:
                 sync_condition = SyncCondition.NEEDS_PUSH
             else:
-                if local_last_modified > local_sync_record.datetime:
+                if local_last_modified > local_sync_record.timestamp:
                     sync_condition = SyncCondition.CONFLICT
                 else:
                     sync_condition = SyncCondition.NEEDS_PULL

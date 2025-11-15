@@ -54,12 +54,14 @@ def new_repo(
     
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/01_new_repo.pct.py 13
     from .._models import RepoMeta
-    repo_meta = RepoMeta(
+    repo_meta = RepoMeta.create(
+        config,
         name=repo_name,
-        storage_location=storage_location,
+        storage_location_name=storage_location,
         groups=[],
         creator_hostname=creator_hostname,
     )
+    
     repo_meta.save(config)
     
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/01_new_repo.pct.py 15

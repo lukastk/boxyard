@@ -8,8 +8,9 @@ from repoyard.config import get_config, StorageType
 from repoyard._utils.sync_helper import SyncFailed, SyncUnsafe, InvalidRemotePath, SyncStatus
 from repoyard import const
 
-def sync_repometas(
+async def sync_repometas(
     config_path: Path,
+    max_concurrent_rclone_ops: int|None = None,
     repo_full_names: list[str]|None = None,
     storage_locations: list[str]|None = None,
     sync_setting: SyncSetting = SyncSetting.CAREFUL,
@@ -30,8 +31,11 @@ def sync_repometas(
     if repo_full_names is not None and storage_locations is not None:
         raise ValueError("Cannot provide both `repo_full_names` and `storage_locations`.")
     
+    if max_concurrent_rclone_ops is None:
+        max_concurrent_rclone_ops = config.max_concurrent_rclone_ops
+    
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/04_sync_repometas.pct.py 14
-    from .._utils import rclone_lsjson, rclone_sync
+    from .._utils import rclone_lsjson, rclone_sync, async_throttler
     from .._models import RepoMeta, SyncRecord, RepoPart, get_repoyard_meta
     
     for sl_name, sl_config in config.storage_locations.items():
@@ -41,7 +45,7 @@ def sync_repometas(
             continue
         
         # Get remote repometas
-        _ls_remote = rclone_lsjson(
+        _ls_remote = await rclone_lsjson(
             config.rclone_config_path,
             source=sl_name,
             source_path=sl_config.store_path / const.REMOTE_REPOS_REL_PATH,
@@ -52,7 +56,7 @@ def sync_repometas(
         )
         _ls_remote = {f["Path"] for f in _ls_remote} if _ls_remote else set()
     
-        _ls_local = rclone_lsjson(
+        _ls_local = await rclone_lsjson(
             config.rclone_config_path,
             source="",
             source_path=config.local_store_path / sl_name,
@@ -70,7 +74,7 @@ def sync_repometas(
             missing_metas = [missing_meta for repo_full_name, missing_meta in zip(missing_repo_full_names, missing_metas) if repo_full_name in repo_full_names]
     
         if len(missing_metas) > 0:
-            rclone_sync(
+            await rclone_sync(
                 rclone_config_path=config.rclone_config_path,
                 source=sl_name,
                 source_path=sl_config.store_path / const.REMOTE_REPOS_REL_PATH,
@@ -81,10 +85,14 @@ def sync_repometas(
             )
     
             # Create sync records
-            for repo_full_name in missing_repo_full_names:
+            async def _task(repo_full_name):
                 repo_meta = RepoMeta.load(config, sl_name, repo_full_name) # Used to get the paths consistently
-                rec = SyncRecord.rclone_read(config.rclone_config_path, sl_name, repo_meta.get_remote_sync_record_path(config, RepoPart.META))
-                rec.rclone_save(config.rclone_config_path, "", repo_meta.get_local_sync_record_path(config, RepoPart.META))
+                rec = await SyncRecord.rclone_read(config.rclone_config_path, sl_name, repo_meta.get_remote_sync_record_path(config, RepoPart.META))
+                await rec.rclone_save(config.rclone_config_path, "", repo_meta.get_local_sync_record_path(config, RepoPart.META))
+            await async_throttler(
+                [_task(repo_full_name) for repo_full_name in missing_repo_full_names],
+                max_concurrency=max_concurrent_rclone_ops,
+            )
     
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/04_sync_repometas.pct.py 17
     from ._sync_repo import RepoPart, sync_repo
@@ -92,22 +100,19 @@ def sync_repometas(
     
     repo_meta_sync_res = []
     
-    for repo_meta in repoyard_meta.by_full_name.values():
-        if repo_full_names is not None and repo_meta.full_name not in repo_full_names:
-            continue
-    
-        if storage_locations is not None and repo_meta.storage_location not in storage_locations:
-            continue
+    async def _task(repo_meta):
+        if repo_full_names is not None and repo_meta.full_name not in repo_full_names: return
+        if storage_locations is not None and repo_meta.storage_location not in storage_locations: return
     
         sync_res = None
         try:
-            sync_res = sync_repo(
+            sync_res = await sync_repo(
                 config_path=config_path,
                 repo_full_name=repo_meta.full_name,
                 sync_direction=None,
                 sync_setting=SyncSetting.CAREFUL,
                 sync_choices=[RepoPart.META],
-                verbose=verbose,
+                verbose=False,
             )
             sync_pre_status, sync_happened = sync_res[RepoPart.META]
             repo_meta_sync_res.append((True, None, sync_pre_status, sync_happened))
@@ -117,6 +122,11 @@ def sync_repometas(
             repo_meta_sync_res.append((False, e, sync_res, False))
         except InvalidRemotePath as e:
             repo_meta_sync_res.append((False, e, sync_res, False))
+    
+    await async_throttler(
+        [_task(repo_meta) for repo_meta in repoyard_meta.repo_metas],
+        max_concurrency=max_concurrent_rclone_ops,
+    );
     
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/04_sync_repometas.pct.py 20
     from .._models import refresh_repoyard_meta

@@ -19,7 +19,7 @@ from repoyard import const
 
 # %%
 #|set_func_signature
-def delete_repo(
+async def delete_repo(
     config_path: Path,
     repo_full_name: str,
 ):
@@ -86,7 +86,7 @@ type = alias
 remote = {remote_rclone_path}
 """);
 
-sync_repo(config_path=config_path, repo_full_name=repo_full_name);
+await sync_repo(config_path=config_path, repo_full_name=repo_full_name);
 
 # %% [markdown]
 # Ensure that repo exists
@@ -116,7 +116,7 @@ shutil.rmtree(repo_meta.get_local_path(config))
 from repoyard._utils import rclone_purge
 from repoyard.config import StorageType
 if repo_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL:
-    rclone_purge(
+    await rclone_purge(
         config.rclone_config_path,
         source=repo_meta.storage_location,
         source_path=repo_meta.get_remote_path(config),

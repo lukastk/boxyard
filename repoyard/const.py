@@ -3,12 +3,14 @@
 # %% auto 0
 __all__ = ['pkg_path', 'DEFAULT_CONFIG_PATH', 'DEFAULT_DATA_PATH', 'DEFAULT_USER_REPOS_PATH', 'DEFAULT_USER_REPO_GROUPS_PATH',
            'SYNC_RECORDS_REL_PATH', 'REMOTE_REPOS_REL_PATH', 'REPO_METAFILE_REL_PATH', 'REPO_CONF_REL_PATH',
-           'REPO_DATA_REL_PATH', 'DEFAULT_FAKE_STORE_REL_PATH', 'DEFAULT_REPOYARD_EXCLUDE',
+           'REPO_DATA_REL_PATH', 'DEFAULT_FAKE_STORE_REL_PATH', 'DEFAULT_REPOYARD_EXCLUDE', 'REPO_TIMESTAMP_FORMAT',
+           'DEFAULT_REPO_SUBID_CHARACTER_SET', 'DEFAULT_REPO_SUBID_LENGTH', 'DEFAULT_MAX_CONCURRENT_RCLONE_OPS',
            'ENV_VAR_REPOYARD_CONFIG_PATH', 'StrictModel']
 
 # %% ../../pts/mod/const.pct.py 3
 from pathlib import Path
 import inspect
+import string
 from pydantic import BaseModel, ConfigDict
 import repoyard as proj
 
@@ -30,16 +32,22 @@ REPO_DATA_REL_PATH = "data"
 
 DEFAULT_FAKE_STORE_REL_PATH = "fake_store"
 
-# %% ../../pts/mod/const.pct.py 7
+# %% ../../pts/mod/const.pct.py 8
 DEFAULT_REPOYARD_EXCLUDE = inspect.cleandoc("""
 .venv/
 node_modules/
 __pycache__/
 """)
 
-# %% ../../pts/mod/const.pct.py 9
+REPO_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
+DEFAULT_REPO_SUBID_CHARACTER_SET = string.ascii_lowercase + string.ascii_uppercase + string.digits
+DEFAULT_REPO_SUBID_LENGTH = 5
+
+DEFAULT_MAX_CONCURRENT_RCLONE_OPS = 10
+
+# %% ../../pts/mod/const.pct.py 10
 ENV_VAR_REPOYARD_CONFIG_PATH = "REPOYARD_CONFIG_PATH"
 
-# %% ../../pts/mod/const.pct.py 11
+# %% ../../pts/mod/const.pct.py 12
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")

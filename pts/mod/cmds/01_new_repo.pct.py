@@ -102,12 +102,14 @@ if creator_hostname is None:
 # %%
 #|export
 from repoyard._models import RepoMeta
-repo_meta = RepoMeta(
+repo_meta = RepoMeta.create(
+    config,
     name=repo_name,
-    storage_location=storage_location,
+    storage_location_name=storage_location,
     groups=[],
     creator_hostname=creator_hostname,
 )
+
 repo_meta.save(config)
 
 # %% [markdown]

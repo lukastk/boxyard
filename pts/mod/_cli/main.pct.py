@@ -18,6 +18,7 @@ from types import FunctionType
 from typing import Callable, Union, List, Literal
 from pathlib import Path
 from enum import Enum
+import asyncio
 
 import repoyard as proj
 from repoyard import const
@@ -95,9 +96,9 @@ def _get_full_repo_name(
         repoyard_meta = get_repoyard_meta(config)
         
         if repo_id is not None:
-            if not repo_id in repoyard_meta.by_ulid:
+            if not repo_id in repoyard_meta.by_id:
                 raise typer.Exit(f"Repository with id `{repo_id}` not found.")
-            repo_full_name = repoyard_meta.by_ulid[repo_id].full_name
+            repo_full_name = repoyard_meta.by_id[repo_id].full_name
         else:
             if name_match_mode is None: name_match_mode = NameMatchMode.SUBSEQUENCE
             if name_match_mode == NameMatchMode.EXACT:
@@ -119,7 +120,7 @@ def _get_full_repo_name(
                 from repoyard._utils import run_fzf
                 _, repo_full_name = run_fzf(
                     terms=[r.full_name for r in repos_with_name],
-                    disp_terms=[f"{r.name} ({r.ulid})" for r in repos_with_name],
+                    disp_terms=[f"{r.name} ({r.repo_id})" for r in repos_with_name],
                 )
         
     if repo_full_name is None:
@@ -161,7 +162,7 @@ def cli_init(
 #|export
 @app.command(name='new')
 def cli_new(
-    storage_location: str|None = None,
+    storage_location: str|None = Option(None, "--storage-location", "-s", help="The storage location to create the new repository in."),
     repo_name: str|None = Option(None, "--repo", "-r", help="The full name of the repository, the id or the path of the repo."),
     from_path: Path|None = Option(None, "--from", "-f", help="Path to a local directory to move into repoyard as a new repository."),
     copy_from_path: bool = Option(False, "--copy", "-c", help="Copy the contents of the from_path into the new repository."),
@@ -236,7 +237,7 @@ def cli_sync(
     if sync_choices is None:
         sync_choices = [repo_part for repo_part in RepoPart]
     
-    sync_repo(
+    asyncio.run(sync_repo(
         config_path=app_state['config_path'],
         repo_full_name=repo_full_name,
         sync_direction=sync_direction,
@@ -244,7 +245,7 @@ def cli_sync(
         sync_choices=sync_choices,
         verbose=True,
         show_rclone_progress=show_rclone_progress,
-    )
+    ))
 
 
 # %% [markdown]
@@ -259,6 +260,7 @@ def cli_sync_meta(
     sync_all: bool = Option(False, "--all", "-a", help="Sync all repositories."),
     sync_setting: SyncSetting = Option(SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."),
     sync_direction: SyncDirection|None = Option(None, "--sync-direction", "-d", help="The direction of the sync. If not provided, the appropriate direction will be automatically determined based on the sync status. This mode is only available for the 'CAREFUL' sync setting."),
+    max_concurrent_rclone_ops: int|None = Option(None, "--max-concurrent", "-m", help="The maximum number of concurrent rclone operations. If not provided, the default specified in the config will be used."),
 ):
     """
     Syncs the metadata of a repository.
@@ -277,14 +279,15 @@ def cli_sync_meta(
             raise typer.Exit("Repo names to sync not specified and could not be inferred from current working directory.")
         repo_full_names = [repo_full_name]
 
-    sync_repometas(
+    asyncio.run(sync_repometas(
         config_path=app_state['config_path'],
         repo_full_names=repo_full_names,
         storage_locations=storage_locations,
         sync_setting=sync_setting,
         sync_direction=sync_direction,
         verbose=True,
-    )
+        max_concurrent_rclone_ops=max_concurrent_rclone_ops,
+    ))
 
 
 # %% [markdown]
@@ -334,13 +337,13 @@ def cli_add_to_group(
         
         if sync_after:
             from repoyard.cmds import sync_repometas
-            sync_repometas(
+            asyncio.run(sync_repometas(
                 config_path=app_state['config_path'],
                 repo_full_names=[repo_full_name],
                 sync_setting=sync_setting,
                 sync_direction=SyncDirection.PUSH,
                 verbose=True,
-            )
+            ))
 
 
 # %% [markdown]
@@ -390,13 +393,13 @@ def cli_remove_from_group(
         
         if sync_after:
             from repoyard.cmds import sync_repometas
-            sync_repometas(
+            asyncio.run(sync_repometas(
                 config_path=app_state['config_path'],
                 repo_full_names=[repo_full_name],
                 sync_setting=sync_setting,
                 sync_direction=SyncDirection.PUSH,
                 verbose=True,
-            )
+            ))
 
 
 # %% [markdown]
@@ -430,10 +433,10 @@ def cli_include(
     if repo_full_name not in repoyard_meta.by_full_name:
         raise typer.Exit(f"Repository with full name `{repo_full_name}` not found.", code=1)
     
-    include_repo(
+    asyncio.run(include_repo(
         config_path=app_state['config_path'],
         repo_full_name=repo_full_name,
-    )
+    ))
 
 
 # %% [markdown]
@@ -468,11 +471,11 @@ def cli_exclude(
     if repo_full_name not in repoyard_meta.by_full_name:
         raise typer.Exit(f"Repository with full name `{repo_full_name}` not found.", code=1)
     
-    exclude_repo(
+    asyncio.run(exclude_repo(
         config_path=app_state['config_path'],
         repo_full_name=repo_full_name,
         skip_sync=skip_sync,
-    )
+    ))
 
 
 # %% [markdown]
@@ -506,10 +509,10 @@ def cli_delete(
     if repo_full_name not in repoyard_meta.by_full_name:
         raise typer.Exit(f"Repository with full name `{repo_full_name}` not found.", code=1)
     
-    delete_repo(
+    asyncio.run(delete_repo(
         config_path=app_state['config_path'],
         repo_full_name=repo_full_name,
-    )
+    ))
 
 
 # %% [markdown]
@@ -557,10 +560,10 @@ def cli_repo_status(
     if repo_full_name not in repoyard_meta.by_full_name:
         raise typer.Exit(f"Repository with full name `{repo_full_name}` not found.", code=1)
     
-    sync_status = get_repo_sync_status(
+    sync_status = asyncio.run(get_repo_sync_status(
         config_path=app_state['config_path'],
         repo_full_name=repo_full_name,
-    )
+    ))
 
     data = {}
     for repo_part, part_sync_status in sync_status.items():

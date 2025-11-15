@@ -22,7 +22,7 @@ from repoyard import const
 
 # %%
 #|set_func_signature
-def sync_repo(
+async def sync_repo(
     config_path: Path,
     repo_full_name: str,
     sync_direction: SyncDirection|None = None,
@@ -156,7 +156,7 @@ sync_results = {}
 sync_part = RepoPart.META
 if sync_part in sync_choices:
     if verbose: print(f"Syncing {sync_part.value}.")
-    sync_results[RepoPart.META] = sync_helper(
+    sync_results[RepoPart.META] = await sync_helper(
         rclone_config_path=config.rclone_config_path,
         sync_direction=sync_direction,
         sync_setting=sync_setting,
@@ -172,7 +172,7 @@ if sync_part in sync_choices:
 # %%
 # Check that the synced worked
 from repoyard._utils import rclone_lsjson
-_lsjson = rclone_lsjson(
+_lsjson = await rclone_lsjson(
     rclone_config_path=config.rclone_config_path,
     source=repo_meta.storage_location,
     source_path=repo_meta.get_remote_path(config)
@@ -187,7 +187,7 @@ assert "repometa.toml" in {f["Name"] for f in _lsjson}
 sync_part = RepoPart.CONF
 if sync_part in sync_choices:
     if verbose: print("Syncing", sync_part.value)
-    sync_results[sync_part] = sync_helper(
+    sync_results[sync_part] = await sync_helper(
         rclone_config_path=config.rclone_config_path,
         sync_direction=sync_direction,
         sync_setting=sync_setting,
@@ -203,7 +203,7 @@ if sync_part in sync_choices:
 # %%
 # Check that the synced worked
 from repoyard._utils import rclone_lsjson
-_lsjson = rclone_lsjson(
+_lsjson = await rclone_lsjson(
     rclone_config_path=config.rclone_config_path,
     source=repo_meta.storage_location,
     source_path=repo_meta.get_remote_repoconf_path(config)
@@ -231,7 +231,7 @@ _repoyard_filters_path = _repoyard_filters_path if _repoyard_filters_path.exists
 sync_part = RepoPart.DATA
 if sync_part in sync_choices:
     if verbose: print("Syncing", sync_part.value)
-    sync_results[sync_part] = sync_helper(
+    sync_results[sync_part] = await sync_helper(
         rclone_config_path=config.rclone_config_path,
         sync_direction=sync_direction,
         sync_setting=sync_setting,
@@ -247,6 +247,17 @@ if sync_part in sync_choices:
         show_rclone_progress=show_rclone_progress,
     )
 
+# %%
+# Check that the synced worked
+from repoyard._utils import rclone_lsjson
+_lsjson = await rclone_lsjson(
+    rclone_config_path=config.rclone_config_path,
+    source=repo_meta.storage_location,
+    source_path=repo_meta.get_remote_repodata_path(config)
+)
+assert ".git" in {f["Name"] for f in _lsjson}
+assert ".venv" not in {f["Name"] for f in _lsjson}
+
 # %% [markdown]
 # Refresh the repoyard meta file
 
@@ -255,17 +266,6 @@ if sync_part in sync_choices:
 if RepoPart.META in sync_choices:
     from repoyard._models import refresh_repoyard_meta
     refresh_repoyard_meta(config)
-
-# %%
-# Check that the synced worked
-from repoyard._utils import rclone_lsjson
-_lsjson = rclone_lsjson(
-    rclone_config_path=config.rclone_config_path,
-    source=repo_meta.storage_location,
-    source_path=repo_meta.get_remote_repodata_path(config)
-)
-assert ".git" in {f["Name"] for f in _lsjson}
-assert ".venv" not in {f["Name"] for f in _lsjson}
 
 # %%
 #|func_return

@@ -7,7 +7,7 @@ from repoyard._utils.sync_helper import SyncSetting
 from repoyard.config import get_config
 from repoyard import const
 
-def exclude_repo(
+async def exclude_repo(
     config_path: Path,
     repo_full_name: str,
     skip_sync: bool = False,
@@ -39,7 +39,7 @@ def exclude_repo(
     from . import sync_repo
     
     if not skip_sync:
-        sync_repo(
+        await sync_repo(
             config_path=config_path,
             repo_full_name=repo_full_name,
             sync_setting=SyncSetting.CAREFUL,

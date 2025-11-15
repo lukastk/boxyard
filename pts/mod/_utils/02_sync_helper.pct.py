@@ -42,7 +42,7 @@ class InvalidRemotePath(Exception): pass
 
 # %%
 #|set_func_signature
-def sync_helper(
+async def sync_helper(
     rclone_config_path: str,
     sync_direction: SyncDirection|None, # None = auto
     sync_setting: SyncSetting,
@@ -62,7 +62,7 @@ def sync_helper(
     show_rclone_progress: bool = False,
 ) -> tuple[SyncStatus, bool]:
     """
-    Helper to execute the standard routine for bisyncing a local and remote folder.
+    Helper to execute the standard routine for syncing a local and remote folder.
 
     Returns a tuple of the sync status and a boolean indicating if the sync took place.
     """
@@ -140,7 +140,7 @@ if sync_direction is None and sync_setting != SyncSetting.CAREFUL:
 #|export
 from repoyard._models import get_sync_status, SyncCondition
 
-sync_status = get_sync_status(
+sync_status = await get_sync_status(
     rclone_config_path=rclone_config_path,
     local_path=local_path,
     local_sync_record_path=local_sync_record_path,
@@ -230,7 +230,7 @@ def _sync(dry_run: bool, source: str, source_path: str, dest: str, dest_path: st
 from repoyard._models import SyncRecord
 
 if sync_direction == SyncDirection.PULL:
-    res, stdout, stderr = _sync(
+    res, stdout, stderr = await _sync(
         dry_run=False,
         source=remote,
         source_path=remote_path,
@@ -240,11 +240,11 @@ if sync_direction == SyncDirection.PULL:
     
     if res:
         # Retrieve the remote sync record and save it locally
-        rec = SyncRecord.rclone_read(rclone_config_path, remote, remote_sync_record_path)
-        rec.rclone_save(rclone_config_path, "", local_sync_record_path)
+        rec = await SyncRecord.rclone_read(rclone_config_path, remote, remote_sync_record_path)
+        await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
 
 elif sync_direction == SyncDirection.PUSH:
-    res, stdout, stderr = _sync(
+    res, stdout, stderr = await _sync(
         dry_run=False,
         source="",
         source_path=local_path,
@@ -255,8 +255,8 @@ elif sync_direction == SyncDirection.PUSH:
     if res:
         # Create a new sync record and save it at the remote
         rec = SyncRecord.create(creator_hostname=creator_hostname)
-        rec.rclone_save(rclone_config_path, "", local_sync_record_path)
-        rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
+        await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
+        await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
 
 else:
     raise ValueError(f"Unknown sync direction: {sync_direction}")
@@ -270,7 +270,7 @@ if not res:
 # %%
 from repoyard._utils import rclone_lsjson
 
-_lsjson = rclone_lsjson(
+_lsjson = await rclone_lsjson(
     rclone_config_path=rclone_config_path,
     source=remote,
     source_path=remote_path,

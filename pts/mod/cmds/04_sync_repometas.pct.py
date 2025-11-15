@@ -21,8 +21,9 @@ from repoyard import const
 
 # %%
 #|set_func_signature
-def sync_repometas(
+async def sync_repometas(
     config_path: Path,
+    max_concurrent_rclone_ops: int|None = None,
     repo_full_names: list[str]|None = None,
     storage_locations: list[str]|None = None,
     sync_setting: SyncSetting = SyncSetting.CAREFUL,
@@ -53,6 +54,7 @@ data_path = test_folder_path / ".repoyard"
 # %%
 # Args (1/2)
 config_path = test_folder_path / "repoyard_config" / "config.toml"
+max_concurrent_rclone_ops = None
 repo_full_names = None
 storage_locations = None
 sync_direction = None
@@ -87,6 +89,9 @@ config = get_config(config_path)
 if repo_full_names is not None and storage_locations is not None:
     raise ValueError("Cannot provide both `repo_full_names` and `storage_locations`.")
 
+if max_concurrent_rclone_ops is None:
+    max_concurrent_rclone_ops = config.max_concurrent_rclone_ops
+
 # %%
 # Set up a rclone remote path for testing
 config.rclone_config_path.write_text(f"""
@@ -96,16 +101,18 @@ remote = {remote_rclone_path}
 """);
 
 # Set up synced repos
-for i in range(3):
+import asyncio
+async def _task(i):
     repo_full_name = new_repo(config_path=config_path, repo_name=f"test_repo{i}", storage_location="my_remote")
-    sync_repo(config_path=config_path, repo_full_name=repo_full_name)
+    await sync_repo(config_path=config_path, repo_full_name=repo_full_name)
+await asyncio.gather(*[_task(i) for i in range(3)]);
 
 # %% [markdown]
 # Sync remote repometas that have not been synced locally already (i.e. 'undiscovered' repometas)
 
 # %%
 #|export
-from repoyard._utils import rclone_lsjson, rclone_sync
+from repoyard._utils import rclone_lsjson, rclone_sync, async_throttler
 from repoyard._models import RepoMeta, SyncRecord, RepoPart, get_repoyard_meta
 
 for sl_name, sl_config in config.storage_locations.items():
@@ -115,7 +122,7 @@ for sl_name, sl_config in config.storage_locations.items():
         continue
     
     # Get remote repometas
-    _ls_remote = rclone_lsjson(
+    _ls_remote = await rclone_lsjson(
         config.rclone_config_path,
         source=sl_name,
         source_path=sl_config.store_path / const.REMOTE_REPOS_REL_PATH,
@@ -126,7 +133,7 @@ for sl_name, sl_config in config.storage_locations.items():
     )
     _ls_remote = {f["Path"] for f in _ls_remote} if _ls_remote else set()
 
-    _ls_local = rclone_lsjson(
+    _ls_local = await rclone_lsjson(
         config.rclone_config_path,
         source="",
         source_path=config.local_store_path / sl_name,
@@ -144,7 +151,7 @@ for sl_name, sl_config in config.storage_locations.items():
         missing_metas = [missing_meta for repo_full_name, missing_meta in zip(missing_repo_full_names, missing_metas) if repo_full_name in repo_full_names]
 
     if len(missing_metas) > 0:
-        rclone_sync(
+        await rclone_sync(
             rclone_config_path=config.rclone_config_path,
             source=sl_name,
             source_path=sl_config.store_path / const.REMOTE_REPOS_REL_PATH,
@@ -155,10 +162,14 @@ for sl_name, sl_config in config.storage_locations.items():
         )
 
         # Create sync records
-        for repo_full_name in missing_repo_full_names:
+        async def _task(repo_full_name):
             repo_meta = RepoMeta.load(config, sl_name, repo_full_name) # Used to get the paths consistently
-            rec = SyncRecord.rclone_read(config.rclone_config_path, sl_name, repo_meta.get_remote_sync_record_path(config, RepoPart.META))
-            rec.rclone_save(config.rclone_config_path, "", repo_meta.get_local_sync_record_path(config, RepoPart.META))
+            rec = await SyncRecord.rclone_read(config.rclone_config_path, sl_name, repo_meta.get_remote_sync_record_path(config, RepoPart.META))
+            await rec.rclone_save(config.rclone_config_path, "", repo_meta.get_local_sync_record_path(config, RepoPart.META))
+        await async_throttler(
+            [_task(repo_full_name) for repo_full_name in missing_repo_full_names],
+            max_concurrency=max_concurrent_rclone_ops,
+        )
 
 # %% [markdown]
 # Sync the remaining repometas
@@ -177,22 +188,19 @@ repoyard_meta = get_repoyard_meta(config)
 
 repo_meta_sync_res = []
 
-for repo_meta in repoyard_meta.by_full_name.values():
-    if repo_full_names is not None and repo_meta.full_name not in repo_full_names:
-        continue
-
-    if storage_locations is not None and repo_meta.storage_location not in storage_locations:
-        continue
+async def _task(repo_meta):
+    if repo_full_names is not None and repo_meta.full_name not in repo_full_names: return
+    if storage_locations is not None and repo_meta.storage_location not in storage_locations: return
 
     sync_res = None
     try:
-        sync_res = sync_repo(
+        sync_res = await sync_repo(
             config_path=config_path,
             repo_full_name=repo_meta.full_name,
             sync_direction=None,
             sync_setting=SyncSetting.CAREFUL,
             sync_choices=[RepoPart.META],
-            verbose=verbose,
+            verbose=False,
         )
         sync_pre_status, sync_happened = sync_res[RepoPart.META]
         repo_meta_sync_res.append((True, None, sync_pre_status, sync_happened))
@@ -202,6 +210,11 @@ for repo_meta in repoyard_meta.by_full_name.values():
         repo_meta_sync_res.append((False, e, sync_res, False))
     except InvalidRemotePath as e:
         repo_meta_sync_res.append((False, e, sync_res, False))
+
+await async_throttler(
+    [_task(repo_meta) for repo_meta in repoyard_meta.repo_metas],
+    max_concurrency=max_concurrent_rclone_ops,
+);
 
 # %%
 # Modify a local repometa to test if it syncs properly

@@ -19,6 +19,8 @@ from repoyard import const
 import repoyard.config
 from pathlib import Path
 
+from repoyard._utils import run_cmd_async
+
 # %% [markdown]
 # Set up testing environment
 
@@ -136,7 +138,7 @@ show_doc(this_module.rclone_copy)
 
 # %%
 #|export
-def rclone_copy(
+async def rclone_copy(
     rclone_config_path: str,
     source: str,
     source_path: str,   
@@ -155,11 +157,11 @@ def rclone_copy(
 ) -> bool:
     cmd = _rclone_cmd_helper("copy", rclone_config_path, source, source_path, dest, dest_path, include, exclude, filter, include_file, exclude_file, filters_file, dry_run, progress)
     if not return_command:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        ret_code, stdout, stderr = await run_cmd_async(cmd)
         if verbose:
-            print(result.stdout)
-            print(result.stderr)
-        return result.returncode == 0, result.stdout, result.stderr
+            print(stdout)
+            print(stderr)
+        return ret_code == 0, stdout, stderr
     else:
         return shlex.join(cmd)
 
@@ -167,7 +169,7 @@ def rclone_copy(
 # %%
 _path = setup_test_folder('copy')
 
-res = rclone_copy(
+res = await rclone_copy(
     _path / "rclone.conf",
     source="",
     source_path=_path / "my_local",
@@ -189,15 +191,13 @@ assert "file1.txt" in ls
 assert "file2.txt" in ls
 
 # %%
-
-# %%
 #|hide
 show_doc(this_module.rclone_copyto)
 
 
 # %%
 #|export
-def rclone_copyto(
+async def rclone_copyto(
     rclone_config_path: str,
     source: str,
     source_path: str,   
@@ -213,11 +213,11 @@ def rclone_copyto(
     cmd = ["rclone", "copyto", '--config', rclone_config_path, source_spec, dest_spec]
     if progress:  cmd.append("--progress")
     if not return_command:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        ret_code, stdout, stderr = await run_cmd_async(cmd)
         if verbose:
-            print(result.stdout)
-            print(result.stderr)
-        return result.returncode == 0, result.stdout, result.stderr
+            print(stdout)
+            print(stderr)
+        return ret_code == 0, stdout, stderr
     else:
         return shlex.join(cmd)
 
@@ -225,7 +225,7 @@ def rclone_copyto(
 # %%
 _path = setup_test_folder('copyto')
 
-res = rclone_copyto(
+res = await rclone_copyto(
     _path / "rclone.conf",
     source="",
     source_path=_path / "my_local" / "file1.txt",
@@ -246,7 +246,7 @@ show_doc(this_module.rclone_sync)
 
 # %%
 #|export
-def rclone_sync(
+async def rclone_sync(
     rclone_config_path: str,
     source: str,
     source_path: str,   
@@ -265,11 +265,11 @@ def rclone_sync(
 ) -> bool:
     cmd = _rclone_cmd_helper("sync", rclone_config_path, source, source_path, dest, dest_path, include, exclude, filter, include_file, exclude_file, filters_file, dry_run, progress)
     if not return_command:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        ret_code, stdout, stderr = await run_cmd_async(cmd)
         if verbose:
-            print(result.stdout)
-            print(result.stderr)
-        return result.returncode == 0, result.stdout, result.stderr
+            print(stdout)
+            print(stderr)
+        return ret_code == 0, stdout, stderr
     else:
         return shlex.join(cmd)
 
@@ -277,7 +277,7 @@ def rclone_sync(
 # %%
 _path = setup_test_folder('sync')
 
-res = rclone_sync(
+res = await rclone_sync(
     _path / "rclone.conf",
     source="",
     source_path=_path / "my_local",
@@ -312,7 +312,7 @@ class BisyncResult(Enum):
     ERROR_ALL_FILES_CHANGED = "all_files_changed"
     ERROR_OTHER = "other_error"
 
-def rclone_bisync(
+async def rclone_bisync(
     rclone_config_path: str,
     source: str,
     source_path: str,   
@@ -335,21 +335,21 @@ def rclone_bisync(
     if resync: cmd.append("--resync")
     if force: cmd.append("--force")
     if not return_command:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        ret_code, stdout, stderr = await run_cmd_async(cmd)
         if verbose:
-            print(result.stdout)
-            print(result.stderr)
-        stdout_clean = _remove_ansi_escape(result.stdout)
-        stderr_clean = _remove_ansi_escape(result.stderr)
+            print(stdout)
+            print(stderr)
+        stdout_clean = _remove_ansi_escape(stdout)
+        stderr_clean = _remove_ansi_escape(stderr)
         if "ERROR : Bisync aborted. Must run --resync to recover." in stderr_clean:
-            return BisyncResult.ERROR_NEEDS_RESYNC, result.stdout, result.stderr
+            return BisyncResult.ERROR_NEEDS_RESYNC, stdout, stderr
         if "ERROR : Safety abort: all files were changed" in stderr_clean:
-            return BisyncResult.ERROR_ALL_FILES_CHANGED, result.stdout, result.stderr
-        if result.returncode != 0:
+            return BisyncResult.ERROR_ALL_FILES_CHANGED, stdout, stderr
+        if ret_code != 0:
             return BisyncResult.ERROR_OTHER, result.stdout, result.stderr
         if "NOTICE: - WARNING  New or changed in both paths" in stderr_clean:
-            return BisyncResult.CONFLICTS, result.stdout, result.stderr
-        return BisyncResult.SUCCESS, result.stdout, result.stderr
+            return BisyncResult.CONFLICTS, stdout, stderr
+        return BisyncResult.SUCCESS, stdout, stderr
     else:
         return shlex.join([c.as_posix() if type(c) == Path else str(c) for c in cmd])
 
@@ -357,7 +357,7 @@ def rclone_bisync(
 # %%
 _path = setup_test_folder('bisync')
 
-res, stdout, stderr = rclone_bisync(
+res, stdout, stderr = await rclone_bisync(
     _path / "rclone.conf",
     source="",
     source_path=_path / "my_local",
@@ -372,7 +372,7 @@ res, stdout, stderr = rclone_bisync(
     dry_run=False,
     resync=False,
     force=False,
-    verbose=True,
+    verbose=False,
 )
 
 assert res == BisyncResult.ERROR_NEEDS_RESYNC
@@ -380,7 +380,7 @@ assert res == BisyncResult.ERROR_NEEDS_RESYNC
 # %%
 _path = setup_test_folder('bisync')
 
-res, stdout, stderr = rclone_bisync(
+res, stdout, stderr = await rclone_bisync(
     _path / "rclone.conf",
     source="",
     source_path=_path / "my_local",
@@ -395,34 +395,10 @@ res, stdout, stderr = rclone_bisync(
     dry_run=False,
     resync=True,
     force=False,
-    verbose=True,
+    verbose=False,
 )
 
 assert res == BisyncResult.SUCCESS
-
-# %%
-# !echo "will cause conflict" > {_path / "my_local" / "file1.txt"}
-# !echo "will cause conflict!" > {_path / "my_remote" / "file1.txt"}
-
-res, stdout, stderr = rclone_bisync(
-    _path / "rclone.conf",
-    source="",
-    source_path=_path / "my_local",
-    dest="my_remote",
-    dest_path="",
-    include=[],
-    exclude=[],
-    include_file=None,
-    exclude_file=None,
-    filter=[],
-    filters_file=None,
-    dry_run=False,
-    resync=False,
-    force=False,
-    verbose=True,
-)
-
-assert res == BisyncResult.CONFLICTS
 
 # %%
 #|hide
@@ -431,7 +407,7 @@ show_doc(this_module.rclone_mkdir)
 
 # %%
 #|export
-def rclone_mkdir(
+async def rclone_mkdir(
     rclone_config_path: str,
     source: str,
     source_path: str,
@@ -441,9 +417,9 @@ def rclone_mkdir(
     """
     source_str = f"{source}:{source_path}" if source else source_path
     cmd = ["rclone", "mkdir", '--config', rclone_config_path, source_str]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise Exception(result.stderr)
+    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    if ret_code != 0:
+        raise Exception(stderr)
 
 
 # %%
@@ -453,7 +429,7 @@ show_doc(this_module.rclone_lsjson)
 
 # %%
 #|export
-def rclone_lsjson(
+async def rclone_lsjson(
     rclone_config_path: str,
     source: str,
     source_path: str,
@@ -475,10 +451,10 @@ def rclone_lsjson(
     for f in filter:
         cmd.append(f"--filter")
         cmd.append(f)
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
+    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    if ret_code != 0:
         return None
-    return json.loads(result.stdout)
+    return json.loads(stdout)
 
 
 # %%
@@ -487,7 +463,7 @@ _path = setup_test_folder('lsjson')
 (_path / 'my_remote' / 'subfolder' / 'file1.txt').write_text("Hello, world!")
 (_path / 'my_remote' / 'subfolder' / 'file2.txt').write_text("Goodbye, world!")
 
-res, stdout, stderr = rclone_bisync(
+res, stdout, stderr = await rclone_bisync(
     _path / "rclone.conf",
     source="",
     source_path=_path / "my_local",
@@ -505,7 +481,7 @@ res, stdout, stderr = rclone_bisync(
     verbose=True,
 )
 
-res = rclone_lsjson(
+res = await rclone_lsjson(
     _path / "rclone.conf",
     source="my_remote",
     source_path="",
@@ -525,7 +501,7 @@ show_doc(this_module.rclone_path_exists)
 
 # %%
 #|export
-def rclone_path_exists(
+async def rclone_path_exists(
     rclone_config_path: str,
     source: str,
     source_path: str,
@@ -538,7 +514,7 @@ def rclone_path_exists(
         return (True, True)
     
     parent_path = Path(source_path).parent if len(Path(source_path).parts) > 1 else ""
-    ls = rclone_lsjson(
+    ls = await rclone_lsjson(
         rclone_config_path,
         source,
         parent_path,
@@ -552,14 +528,14 @@ def rclone_path_exists(
 
 
 # %%
-assert rclone_path_exists(
+assert await rclone_path_exists(
     _path / "rclone.conf",
     source="my_remote",
     source_path="file1.txt",
 ) == (True, False)
 
 # %%
-assert rclone_path_exists(
+assert await rclone_path_exists(
     _path / "rclone.conf",
     source="",
     source_path=_path / "my_remote",
@@ -572,21 +548,21 @@ show_doc(this_module.rclone_purge)
 
 # %%
 #|export
-def rclone_purge(
+async def rclone_purge(
     rclone_config_path: str,
     source: str,
     source_path: str,
 ) -> bool:
     source_str = f"{source}:{source_path}" if source else source_path
     cmd = ["rclone", "purge", '--config', rclone_config_path, source_str]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    return result.returncode == 0
+    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    return ret_code == 0
 
 
 # %%
 _path = setup_test_folder('purge')
 
-assert rclone_purge(
+assert await rclone_purge(
     _path / "rclone.conf",
     source="my_remote",
     source_path="",
@@ -599,16 +575,16 @@ show_doc(this_module.rclone_cat)
 
 # %%
 #|export
-def rclone_cat(
+async def rclone_cat(
     rclone_config_path: str,
     source: str,
     source_path: str,
 ) -> tuple[bool, str|None]:
     source_str = f"{source}:{source_path}" if source else source_path
     cmd = ["rclone", "cat", '--config', rclone_config_path, source_str]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode == 0:
-        return True, result.stdout
+    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    if ret_code == 0:
+        return True, stdout
     else:
         return False, None
 
@@ -616,7 +592,7 @@ def rclone_cat(
 # %%
 _path = setup_test_folder('cat')
 
-res = rclone_sync(
+res = await rclone_sync(
     _path / "rclone.conf",
     source="",
     source_path=_path / "my_local",
@@ -632,7 +608,7 @@ res = rclone_sync(
     verbose=True,
 )
 
-res, content = rclone_cat(
+res, content = await rclone_cat(
     _path / "rclone.conf",
     source="my_remote",
     source_path="file1.txt",

@@ -93,7 +93,7 @@ remote = {remote_rclone_path}
 """);
 
 # Sync to remote
-sync_repo(config_path=config_path, repo_full_name=repo_full_name)
+await sync_repo(config_path=config_path, repo_full_name=repo_full_name)
 
 # %% [markdown]
 # Find the repo meta
@@ -137,6 +137,6 @@ refresh_repoyard_meta(config)
 # %%
 import toml
 from repoyard.cmds import sync_repometas
-sync_repometas(config_path=config_path)
+await sync_repometas(config_path=config_path)
 repometa_dump = toml.load(remote_rclone_path / "repoyard" / const.REMOTE_REPOS_REL_PATH / repo_full_name / const.REPO_METAFILE_REL_PATH)
 assert repometa_dump['groups'] == ['group1', 'group2']

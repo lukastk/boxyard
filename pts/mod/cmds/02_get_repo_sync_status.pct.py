@@ -21,7 +21,7 @@ from repoyard import const
 
 # %%
 #|set_func_signature
-def get_repo_sync_status(
+async def get_repo_sync_status(
     config_path: Path,
     repo_full_name: str,
 ) -> dict[RepoPart, SyncStatus]:
@@ -108,17 +108,18 @@ repo_meta = repoyard_meta.by_full_name[repo_full_name]
 # %%
 #|export
 from repoyard._models import get_sync_status, RepoPart
+import asyncio
 
-repo_sync_status = {}
-for repo_part in RepoPart:
-    repo_sync_status[repo_part] = get_sync_status(
-        rclone_config_path=config.rclone_config_path,
-        local_path=repo_meta.get_local_repometa_path(config),
-        local_sync_record_path=repo_meta.get_local_sync_record_path(config, repo_part),
-        remote=repo_meta.storage_location,
-        remote_path=repo_meta.get_remote_repometa_path(config),
-        remote_sync_record_path=repo_meta.get_remote_sync_record_path(config, repo_part),
-    )
+tasks = [get_sync_status(
+    rclone_config_path=config.rclone_config_path,
+    local_path=repo_meta.get_local_repometa_path(config),
+    local_sync_record_path=repo_meta.get_local_sync_record_path(config, repo_part),
+    remote=repo_meta.storage_location,
+    remote_path=repo_meta.get_remote_repometa_path(config),
+    remote_sync_record_path=repo_meta.get_remote_sync_record_path(config, repo_part),
+) for repo_part in RepoPart]
+
+repo_sync_status = {repo_part : sync_status for repo_part, sync_status in zip(RepoPart, await asyncio.gather(*tasks))}
 
 # %%
 from repoyard._models import SyncCondition

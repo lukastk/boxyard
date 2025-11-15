@@ -2,16 +2,19 @@
 
 # %% auto 0
 __all__ = ['get_repo_full_name_from_sub_path', 'get_repo_full_name_from_cwd', 'get_hostname', 'run_fzf',
-           'check_last_time_modified']
+           'check_last_time_modified', 'run_cmd_async', 'async_throttler']
 
 # %% ../../../pts/mod/_utils/00_base.pct.py 3
 import subprocess
 import shlex
 import json
+import asyncio
 from enum import Enum
 from .. import const
-import repoyard.config
 from pathlib import Path
+from typing import Any, Coroutine
+
+import repoyard.config
 
 # %% ../../../pts/mod/_utils/00_base.pct.py 5
 def get_repo_full_name_from_sub_path(
@@ -111,3 +114,42 @@ def check_last_time_modified(path: str | Path) -> float | None:
         mtimes = (p.stat().st_mtime for p in path.rglob("*") if p.is_file())
     max_mtime =  max(mtimes, default=None)
     return datetime.fromtimestamp(max_mtime, tz=timezone.utc) if max_mtime is not None else None
+
+# %% ../../../pts/mod/_utils/00_base.pct.py 15
+async def run_cmd_async(cmd: list[str]) -> subprocess.Popen:
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await proc.communicate()
+    stdout = stdout.decode('utf-8')
+    stderr = stderr.decode('utf-8')
+    return proc.returncode, stdout, stderr
+
+# %% ../../../pts/mod/_utils/00_base.pct.py 18
+async def async_throttler(
+    coros: list[Coroutine],
+    max_concurrency: int,
+    timeout: float | None = None,
+) -> list[Any]:
+    """
+    Throttle a list of coroutines to run concurrently.
+    """
+
+    sem = asyncio.Semaphore(max_concurrency)
+    
+    async def _task(coro: Coroutine) -> Any:
+        async with sem:
+            try:
+                if timeout is None:
+                    return await coro
+                else:
+                    return await asyncio.wait_for(coro, timeout)
+            except asyncio.TimeoutError as e:
+                return e
+            except Exception as e:
+                return e
+
+    tasks = [_task(coro) for coro in coros]
+    return await asyncio.gather(*tasks, return_exceptions=True)

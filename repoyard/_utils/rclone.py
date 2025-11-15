@@ -13,6 +13,8 @@ from .. import const
 import repoyard.config
 from pathlib import Path
 
+from . import run_cmd_async
+
 # %% ../../../pts/mod/_utils/01_rclone.pct.py 8
 def _rclone_cmd_helper(
     cmd_name: str,
@@ -79,7 +81,7 @@ def _remove_ansi_escape(text: str) -> str:
     return ansi_escape.sub('', text)
 
 # %% ../../../pts/mod/_utils/01_rclone.pct.py 13
-def rclone_copy(
+async def rclone_copy(
     rclone_config_path: str,
     source: str,
     source_path: str,   
@@ -98,16 +100,16 @@ def rclone_copy(
 ) -> bool:
     cmd = _rclone_cmd_helper("copy", rclone_config_path, source, source_path, dest, dest_path, include, exclude, filter, include_file, exclude_file, filters_file, dry_run, progress)
     if not return_command:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        ret_code, stdout, stderr = await run_cmd_async(cmd)
         if verbose:
-            print(result.stdout)
-            print(result.stderr)
-        return result.returncode == 0, result.stdout, result.stderr
+            print(stdout)
+            print(stderr)
+        return ret_code == 0, stdout, stderr
     else:
         return shlex.join(cmd)
 
-# %% ../../../pts/mod/_utils/01_rclone.pct.py 17
-def rclone_copyto(
+# %% ../../../pts/mod/_utils/01_rclone.pct.py 16
+async def rclone_copyto(
     rclone_config_path: str,
     source: str,
     source_path: str,   
@@ -123,16 +125,16 @@ def rclone_copyto(
     cmd = ["rclone", "copyto", '--config', rclone_config_path, source_spec, dest_spec]
     if progress:  cmd.append("--progress")
     if not return_command:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        ret_code, stdout, stderr = await run_cmd_async(cmd)
         if verbose:
-            print(result.stdout)
-            print(result.stderr)
-        return result.returncode == 0, result.stdout, result.stderr
+            print(stdout)
+            print(stderr)
+        return ret_code == 0, stdout, stderr
     else:
         return shlex.join(cmd)
 
-# %% ../../../pts/mod/_utils/01_rclone.pct.py 20
-def rclone_sync(
+# %% ../../../pts/mod/_utils/01_rclone.pct.py 19
+async def rclone_sync(
     rclone_config_path: str,
     source: str,
     source_path: str,   
@@ -151,15 +153,15 @@ def rclone_sync(
 ) -> bool:
     cmd = _rclone_cmd_helper("sync", rclone_config_path, source, source_path, dest, dest_path, include, exclude, filter, include_file, exclude_file, filters_file, dry_run, progress)
     if not return_command:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        ret_code, stdout, stderr = await run_cmd_async(cmd)
         if verbose:
-            print(result.stdout)
-            print(result.stderr)
-        return result.returncode == 0, result.stdout, result.stderr
+            print(stdout)
+            print(stderr)
+        return ret_code == 0, stdout, stderr
     else:
         return shlex.join(cmd)
 
-# %% ../../../pts/mod/_utils/01_rclone.pct.py 23
+# %% ../../../pts/mod/_utils/01_rclone.pct.py 22
 class BisyncResult(Enum):
     SUCCESS = "success"
     CONFLICTS = "conflicts"
@@ -167,7 +169,7 @@ class BisyncResult(Enum):
     ERROR_ALL_FILES_CHANGED = "all_files_changed"
     ERROR_OTHER = "other_error"
 
-def rclone_bisync(
+async def rclone_bisync(
     rclone_config_path: str,
     source: str,
     source_path: str,   
@@ -190,26 +192,26 @@ def rclone_bisync(
     if resync: cmd.append("--resync")
     if force: cmd.append("--force")
     if not return_command:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        ret_code, stdout, stderr = await run_cmd_async(cmd)
         if verbose:
-            print(result.stdout)
-            print(result.stderr)
-        stdout_clean = _remove_ansi_escape(result.stdout)
-        stderr_clean = _remove_ansi_escape(result.stderr)
+            print(stdout)
+            print(stderr)
+        stdout_clean = _remove_ansi_escape(stdout)
+        stderr_clean = _remove_ansi_escape(stderr)
         if "ERROR : Bisync aborted. Must run --resync to recover." in stderr_clean:
-            return BisyncResult.ERROR_NEEDS_RESYNC, result.stdout, result.stderr
+            return BisyncResult.ERROR_NEEDS_RESYNC, stdout, stderr
         if "ERROR : Safety abort: all files were changed" in stderr_clean:
-            return BisyncResult.ERROR_ALL_FILES_CHANGED, result.stdout, result.stderr
-        if result.returncode != 0:
+            return BisyncResult.ERROR_ALL_FILES_CHANGED, stdout, stderr
+        if ret_code != 0:
             return BisyncResult.ERROR_OTHER, result.stdout, result.stderr
         if "NOTICE: - WARNING  New or changed in both paths" in stderr_clean:
-            return BisyncResult.CONFLICTS, result.stdout, result.stderr
-        return BisyncResult.SUCCESS, result.stdout, result.stderr
+            return BisyncResult.CONFLICTS, stdout, stderr
+        return BisyncResult.SUCCESS, stdout, stderr
     else:
         return shlex.join([c.as_posix() if type(c) == Path else str(c) for c in cmd])
 
-# %% ../../../pts/mod/_utils/01_rclone.pct.py 28
-def rclone_mkdir(
+# %% ../../../pts/mod/_utils/01_rclone.pct.py 26
+async def rclone_mkdir(
     rclone_config_path: str,
     source: str,
     source_path: str,
@@ -219,12 +221,12 @@ def rclone_mkdir(
     """
     source_str = f"{source}:{source_path}" if source else source_path
     cmd = ["rclone", "mkdir", '--config', rclone_config_path, source_str]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise Exception(result.stderr)
+    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    if ret_code != 0:
+        raise Exception(stderr)
 
-# %% ../../../pts/mod/_utils/01_rclone.pct.py 30
-def rclone_lsjson(
+# %% ../../../pts/mod/_utils/01_rclone.pct.py 28
+async def rclone_lsjson(
     rclone_config_path: str,
     source: str,
     source_path: str,
@@ -246,13 +248,13 @@ def rclone_lsjson(
     for f in filter:
         cmd.append(f"--filter")
         cmd.append(f)
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
+    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    if ret_code != 0:
         return None
-    return json.loads(result.stdout)
+    return json.loads(stdout)
 
-# %% ../../../pts/mod/_utils/01_rclone.pct.py 33
-def rclone_path_exists(
+# %% ../../../pts/mod/_utils/01_rclone.pct.py 31
+async def rclone_path_exists(
     rclone_config_path: str,
     source: str,
     source_path: str,
@@ -265,7 +267,7 @@ def rclone_path_exists(
         return (True, True)
     
     parent_path = Path(source_path).parent if len(Path(source_path).parts) > 1 else ""
-    ls = rclone_lsjson(
+    ls = await rclone_lsjson(
         rclone_config_path,
         source,
         parent_path,
@@ -277,27 +279,27 @@ def rclone_path_exists(
     is_dir = ls[Path(source_path).name]["IsDir"] if exists else False
     return (exists, is_dir)
 
-# %% ../../../pts/mod/_utils/01_rclone.pct.py 37
-def rclone_purge(
+# %% ../../../pts/mod/_utils/01_rclone.pct.py 35
+async def rclone_purge(
     rclone_config_path: str,
     source: str,
     source_path: str,
 ) -> bool:
     source_str = f"{source}:{source_path}" if source else source_path
     cmd = ["rclone", "purge", '--config', rclone_config_path, source_str]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    return result.returncode == 0
+    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    return ret_code == 0
 
-# %% ../../../pts/mod/_utils/01_rclone.pct.py 40
-def rclone_cat(
+# %% ../../../pts/mod/_utils/01_rclone.pct.py 38
+async def rclone_cat(
     rclone_config_path: str,
     source: str,
     source_path: str,
 ) -> tuple[bool, str|None]:
     source_str = f"{source}:{source_path}" if source else source_path
     cmd = ["rclone", "cat", '--config', rclone_config_path, source_str]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode == 0:
-        return True, result.stdout
+    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    if ret_code == 0:
+        return True, stdout
     else:
         return False, None

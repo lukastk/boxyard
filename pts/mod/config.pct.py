@@ -40,9 +40,6 @@ class StorageConfig(const.StrictModel):
         self.store_path = self.store_path.expanduser()
         return self
     
-class SyncingConfig(const.StrictModel):
-    bisync_wait_time: int
-    
 class RepoGroupConfig(const.StrictModel):
     group_name: str
     is_virtual: bool = False
@@ -57,8 +54,12 @@ class Config(const.StrictModel):
     user_repos_path : Path
     user_repo_groups_path : Path
     storage_locations : dict[str, StorageConfig]
-    syncing : SyncingConfig
     repo_groups : list[RepoGroupConfig]
+
+    repo_subid_character_set: str
+    repo_subid_length: int
+
+    max_concurrent_rclone_ops: int
 
     @property
     def local_store_path(self) -> Path:
@@ -130,10 +131,10 @@ def _get_default_config_dict(config_path=None, data_path=None) -> Config:
                 store_path=(data_path / const.DEFAULT_FAKE_STORE_REL_PATH).as_posix(),
             )
         },
-        syncing = {
-            "bisync_wait_time": 10,
-        },
         repo_groups = [],
+        repo_subid_character_set = const.DEFAULT_REPO_SUBID_CHARACTER_SET,
+        repo_subid_length = const.DEFAULT_REPO_SUBID_LENGTH,
+        max_concurrent_rclone_ops = const.DEFAULT_MAX_CONCURRENT_RCLONE_OPS,
     )
     return config_dict
 

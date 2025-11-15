@@ -12,6 +12,7 @@ import nblite; from nbdev.showdoc import show_doc; nblite.nbl_export()
 #|export
 from pathlib import Path
 import inspect
+import string
 from pydantic import BaseModel, ConfigDict
 import repoyard as proj
 
@@ -38,6 +39,9 @@ REPO_DATA_REL_PATH = "data"
 
 DEFAULT_FAKE_STORE_REL_PATH = "fake_store"
 
+# %% [markdown]
+# Other constants
+
 # %%
 #|export
 DEFAULT_REPOYARD_EXCLUDE = inspect.cleandoc("""
@@ -45,6 +49,12 @@ DEFAULT_REPOYARD_EXCLUDE = inspect.cleandoc("""
 node_modules/
 __pycache__/
 """)
+
+REPO_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
+DEFAULT_REPO_SUBID_CHARACTER_SET = string.ascii_lowercase + string.ascii_uppercase + string.digits
+DEFAULT_REPO_SUBID_LENGTH = 5
+
+DEFAULT_MAX_CONCURRENT_RCLONE_OPS = 10
 
 # %% [markdown]
 # Environment variables

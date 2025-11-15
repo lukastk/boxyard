@@ -19,7 +19,7 @@ from repoyard import const
 
 # %%
 #|set_func_signature
-def include_repo(
+async def include_repo(
     config_path: Path,
     repo_full_name: str,
 ):
@@ -84,10 +84,10 @@ type = alias
 remote = {remote_rclone_path}
 """);
 
-sync_repo(config_path=config_path, repo_full_name=repo_full_name)
+await sync_repo(config_path=config_path, repo_full_name=repo_full_name)
 # Remove the repo from the local store to test the inclusion
 from repoyard.cmds import exclude_repo
-exclude_repo(config_path=config_path, repo_full_name=repo_full_name)
+await exclude_repo(config_path=config_path, repo_full_name=repo_full_name)
 
 # %% [markdown]
 # Check if repo is already included
@@ -115,7 +115,7 @@ from repoyard._models import RepoPart
 from repoyard._utils.sync_helper import sync_helper, SyncSetting, SyncDirection
 
 # First force sync the data
-sync_repo(
+await sync_repo(
     config_path=config_path,
     repo_full_name=repo_full_name,
     sync_direction=SyncDirection.PULL,
@@ -124,7 +124,7 @@ sync_repo(
 )
 
 # Then sync the rest
-sync_repo(
+await sync_repo(
     config_path=config_path,
     repo_full_name=repo_full_name,
     sync_direction=None,

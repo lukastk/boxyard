@@ -14,10 +14,13 @@ import repoyard._utils as this_module
 import subprocess
 import shlex
 import json
+import asyncio
 from enum import Enum
 from repoyard import const
-import repoyard.config
 from pathlib import Path
+from typing import Any, Coroutine
+
+import repoyard.config
 
 # %%
 #|hide
@@ -150,3 +153,67 @@ def check_last_time_modified(path: str | Path) -> float | None:
         mtimes = (p.stat().st_mtime for p in path.rglob("*") if p.is_file())
     max_mtime =  max(mtimes, default=None)
     return datetime.fromtimestamp(max_mtime, tz=timezone.utc) if max_mtime is not None else None
+
+
+# %%
+#|hide
+show_doc(this_module.run_cmd_async)
+
+
+# %%
+#|export
+async def run_cmd_async(cmd: list[str]) -> subprocess.Popen:
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await proc.communicate()
+    stdout = stdout.decode('utf-8')
+    stderr = stderr.decode('utf-8')
+    return proc.returncode, stdout, stderr
+
+
+# %%
+await run_cmd_async(['echo', 'hello', 'world'])
+
+# %%
+#|hide
+show_doc(this_module.async_throttler)
+
+
+# %%
+#|export
+async def async_throttler(
+    coros: list[Coroutine],
+    max_concurrency: int,
+    timeout: float | None = None,
+) -> list[Any]:
+    """
+    Throttle a list of coroutines to run concurrently.
+    """
+
+    sem = asyncio.Semaphore(max_concurrency)
+    
+    async def _task(coro: Coroutine) -> Any:
+        async with sem:
+            try:
+                if timeout is None:
+                    return await coro
+                else:
+                    return await asyncio.wait_for(coro, timeout)
+            except asyncio.TimeoutError as e:
+                return e
+            except Exception as e:
+                return e
+
+    tasks = [_task(coro) for coro in coros]
+    return await asyncio.gather(*tasks, return_exceptions=True)
+
+
+# %%
+async def test_task():
+    await asyncio.sleep(0.1)
+
+coros = [test_task() for _ in range(10)]
+res = await async_throttler(coros, max_concurrency=2)
