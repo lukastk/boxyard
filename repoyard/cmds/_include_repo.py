@@ -3,7 +3,6 @@
 # %% top_export
 from pathlib import Path
 
-from repoyard._utils.bisync_helper import SyncSetting
 from repoyard.config import get_config
 from repoyard import const
 

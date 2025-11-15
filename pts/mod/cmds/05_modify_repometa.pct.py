@@ -17,7 +17,6 @@ import os
 from typing import Literal, Any
 
 from repoyard._utils import get_repo_full_name_from_sub_path
-from repoyard._utils.bisync_helper import bisync_helper, SyncSetting, Sync_RequiresForce, Sync_Conflict, Sync_Error
 from repoyard.config import get_config, StorageType
 from repoyard import const
 
@@ -53,7 +52,6 @@ data_path = test_folder_path / ".repoyard"
 # %%
 # Args (1/2)
 config_path = test_folder_path / "repoyard_config" / "config.toml"
-sync_setting = SyncSetting.BISYNC
 modifications = {
     'groups' : ['group1', 'group2']
 }

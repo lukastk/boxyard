@@ -71,9 +71,9 @@ def sync_helper(
 # Set up test environment
 import tempfile
 tests_working_dir = const.pkg_path.parent / "tmp_tests"
-test_folder_path = Path(tempfile.mkdtemp(prefix="bisync_helper", dir="/tmp"))
+test_folder_path = Path(tempfile.mkdtemp(prefix="sync_helper", dir="/tmp"))
 test_folder_path.mkdir(parents=True, exist_ok=True)
-symlink_path = tests_working_dir / "_utils" / "bisync_helper"
+symlink_path = tests_working_dir / "_utils" / "sync_helper"
 symlink_path.parent.mkdir(parents=True, exist_ok=True)
 if symlink_path.exists() or symlink_path.is_symlink():
     symlink_path.unlink()
