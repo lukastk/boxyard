@@ -19,7 +19,7 @@ from repoyard import const
 
 # %%
 #|set_func_signature
-async def create_user_symlinks(
+def create_user_symlinks(
     config_path: Path,
     user_repos_path: Path|None = None,
     user_repo_groups_path: Path|None = None,

@@ -6,7 +6,7 @@ from pathlib import Path
 from repoyard.config import get_config
 from repoyard import const
 
-async def create_user_symlinks(
+def create_user_symlinks(
     config_path: Path,
     user_repos_path: Path|None = None,
     user_repo_groups_path: Path|None = None,
