@@ -13,7 +13,6 @@ import nblite; from nblite import show_doc; nblite.nbl_export()
 #|top_export
 from pathlib import Path
 
-from repoyard._utils.bisync_helper import SyncSetting
 from repoyard.config import get_config
 from repoyard import const
 
@@ -87,14 +86,14 @@ type = alias
 remote = {remote_rclone_path}
 """);
 
-sync_repo(config_path=config_path, repo_full_name=repo_full_name)
+sync_repo(config_path=config_path, repo_full_name=repo_full_name);
 
 # %% [markdown]
 # Ensure that repo exists
 
 # %%
 #|export
-from repoyard._repos import get_repoyard_meta
+from repoyard._models import get_repoyard_meta
 repoyard_meta = get_repoyard_meta(config)
 
 if repo_full_name not in repoyard_meta.by_full_name:
@@ -132,5 +131,10 @@ assert not (remote_rclone_path / repo_meta.get_remote_path(config)).exists()
 
 # %%
 #|export
-from repoyard._repos import refresh_repoyard_meta
+from repoyard._models import refresh_repoyard_meta
 refresh_repoyard_meta(config)
+
+# %%
+from repoyard._models import get_repoyard_meta
+repoyard_meta = get_repoyard_meta(config)
+assert len(repoyard_meta.by_full_name) == 0

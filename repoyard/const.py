@@ -2,8 +2,9 @@
 
 # %% auto 0
 __all__ = ['pkg_path', 'DEFAULT_CONFIG_PATH', 'DEFAULT_DATA_PATH', 'DEFAULT_USER_REPOS_PATH', 'DEFAULT_USER_REPO_GROUPS_PATH',
-           'REPO_METAFILE_REL_PATH', 'REPO_CONF_REL_PATH', 'REPO_DATA_REL_PATH', 'DEFAULT_FAKE_STORE_REL_PATH',
-           'DEFAULT_REPOYARD_EXCLUDE', 'ENV_VAR_REPOYARD_CONFIG_PATH', 'StrictModel']
+           'SYNC_RECORDS_REL_PATH', 'REMOTE_REPOS_REL_PATH', 'REPO_METAFILE_REL_PATH', 'REPO_CONF_REL_PATH',
+           'REPO_DATA_REL_PATH', 'DEFAULT_FAKE_STORE_REL_PATH', 'DEFAULT_REPOYARD_EXCLUDE',
+           'ENV_VAR_REPOYARD_CONFIG_PATH', 'StrictModel']
 
 # %% ../../pts/mod/const.pct.py 3
 from pathlib import Path
@@ -19,6 +20,9 @@ DEFAULT_CONFIG_PATH = Path("~") / ".config" / "repoyard" / "config.toml"
 DEFAULT_DATA_PATH = Path("~") / ".repoyard"
 DEFAULT_USER_REPOS_PATH = Path("~") / "repos"
 DEFAULT_USER_REPO_GROUPS_PATH = Path("~") / "repo_groups"
+
+SYNC_RECORDS_REL_PATH = "sync_records"
+REMOTE_REPOS_REL_PATH = "repos"
 
 REPO_METAFILE_REL_PATH = "repometa.toml"
 REPO_CONF_REL_PATH = "conf"

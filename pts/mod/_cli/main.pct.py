@@ -21,7 +21,8 @@ from pathlib import Path
 import repoyard as proj
 from repoyard import const
 from repoyard.config import get_config
-from repoyard._utils.bisync_helper import SyncSetting
+from repoyard._utils.sync_helper import SyncSetting, SyncDirection
+from repoyard._models import RepoPart
 from repoyard._cli.app import app, app_state
 
 
@@ -57,7 +58,7 @@ def _get_full_repo_name(
         raise typer.Exit("Cannot provide more than one of `repo-name`, `repo-full-name` or `repo-id`.")
     
     if repo_id is not None or repo_name is not None:
-        from repoyard._repos import get_repoyard_meta
+        from repoyard._models import get_repoyard_meta
         config = get_config(app_state['config_path'])
         repoyard_meta = get_repoyard_meta(config)
         
@@ -106,6 +107,7 @@ def cli_init(
     init_repoyard(
         config_path=config_path,
         data_path=data_path,
+        verbose=True,
     )
 
 
@@ -119,6 +121,7 @@ def cli_new(
     storage_location: str|None = None,
     repo_name: str|None = Option(None, "--repo", "-r", help="The full name of the repository, the id or the path of the repo."),
     from_path: Path|None = Option(None, "--from", "-f", help="Path to a local directory to move into repoyard as a new repository."),
+    copy_from_path: bool = Option(False, "--copy", "-c", help="Copy the contents of the from_path into the new repository."),
     creator_hostname: str|None = Option(None, "--creator-hostname", "-c", help="Used to explicitly set the creator hostname of the new repository."),
     initialise_git: bool = Option(True, help="Initialise a git repository in the new repository."),
 ):
@@ -138,8 +141,10 @@ def cli_new(
         storage_location=storage_location,
         repo_name=repo_name,
         from_path=from_path,
+        copy_from_path=copy_from_path,
         creator_hostname=creator_hostname,
         initialise_git=initialise_git,
+        verbose=True,
     )
 
 
@@ -153,8 +158,10 @@ def cli_sync(
     repo_full_name: str|None = Option(None, "--repo", "-r", help="The full name of the repository, in the form '{ULID}__{REPO_NAME}'."),
     repo_id: str|None = Option(None, "--repo-id", "-i", help="The id of the repository to sync."),
     repo_name: str|None = Option(None, "--repo-name", "-n", help="The name of the repository to sync."),
-    sync_setting: SyncSetting = Option(SyncSetting.BISYNC, "--sync-setting", "-s", help="The sync setting to use."),
-    sync_force: bool = Option(False, "--force", "-f", help="Pass the --force flag to 'rclone bisync'."),
+    sync_direction: SyncDirection|None = Option(None, "--sync-direction", "-d", help="The direction of the sync. If not provided, the appropriate direction will be automatically determined based on the sync status. This mode is only available for the 'CAREFUL' sync setting."),
+    sync_setting: SyncSetting = Option(SyncSetting.CAREFUL, "--sync-setting", "-s", help="The sync setting to use."),
+    sync_choices: list[RepoPart] = Option(None, "--sync-choices", "-c", help="The parts of the repository to sync. If not provided, all parts will be synced. By default, all parts are synced."),
+    show_rclone_progress: bool = Option(False, "--progress", "-p", help="Show the progress of the sync in rclone."),
 ):
     """
     Sync a repository.
@@ -172,6 +179,8 @@ def cli_sync(
         repo_full_name=repo_full_name,
         sync_setting=sync_setting,
         force=sync_force,
+        verbose=True,
+        show_rclone_progress=show_rclone_progress,
     )
 
 
@@ -185,8 +194,8 @@ def cli_sync_meta(
     repo_full_names: list[str]|None = Option(None, "--repo", "-r", help="The full name of the repository, in the form '{ULID}__{REPO_NAME}'."),
     storage_locations: list[str]|None = Option(None, "--storage-location", "-s", help="The storage location to sync the metadata from."),
     sync_all: bool = Option(False, "--all", "-a", help="Sync all repositories."),
-    sync_setting: SyncSetting = Option(SyncSetting.BISYNC, "--sync-setting", help="The sync setting to use."),
-    sync_force: bool = Option(False, "--force", "-f", help="Pass the --force flag to 'rclone bisync'."),
+    sync_setting: SyncSetting = Option(SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."),
+    sync_direction: SyncDirection|None = Option(None, "--sync-direction", "-d", help="The direction of the sync. If not provided, the appropriate direction will be automatically determined based on the sync status. This mode is only available for the 'CAREFUL' sync setting."),
 ):
     """
     Syncs the metadata of a repository.
@@ -210,7 +219,8 @@ def cli_sync_meta(
         repo_full_names=repo_full_names,
         storage_locations=storage_locations,
         sync_setting=sync_setting,
-        force=sync_force,
+        sync_direction=sync_direction,
+        verbose=True,
     )
 
 
@@ -226,14 +236,13 @@ def cli_add_to_group(
     repo_name: str|None = Option(None, "--repo-name", "-n", help="The name of the repository to sync."),
     group_name: str = Option(..., "--group-name", "-g", help="The name of the group to add the repository to."),
     sync_after: bool = Option(True, "--sync-after", "-s", help="Sync the repository after adding it to the group."),
-    sync_setting: SyncSetting = Option(SyncSetting.BISYNC, "--sync-setting", help="The sync setting to use."),
-    sync_force: bool = Option(False, "--force", "-f", help="Pass the --force flag to 'rclone bisync'."),
+    sync_setting: SyncSetting = Option(SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."),
 ):
     """
     Modify the metadata of a repository.
     """
     from repoyard.cmds import modify_repometa
-    from repoyard._repos import get_repoyard_meta
+    from repoyard._models import get_repoyard_meta
     
     repo_full_name = _get_full_repo_name(
         repo_name=repo_name,
@@ -262,7 +271,8 @@ def cli_add_to_group(
                 config_path=app_state['config_path'],
                 repo_full_names=[repo_full_name],
                 sync_setting=sync_setting,
-                force=sync_force,
+                sync_direction=SyncDirection.PUSH,
+                verbose=True,
             )
 
 
@@ -278,14 +288,13 @@ def cli_remove_from_group(
     repo_name: str|None = Option(None, "--repo-name", "-n", help="The name of the repository to sync."),
     group_name: str = Option(..., "--group-name", "-g", help="The name of the group to add the repository to."),
     sync_after: bool = Option(True, "--sync-after", "-s", help="Sync the repository after adding it to the group."),
-    sync_setting: SyncSetting = Option(SyncSetting.BISYNC, "--sync-setting", help="The sync setting to use."),
-    sync_force: bool = Option(False, "--force", "-f", help="Pass the --force flag to 'rclone bisync'."),
+    sync_setting: SyncSetting = Option(SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."),
 ):
     """
     Modify the metadata of a repository.
     """
     from repoyard.cmds import modify_repometa
-    from repoyard._repos import get_repoyard_meta
+    from repoyard._models import get_repoyard_meta
     
     repo_full_name = _get_full_repo_name(
         repo_name=repo_name,
@@ -314,7 +323,8 @@ def cli_remove_from_group(
                 config_path=app_state['config_path'],
                 repo_full_names=[repo_full_name],
                 sync_setting=sync_setting,
-                force=sync_force,
+                sync_direction=SyncDirection.PUSH,
+                verbose=True,
             )
 
 
@@ -328,13 +338,12 @@ def cli_include(
     repo_full_name: str|None = Option(None, "--repo", "-r", help="The full name of the repository, in the form '{ULID}__{REPO_NAME}'."),
     repo_id: str|None = Option(None, "--repo-id", "-i", help="The id of the repository to sync."),
     repo_name: str|None = Option(None, "--repo-name", "-n", help="The name of the repository to sync."),
-    sync_force: bool = Option(False, "--force", "-f", help="Pass the --force flag to 'rclone bisync'."),
 ):
     """
     Include a repository in the local store.
     """
     from repoyard.cmds import include_repo
-    from repoyard._repos import get_repoyard_meta
+    from repoyard._models import get_repoyard_meta
     
     repo_full_name = _get_full_repo_name(
         repo_name=repo_name,
@@ -349,7 +358,6 @@ def cli_include(
     include_repo(
         config_path=app_state['config_path'],
         repo_full_name=repo_full_name,
-        sync_force=sync_force,
     )
 
 
@@ -363,14 +371,13 @@ def cli_exclude(
     repo_full_name: str|None = Option(None, "--repo", "-r", help="The full name of the repository, in the form '{ULID}__{REPO_NAME}'."),
     repo_id: str|None = Option(None, "--repo-id", "-i", help="The id of the repository to sync."),
     repo_name: str|None = Option(None, "--repo-name", "-n", help="The name of the repository to sync."),
-    sync_force: bool = Option(False, "--force", "-f", help="Pass the --force flag to 'rclone bisync'."),
     skip_sync: bool = Option(False, "--skip-sync", "-s", help="Skip the sync before excluding the repository."),
 ):
     """
     Exclude a repository from the local store.
     """
     from repoyard.cmds import exclude_repo
-    from repoyard._repos import get_repoyard_meta
+    from repoyard._models import get_repoyard_meta
     
     repo_full_name = _get_full_repo_name(
         repo_name=repo_name,
@@ -385,7 +392,6 @@ def cli_exclude(
     exclude_repo(
         config_path=app_state['config_path'],
         repo_full_name=repo_full_name,
-        sync_force=sync_force,
         skip_sync=skip_sync,
     )
 
@@ -405,7 +411,7 @@ def cli_delete(
     Delete a repository.
     """
     from repoyard.cmds import delete_repo
-    from repoyard._repos import get_repoyard_meta
+    from repoyard._models import get_repoyard_meta
     
     repo_full_name = _get_full_repo_name(
         repo_name=repo_name,

@@ -33,7 +33,7 @@ def get_repo_full_name_from_sub_path(
     """
     Get the full name of a synced repo from a path inside of the repo.
     """
-    sub_path = Path(sub_path).expanduser()
+    sub_path = Path(sub_path).expanduser().resolve() # Need to resolve to replace symlinks
     is_in_local_store_path = sub_path.is_relative_to(config.local_store_path)
     
     if not is_in_local_store_path:
@@ -132,3 +132,21 @@ def run_fzf(terms: list[str], disp_terms: list[str]|None=None):
             return term_index, sel_term
     except FileNotFoundError:
         raise RuntimeError("fzf is not installed or not found in PATH.")
+
+
+# %%
+#|hide
+show_doc(this_module.check_last_time_modified)
+
+
+# %%
+#|export
+def check_last_time_modified(path: str | Path) -> float | None:
+    from datetime import datetime, timezone
+    path = Path(path).expanduser().resolve()
+    if path.is_file():
+        mtimes = [path.stat().st_mtime]
+    else:
+        mtimes = (p.stat().st_mtime for p in path.rglob("*") if p.is_file())
+    max_mtime =  max(mtimes, default=None)
+    return datetime.fromtimestamp(max_mtime, tz=timezone.utc) if max_mtime is not None else None

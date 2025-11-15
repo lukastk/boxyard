@@ -25,8 +25,10 @@ def new_repo(
     storage_location: str|None = None,
     repo_name: str|None = None,
     from_path: Path|None = None,
+    copy_from_path: bool = False,
     creator_hostname: str|None = None,
     initialise_git: bool = True,
+    verbose: bool = False,
 ):
     """
     Create a new repoyard repository.
@@ -50,9 +52,11 @@ config_path = test_folder_path / "repoyard_config" / "config.toml"
 storage_location = None
 repo_name = "test_repo"
 from_path = None
+copy_from_path = False
 creator_hostname = None
 add_repoyard_exclude = True
 initialise_git = True
+verbose = True
 
 # %%
 # Run init
@@ -85,6 +89,9 @@ if from_path is not None:
 if from_path is not None and repo_name is None:
     repo_name = from_path.name
     
+if from_path is None and copy_from_path:
+    raise ValueError("`from_path` must be provided if `copy_from_path` is True.")
+
 from repoyard._utils import get_hostname
 if creator_hostname is None:
     creator_hostname = get_hostname()
@@ -94,7 +101,7 @@ if creator_hostname is None:
 
 # %%
 #|export
-from repoyard._repos import RepoMeta
+from repoyard._models import RepoMeta
 repo_meta = RepoMeta(
     name=repo_name,
     storage_location=storage_location,
@@ -115,7 +122,11 @@ repo_path.mkdir(parents=True, exist_ok=True)
 repo_conf_path.mkdir(parents=True, exist_ok=True)
 
 if from_path is not None:
-    from_path.rename(repo_data_path)
+    if copy_from_path:
+        import shutil
+        shutil.copytree(from_path, repo_data_path) #TESTREF: test_new_repo_copy_from_path
+    else:
+        from_path.rename(repo_data_path)
 else:
     repo_data_path.mkdir(parents=True, exist_ok=True)
 
@@ -132,14 +143,23 @@ else:
 # %%
 #|export
 if initialise_git and not (repo_data_path / '.git').exists():
-    subprocess.run(["git", "init"], check=True, cwd=repo_data_path)
+    if verbose: print("Initialising git repository")
+    res = subprocess.run(
+        ["git", "init"], 
+        check=True, 
+        cwd=repo_data_path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    if res.returncode != 0:
+        if verbose: print("Warning: Failed to initialise git repository")
 
 # %% [markdown]
 # Refresh the repoyard meta file
 
 # %%
 #|export
-from repoyard._repos import refresh_repoyard_meta
+from repoyard._models import refresh_repoyard_meta
 refresh_repoyard_meta(config)
 
 # %% [markdown]

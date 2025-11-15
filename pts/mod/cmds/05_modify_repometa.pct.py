@@ -1,8 +1,8 @@
 # %% [markdown]
-# # _include_repo
+# # _modify_repometa
 
 # %%
-#|default_exp cmds._include_repo
+#|default_exp cmds._modify_repometa
 #|export_as_func true
 
 # %%
@@ -12,18 +12,21 @@ import nblite; from nblite import show_doc; nblite.nbl_export()
 # %%
 #|top_export
 from pathlib import Path
+import subprocess
+import os
+from typing import Literal, Any
 
-from repoyard._utils.bisync_helper import SyncSetting
-from repoyard.config import get_config
+from repoyard._utils import get_repo_full_name_from_sub_path
+from repoyard.config import get_config, StorageType
 from repoyard import const
 
 
 # %%
 #|set_func_signature
-def include_repo(
+def modify_repometa(
     config_path: Path,
     repo_full_name: str,
-    sync_force: bool = False,
+    modifications: dict[str, Any] = {},
 ):
     """
     """
@@ -37,9 +40,9 @@ def include_repo(
 # Set up test environment
 import tempfile
 tests_working_dir = const.pkg_path.parent / "tmp_tests"
-test_folder_path = Path(tempfile.mkdtemp(prefix="include_repo", dir="/tmp"))
+test_folder_path = Path(tempfile.mkdtemp(prefix="modify_repometa", dir="/tmp"))
 test_folder_path.mkdir(parents=True, exist_ok=True)
-symlink_path = tests_working_dir / "_cmds" / "include_repo"
+symlink_path = tests_working_dir / "_cmds" / "modify_repometa"
 symlink_path.parent.mkdir(parents=True, exist_ok=True)
 if symlink_path.exists() or symlink_path.is_symlink():
     symlink_path.unlink()
@@ -49,7 +52,9 @@ data_path = test_folder_path / ".repoyard"
 # %%
 # Args (1/2)
 config_path = test_folder_path / "repoyard_config" / "config.toml"
-sync_force = False
+modifications = {
+    'groups' : ['group1', 'group2']
+}
 
 # %%
 # Run init
@@ -87,40 +92,51 @@ type = alias
 remote = {remote_rclone_path}
 """);
 
+# Sync to remote
 sync_repo(config_path=config_path, repo_full_name=repo_full_name)
-# Remove the repo from the local store to test the inclusion
-# !rm -rf {config.local_store_path / "my_remote" / repo_full_name}
 
 # %% [markdown]
-# Check if repo is already included
+# Find the repo meta
 
 # %%
 #|export
-from repoyard._repos import get_repoyard_meta
+from repoyard._models import get_repoyard_meta, RepoMeta
 repoyard_meta = get_repoyard_meta(config)
 
 if repo_full_name not in repoyard_meta.by_full_name:
-    raise ValueError(f"Repo '{repo_full_name}' does not exist.")
+    raise ValueError(f"Repo '{repo_full_name}' not found.")
 
 repo_meta = repoyard_meta.by_full_name[repo_full_name]
 
-if repo_meta.check_included(config):
-    raise ValueError(f"Repo '{repo_full_name}' is already included.")
-
 # %% [markdown]
-# Include it
+# Modify repo meta
 
 # %%
 #|export
-from repoyard.cmds import sync_repo
+modified_repo_meta = RepoMeta(**{
+    **repo_meta.model_dump(),
+    **modifications
+})
 
-sync_repo(
-    config_path=config_path,
-    repo_full_name=repo_full_name,
-    sync_setting=SyncSetting.REPLACE_LOCAL,
-    force=sync_force,
-)
+modified_repo_meta.save(config)
 
 # %%
-# Should now be included
-assert repo_meta.check_included(config)
+(config.local_store_path / "my_remote" / repo_full_name / "repometa.toml").read_text()
+
+# %% [markdown]
+# Refresh the repoyard meta file
+
+# %%
+#|export
+from repoyard._models import refresh_repoyard_meta
+refresh_repoyard_meta(config)
+
+# %% [markdown]
+# Check that the repometa has successfully updated on remote after syncing
+
+# %%
+import toml
+from repoyard.cmds import sync_repometas
+sync_repometas(config_path=config_path)
+repometa_dump = toml.load(remote_rclone_path / "repoyard" / const.REMOTE_REPOS_REL_PATH / repo_full_name / const.REPO_METAFILE_REL_PATH)
+assert repometa_dump['groups'] == ['group1', 'group2']

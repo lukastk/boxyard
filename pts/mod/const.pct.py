@@ -29,6 +29,9 @@ DEFAULT_DATA_PATH = Path("~") / ".repoyard"
 DEFAULT_USER_REPOS_PATH = Path("~") / "repos"
 DEFAULT_USER_REPO_GROUPS_PATH = Path("~") / "repo_groups"
 
+SYNC_RECORDS_REL_PATH = "sync_records"
+REMOTE_REPOS_REL_PATH = "repos"
+
 REPO_METAFILE_REL_PATH = "repometa.toml"
 REPO_CONF_REL_PATH = "conf"
 REPO_DATA_REL_PATH = "data"

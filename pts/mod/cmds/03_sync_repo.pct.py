@@ -12,8 +12,10 @@ import nblite; from nblite import show_doc; nblite.nbl_export()
 # %%
 #|top_export
 from pathlib import Path
+from enum import Enum
 
-from repoyard._utils.bisync_helper import bisync_helper, SyncSetting
+from repoyard._utils.sync_helper import sync_helper, SyncSetting, SyncDirection
+from repoyard._models import SyncStatus, RepoPart
 from repoyard.config import get_config, StorageType
 from repoyard import const
 
@@ -23,17 +25,24 @@ from repoyard import const
 def sync_repo(
     config_path: Path,
     repo_full_name: str,
-    sync_setting: SyncSetting = SyncSetting.BISYNC,
-    force: bool = False,
-):
+    sync_direction: SyncDirection|None = None,
+    sync_setting: SyncSetting = SyncSetting.CAREFUL,
+    sync_choices: list[RepoPart] = [RepoPart.DATA, RepoPart.META, RepoPart.CONF],
+    verbose: bool = False,
+    show_rclone_progress: bool = False,
+) -> dict[RepoPart, SyncStatus]:
     """
     Syncs a repo with its remote.
     
     Args:
         config_path: Path to the repoyard config file.
-        repo_full_name: Name of the repo to sync.
-        sync_setting: The sync setting to use.
-        force: If True, the sync will be forced. Used in the case 
+        repo_full_name: Full name of the repository to sync.
+        sync_direction: Direction of sync.
+        sync_setting: SyncSetting option (SAFE, CAREFUL, FORCE).
+        sync_choices: List of RepoPart specifying what to sync (data, meta, conf).
+        force: Force syncing, possibly overwriting changes.
+        verbose: Print verbose output during sync.
+        show_rclone_progress: Show rclone progress during sync.
     """
     ...
 
@@ -57,8 +66,11 @@ data_path = test_folder_path / ".repoyard"
 # %%
 # Args (1/2)
 config_path = test_folder_path / "repoyard_config" / "config.toml"
-sync_setting = SyncSetting.BISYNC
-force = False
+sync_direction = None
+sync_setting = SyncSetting.CAREFUL
+sync_choices = [RepoPart.DATA, RepoPart.META, RepoPart.CONF]
+verbose = True
+show_rclone_progress = False
 
 # %%
 # Run init
@@ -76,11 +88,8 @@ config_dump['storage_locations']['my_remote'] = {
 }
 config_path.write_text(toml.dumps(config_dump))
 
-new_repo(config_path=config_path, repo_name="test_repo", storage_location="my_remote")
-
-# %%
 # Args (2/2)
-repo_full_name = list((data_path / "local_store" / "my_remote").glob("*"))[0].name
+repo_full_name = new_repo(config_path=config_path, repo_name="test_repo", storage_location="my_remote")
 
 # %%
 # Put an excluded file into the repo data folder to make sure it is not synced
@@ -110,7 +119,7 @@ remote = {remote_rclone_path}
 
 # %%
 #|export
-from repoyard._repos import get_repoyard_meta
+from repoyard._models import get_repoyard_meta
 repoyard_meta = get_repoyard_meta(config)
 
 if repo_full_name not in repoyard_meta.by_full_name:
@@ -132,15 +141,23 @@ if repo_meta.get_storage_location_config(config).storage_type == StorageType.LOC
 
 # %%
 #|export
-bisync_helper(
-    rclone_config_path=config.rclone_config_path,
-    sync_setting=sync_setting,
-    local_path=repo_meta.get_local_path(config),
-    remote=repo_meta.storage_location,
-    remote_path=repo_meta.get_remote_path(config),
-    force=force,
-    include=[f"/{const.REPO_METAFILE_REL_PATH}"]
-)
+sync_results = {}
+
+sync_part = RepoPart.META
+if sync_part in sync_choices:
+    if verbose: print("Syncing", sync_part.value)
+    sync_results[RepoPart.META] = sync_helper(
+        rclone_config_path=config.rclone_config_path,
+        sync_direction=sync_direction,
+        sync_setting=sync_setting,
+        local_path=repo_meta.get_local_repometa_path(config),
+        local_sync_record_path=repo_meta.get_local_sync_record_path(config, sync_part),
+        remote=repo_meta.storage_location,
+        remote_path=repo_meta.get_remote_repometa_path(config),
+        remote_sync_record_path=repo_meta.get_remote_sync_record_path(config, sync_part),
+        verbose=verbose,
+        show_rclone_progress=show_rclone_progress,
+    )
 
 # %%
 # Check that the synced worked
@@ -157,14 +174,21 @@ assert "repometa.toml" in {f["Name"] for f in _lsjson}
 
 # %%
 #|export
-bisync_helper(
-    rclone_config_path=config.rclone_config_path,
-    sync_setting=sync_setting,
-    local_path=repo_meta.get_local_repoconf_path(config),
-    remote=repo_meta.storage_location,
-    remote_path=repo_meta.get_remote_repoconf_path(config),
-    force=force,
-)
+sync_part = RepoPart.CONF
+if sync_part in sync_choices:
+    if verbose: print("Syncing", sync_part.value)
+    sync_results[sync_part] = sync_helper(
+        rclone_config_path=config.rclone_config_path,
+        sync_direction=sync_direction,
+        sync_setting=sync_setting,
+        local_path=repo_meta.get_local_repoconf_path(config),
+        local_sync_record_path=repo_meta.get_local_sync_record_path(config, sync_part),
+        remote=repo_meta.storage_location,
+        remote_path=repo_meta.get_remote_repoconf_path(config),
+        remote_sync_record_path=repo_meta.get_remote_sync_record_path(config, sync_part),
+        verbose=verbose,
+        show_rclone_progress=show_rclone_progress,
+    )
 
 # %%
 # Check that the synced worked
@@ -194,25 +218,33 @@ _repoyard_filters_path = _repoyard_filters_path if _repoyard_filters_path.exists
 
 # %%
 #|export
-bisync_helper(
-    rclone_config_path=config.rclone_config_path,
-    sync_setting=sync_setting,
-    local_path=repo_meta.get_local_repodata_path(config),
-    remote=repo_meta.storage_location,
-    remote_path=repo_meta.get_remote_repodata_path(config),
-    force=force,
-    include_path=_repoyard_include_path,
-    exclude_path=_repoyard_exclude_path,
-    filters_path=_repoyard_filters_path,
-)
+sync_part = RepoPart.DATA
+if sync_part in sync_choices:
+    if verbose: print("Syncing", sync_part.value)
+    sync_results[sync_part] = sync_helper(
+        rclone_config_path=config.rclone_config_path,
+        sync_direction=sync_direction,
+        sync_setting=sync_setting,
+        local_path=repo_meta.get_local_repodata_path(config),
+        local_sync_record_path=repo_meta.get_local_sync_record_path(config, sync_part),
+        remote=repo_meta.storage_location,
+        remote_path=repo_meta.get_remote_repodata_path(config),
+        remote_sync_record_path=repo_meta.get_remote_sync_record_path(config, sync_part),
+        include_path=_repoyard_include_path,
+        exclude_path=_repoyard_exclude_path,
+        filters_path=_repoyard_filters_path,
+        verbose=verbose,
+        show_rclone_progress=show_rclone_progress,
+    )
 
 # %% [markdown]
 # Refresh the repoyard meta file
 
 # %%
 #|export
-from repoyard._repos import refresh_repoyard_meta
-refresh_repoyard_meta(config)
+if RepoPart.META in sync_choices:
+    from repoyard._models import refresh_repoyard_meta
+    refresh_repoyard_meta(config)
 
 # %%
 # Check that the synced worked
@@ -224,3 +256,7 @@ _lsjson = rclone_lsjson(
 )
 assert ".git" in {f["Name"] for f in _lsjson}
 assert ".venv" not in {f["Name"] for f in _lsjson}
+
+# %%
+#|func_return
+sync_results;

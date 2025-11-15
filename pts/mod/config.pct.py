@@ -59,11 +59,7 @@ class Config(const.StrictModel):
     storage_locations : dict[str, StorageConfig]
     syncing : SyncingConfig
     repo_groups : list[RepoGroupConfig]
-    
-    @property
-    def log_path(self) -> Path:
-        return self.repoyard_data_path / "repoyard.log"
-    
+
     @property
     def local_store_path(self) -> Path:
         return self.repoyard_data_path / "local_store"

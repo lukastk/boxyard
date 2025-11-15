@@ -3,14 +3,13 @@
 # %% top_export
 from pathlib import Path
 
-from repoyard._utils.bisync_helper import SyncSetting
+from repoyard._utils.sync_helper import SyncSetting
 from repoyard.config import get_config
 from repoyard import const
 
 def exclude_repo(
     config_path: Path,
     repo_full_name: str,
-    sync_force: bool = False,
     skip_sync: bool = False,
 ):
     """
@@ -25,7 +24,7 @@ def exclude_repo(
     config = get_config(config_path)
     
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/06_exclude_repo.pct.py 14
-    from .._repos import get_repoyard_meta
+    from .._models import get_repoyard_meta
     repoyard_meta = get_repoyard_meta(config)
     
     if repo_full_name not in repoyard_meta.by_full_name:
@@ -43,10 +42,11 @@ def exclude_repo(
         sync_repo(
             config_path=config_path,
             repo_full_name=repo_full_name,
-            sync_setting=SyncSetting.BISYNC,
-            force=sync_force,
+            sync_setting=SyncSetting.CAREFUL,
         )
     
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/06_exclude_repo.pct.py 18
     import shutil
+    from .._models import RepoPart
     shutil.rmtree(repo_meta.get_local_repodata_path(config))
+    repo_meta.get_local_sync_record_path(config, RepoPart.DATA).unlink()
