@@ -1,8 +1,8 @@
 # %% [markdown]
-# # _include_repo
+# # _delete_repo
 
 # %%
-#|default_exp cmds._include_repo
+#|default_exp cmds._delete_repo
 #|export_as_func true
 
 # %%
@@ -20,10 +20,9 @@ from repoyard import const
 
 # %%
 #|set_func_signature
-def include_repo(
+def delete_repo(
     config_path: Path,
     repo_full_name: str,
-    sync_force: bool = False,
 ):
     """
     """
@@ -37,9 +36,9 @@ def include_repo(
 # Set up test environment
 import tempfile
 tests_working_dir = const.pkg_path.parent / "tmp_tests"
-test_folder_path = Path(tempfile.mkdtemp(prefix="include_repo", dir="/tmp"))
+test_folder_path = Path(tempfile.mkdtemp(prefix="delete_repo", dir="/tmp"))
 test_folder_path.mkdir(parents=True, exist_ok=True)
-symlink_path = tests_working_dir / "_cmds" / "include_repo"
+symlink_path = tests_working_dir / "_cmds" / "delete_repo"
 symlink_path.parent.mkdir(parents=True, exist_ok=True)
 if symlink_path.exists() or symlink_path.is_symlink():
     symlink_path.unlink()
@@ -50,6 +49,7 @@ data_path = test_folder_path / ".repoyard"
 # Args (1/2)
 config_path = test_folder_path / "repoyard_config" / "config.toml"
 sync_force = False
+skip_sync = True
 
 # %%
 # Run init
@@ -87,16 +87,14 @@ type = alias
 remote = {remote_rclone_path}
 """);
 
-sync_repo(config_path=config_path, repo_full_name=repo_full_name)
-# Remove the repo from the local store to test the inclusion
-# !rm -rf {config.local_store_path / "my_remote" / repo_full_name}
+sync_repo(config_path=config_path, repo_full_name=repo_full_name);
 
 # %% [markdown]
-# Check if repo is already included
+# Ensure that repo exists
 
 # %%
 #|export
-from repoyard._repos import get_repoyard_meta
+from repoyard._models import get_repoyard_meta
 repoyard_meta = get_repoyard_meta(config)
 
 if repo_full_name not in repoyard_meta.by_full_name:
@@ -104,23 +102,40 @@ if repo_full_name not in repoyard_meta.by_full_name:
 
 repo_meta = repoyard_meta.by_full_name[repo_full_name]
 
-if repo_meta.check_included(config):
-    raise ValueError(f"Repo '{repo_full_name}' is already included.")
-
-# %% [markdown]
-# Include it
+# %%
+assert repo_meta.get_local_path(config).exists()
+assert (remote_rclone_path / repo_meta.get_remote_path(config)).exists()
 
 # %%
 #|export
-from repoyard.cmds import sync_repo
 
-sync_repo(
-    config_path=config_path,
-    repo_full_name=repo_full_name,
-    sync_setting=SyncSetting.REPLACE_LOCAL,
-    force=sync_force,
-)
+# Delete local repo
+import shutil
+shutil.rmtree(repo_meta.get_local_path(config))
+
+# Delete remote repo
+from repoyard._utils import rclone_purge
+from repoyard.config import StorageType
+if repo_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL:
+    rclone_purge(
+        config.rclone_config_path,
+        source=repo_meta.storage_location,
+        source_path=repo_meta.get_remote_path(config),
+    )
 
 # %%
-# Should now be included
-assert repo_meta.check_included(config)
+assert not repo_meta.get_local_path(config).exists()
+assert not (remote_rclone_path / repo_meta.get_remote_path(config)).exists()
+
+# %% [markdown]
+# Refresh the repoyard meta file
+
+# %%
+#|export
+from repoyard._models import refresh_repoyard_meta
+refresh_repoyard_meta(config)
+
+# %%
+from repoyard._models import get_repoyard_meta
+repoyard_meta = get_repoyard_meta(config)
+assert len(repoyard_meta.by_full_name) == 0

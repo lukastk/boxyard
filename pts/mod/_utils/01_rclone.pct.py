@@ -69,6 +69,7 @@ def _rclone_cmd_helper(
     exclude_file: str|None,
     filters_file: str|None,
     dry_run: bool,
+    progress: bool,
 ) -> list[str]:
     source_spec = f"{source}:{source_path}" if source else source_path
     dest_spec = f"{dest}:{dest_path}" if dest else dest_path
@@ -93,6 +94,8 @@ def _rclone_cmd_helper(
     if filters_file is not None:
         cmd.append("--filters-file")
         cmd.append(filters_file)
+    if progress:
+        cmd.append("--progress")
     return cmd
 
 
@@ -139,17 +142,18 @@ def rclone_copy(
     source_path: str,   
     dest: str,
     dest_path: str,
-    include: list[str],
-    exclude: list[str],
-    filter: list[str],
-    include_file: str|None,
-    exclude_file: str|None,
-    filters_file: str|None,
-    dry_run: bool,
+    include: list[str]=[],
+    exclude: list[str]=[],
+    filter: list[str]=[],
+    include_file: str|None=None,
+    exclude_file: str|None=None,
+    filters_file: str|None=None,
+    dry_run: bool=False,
+    progress: bool=False,
     return_command: bool=False,
-    verbose=True,
+    verbose=False,
 ) -> bool:
-    cmd = _rclone_cmd_helper("copy", rclone_config_path, source, source_path, dest, dest_path, include, exclude, filter, include_file, exclude_file, filters_file, dry_run)
+    cmd = _rclone_cmd_helper("copy", rclone_config_path, source, source_path, dest, dest_path, include, exclude, filter, include_file, exclude_file, filters_file, dry_run, progress)
     if not return_command:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if verbose:
@@ -185,6 +189,57 @@ assert "file1.txt" in ls
 assert "file2.txt" in ls
 
 # %%
+
+# %%
+#|hide
+show_doc(this_module.rclone_copyto)
+
+
+# %%
+#|export
+def rclone_copyto(
+    rclone_config_path: str,
+    source: str,
+    source_path: str,   
+    dest: str,
+    dest_path: str,
+    dry_run: bool=False,
+    progress: bool=False,
+    return_command: bool=False,
+    verbose=False,
+) -> bool:
+    source_spec = f"{source}:{source_path}" if source else source_path
+    dest_spec = f"{dest}:{dest_path}" if dest else dest_path
+    cmd = ["rclone", "copyto", '--config', rclone_config_path, source_spec, dest_spec]
+    if progress:  cmd.append("--progress")
+    if not return_command:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if verbose:
+            print(result.stdout)
+            print(result.stderr)
+        return result.returncode == 0, result.stdout, result.stderr
+    else:
+        return shlex.join(cmd)
+
+
+# %%
+_path = setup_test_folder('copyto')
+
+res = rclone_copyto(
+    _path / "rclone.conf",
+    source="",
+    source_path=_path / "my_local" / "file1.txt",
+    dest="my_remote",
+    dest_path="file1_copied.txt",
+    dry_run=False,
+    verbose=True,
+)
+
+assert res
+ls = [f.name for f in (_path / "my_remote").iterdir()]
+assert "file1_copied.txt" in ls
+
+# %%
 #|hide
 show_doc(this_module.rclone_sync)
 
@@ -197,17 +252,18 @@ def rclone_sync(
     source_path: str,   
     dest: str,
     dest_path: str,
-    include: list[str],
-    exclude: list[str],
-    filter: list[str],
-    include_file: str|None,
-    exclude_file: str|None,
-    filters_file: str|None,
-    dry_run: bool,
+    include: list[str]=[],
+    exclude: list[str]=[],
+    filter: list[str]=[],
+    include_file: str|None=None,
+    exclude_file: str|None=None,
+    filters_file: str|None=None,
+    dry_run: bool=False,
+    progress: bool=False,
     return_command: bool=False,
-    verbose=True,
+    verbose=False,
 ) -> bool:
-    cmd = _rclone_cmd_helper("sync", rclone_config_path, source, source_path, dest, dest_path, include, exclude, filter, include_file, exclude_file, filters_file, dry_run)
+    cmd = _rclone_cmd_helper("sync", rclone_config_path, source, source_path, dest, dest_path, include, exclude, filter, include_file, exclude_file, filters_file, dry_run, progress)
     if not return_command:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if verbose:
@@ -262,19 +318,20 @@ def rclone_bisync(
     source_path: str,   
     dest: str,
     dest_path: str,
-    include: list[str],
-    exclude: list[str],
-    filter: list[str],
-    include_file: str|None,
-    exclude_file: str|None,
-    filters_file: str|None,
-    dry_run: bool,
     resync: bool,
     force: bool,
+    include: list[str]=[],
+    exclude: list[str]=[],
+    filter: list[str]=[],
+    include_file: str|None=None,
+    exclude_file: str|None=None,
+    filters_file: str|None=None,
+    dry_run: bool=False,
+    progress: bool=False,
     return_command: bool=False,
     verbose: bool=False,
 ) -> BisyncResult:
-    cmd = _rclone_cmd_helper("bisync", rclone_config_path, source, source_path, dest, dest_path, include, exclude, filter, include_file, exclude_file, filters_file, dry_run)
+    cmd = _rclone_cmd_helper("bisync", rclone_config_path, source, source_path, dest, dest_path, include, exclude, filter, include_file, exclude_file, filters_file, dry_run, progress)
     if resync: cmd.append("--resync")
     if force: cmd.append("--force")
     if not return_command:
@@ -400,9 +457,24 @@ def rclone_lsjson(
     rclone_config_path: str,
     source: str,
     source_path: str,
+    dirs_only: bool=False,
+    files_only: bool=False,
+    recursive: bool=False,
+    max_depth: int|None=None,
+    filter: list[str]=[],
 ) -> dict|None:
     source_str = f"{source}:{source_path}" if source else source_path
     cmd = ["rclone", "lsjson", '--config', rclone_config_path, source_str]
+    if dirs_only: cmd.append("--dirs-only")
+    if files_only: cmd.append("--files-only")
+    if recursive: cmd.append("--recursive")
+    if max_depth is not None:
+        cmd.append(f"--max-depth")
+        cmd.append(str(max_depth))
+    
+    for f in filter:
+        cmd.append(f"--filter")
+        cmd.append(f)
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         return None
@@ -411,6 +483,9 @@ def rclone_lsjson(
 
 # %%
 _path = setup_test_folder('lsjson')
+(_path / 'my_remote' / 'subfolder').mkdir(parents=True, exist_ok=True)
+(_path / 'my_remote' / 'subfolder' / 'file1.txt').write_text("Hello, world!")
+(_path / 'my_remote' / 'subfolder' / 'file2.txt').write_text("Goodbye, world!")
 
 res, stdout, stderr = rclone_bisync(
     _path / "rclone.conf",
@@ -434,17 +509,14 @@ res = rclone_lsjson(
     _path / "rclone.conf",
     source="my_remote",
     source_path="",
+    recursive=True,
 )
-file_names = [f["Name"] for f in res]
+file_names = [f["Path"] for f in res]
 assert "file1.txt" in file_names
 assert "file2.txt" in file_names
-
-# %%
-rclone_lsjson(
-    _path / "rclone.conf",
-    source="my_remote",
-    source_path="",
-)
+assert "subfolder" in file_names
+assert "subfolder/file1.txt" in file_names
+assert "subfolder/file2.txt" in file_names
 
 # %%
 #|hide
@@ -519,3 +591,52 @@ assert rclone_purge(
     source="my_remote",
     source_path="",
 )
+
+# %%
+#|hide
+show_doc(this_module.rclone_cat)
+
+
+# %%
+#|export
+def rclone_cat(
+    rclone_config_path: str,
+    source: str,
+    source_path: str,
+) -> tuple[bool, str|None]:
+    source_str = f"{source}:{source_path}" if source else source_path
+    cmd = ["rclone", "cat", '--config', rclone_config_path, source_str]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        return True, result.stdout
+    else:
+        return False, None
+
+
+# %%
+_path = setup_test_folder('cat')
+
+res = rclone_sync(
+    _path / "rclone.conf",
+    source="",
+    source_path=_path / "my_local",
+    dest="my_remote",
+    dest_path="",
+    include=[],
+    exclude=[],
+    filter=[],
+    include_file=None,
+    exclude_file=None,
+    filters_file=None,
+    dry_run=False,
+    verbose=True,
+)
+
+res, content = rclone_cat(
+    _path / "rclone.conf",
+    source="my_remote",
+    source_path="file1.txt",
+)
+
+assert res
+assert content == "Hello, world!"

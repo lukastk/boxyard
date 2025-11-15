@@ -39,7 +39,7 @@ def _get_full_repo_name(
         raise typer.Exit("Cannot provide more than one of `repo-name`, `repo-full-name` or `repo-id`.")
     
     if repo_id is not None or repo_name is not None:
-        from repoyard._repos import get_repoyard_meta
+        from repoyard._models import get_repoyard_meta
         config = get_config(app_state['config_path'])
         repoyard_meta = get_repoyard_meta(config)
         
@@ -190,7 +190,7 @@ def cli_add_to_group(
     Modify the metadata of a repository.
     """
     from repoyard.cmds import modify_repometa
-    from repoyard._repos import get_repoyard_meta
+    from repoyard._models import get_repoyard_meta
     
     repo_full_name = _get_full_repo_name(
         repo_name=repo_name,
@@ -237,7 +237,7 @@ def cli_remove_from_group(
     Modify the metadata of a repository.
     """
     from repoyard.cmds import modify_repometa
-    from repoyard._repos import get_repoyard_meta
+    from repoyard._models import get_repoyard_meta
     
     repo_full_name = _get_full_repo_name(
         repo_name=repo_name,
@@ -281,7 +281,7 @@ def cli_include(
     Include a repository in the local store.
     """
     from repoyard.cmds import include_repo
-    from repoyard._repos import get_repoyard_meta
+    from repoyard._models import get_repoyard_meta
     
     repo_full_name = _get_full_repo_name(
         repo_name=repo_name,
@@ -312,7 +312,7 @@ def cli_exclude(
     Exclude a repository from the local store.
     """
     from repoyard.cmds import exclude_repo
-    from repoyard._repos import get_repoyard_meta
+    from repoyard._models import get_repoyard_meta
     
     repo_full_name = _get_full_repo_name(
         repo_name=repo_name,
@@ -342,7 +342,7 @@ def cli_delete(
     Delete a repository.
     """
     from repoyard.cmds import delete_repo
-    from repoyard._repos import get_repoyard_meta
+    from repoyard._models import get_repoyard_meta
     
     repo_full_name = _get_full_repo_name(
         repo_name=repo_name,

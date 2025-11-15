@@ -13,7 +13,7 @@ import nblite; from nblite import show_doc; nblite.nbl_export()
 #|top_export
 from pathlib import Path
 
-from repoyard._utils.bisync_helper import SyncSetting
+from repoyard._utils.sync_helper import SyncSetting
 from repoyard.config import get_config
 from repoyard import const
 
@@ -89,14 +89,14 @@ type = alias
 remote = {remote_rclone_path}
 """);
 
-sync_repo(config_path=config_path, repo_full_name=repo_full_name)
+sync_repo(config_path=config_path, repo_full_name=repo_full_name);
 
 # %% [markdown]
 # Ensure that repo is included
 
 # %%
 #|export
-from repoyard._repos import get_repoyard_meta
+from repoyard._models import get_repoyard_meta
 repoyard_meta = get_repoyard_meta(config)
 
 if repo_full_name not in repoyard_meta.by_full_name:
@@ -118,8 +118,7 @@ if not skip_sync:
     sync_repo(
         config_path=config_path,
         repo_full_name=repo_full_name,
-        sync_setting=SyncSetting.BISYNC,
-        force=sync_force,
+        sync_setting=SyncSetting.CAREFUL,
     )
 
 # %% [markdown]
@@ -128,7 +127,9 @@ if not skip_sync:
 # %%
 #|export
 import shutil
+from repoyard._models import RepoPart
 shutil.rmtree(repo_meta.get_local_repodata_path(config))
+repo_meta.get_local_sync_record_path(config, RepoPart.DATA).unlink()
 
 # %%
 # Should now be included

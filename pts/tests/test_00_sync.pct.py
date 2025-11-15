@@ -19,7 +19,7 @@ import toml
 
 from repoyard import const
 from repoyard.cmds import *
-from repoyard._repos import get_repoyard_meta
+from repoyard._models import get_repoyard_meta
 from repoyard.config import get_config
 
 
@@ -111,3 +111,16 @@ for repo_full_name in repo_full_names:
 repoyard_meta = get_repoyard_meta(config, force_create=True)
 for repo_full_name in repo_full_names:
     assert repoyard_meta.by_full_name[repo_full_name].check_included(config)
+
+# %% [markdown]
+# # Delete all repos using `delete_repo`
+
+# %%
+#|export
+for repo_full_name in repo_full_names:
+    delete_repo(config_path=config_path, repo_full_name=repo_full_name)
+
+# Verify that the repos have been deleted
+for repo_meta in repoyard_meta.by_full_name.values():
+    assert not repo_meta.get_local_path(config).exists()
+    assert not (remote_rclone_path / repo_meta.get_remote_path(config)).exists()

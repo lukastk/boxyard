@@ -14,6 +14,7 @@ def new_repo(
     from_path: Path|None = None,
     creator_hostname: str|None = None,
     initialise_git: bool = True,
+    verbose: bool = False,
 ):
     """
     Create a new repoyard repository.
@@ -48,7 +49,7 @@ def new_repo(
         creator_hostname = get_hostname()
     
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/01_new_repo.pct.py 13
-    from .._repos import RepoMeta
+    from .._models import RepoMeta
     repo_meta = RepoMeta(
         name=repo_name,
         storage_location=storage_location,
@@ -74,9 +75,18 @@ def new_repo(
     
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/01_new_repo.pct.py 19
     if initialise_git and not (repo_data_path / '.git').exists():
-        subprocess.run(["git", "init"], check=True, cwd=repo_data_path)
+        if verbose: print("Initialising git repository")
+        res = subprocess.run(
+            ["git", "init"], 
+            check=True, 
+            cwd=repo_data_path,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        if res.returncode != 0:
+            if verbose: print("Warning: Failed to initialise git repository")
     
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/01_new_repo.pct.py 21
-    from .._repos import refresh_repoyard_meta
+    from .._models import refresh_repoyard_meta
     refresh_repoyard_meta(config)
     return repo_meta.full_name;

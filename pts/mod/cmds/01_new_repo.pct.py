@@ -27,6 +27,7 @@ def new_repo(
     from_path: Path|None = None,
     creator_hostname: str|None = None,
     initialise_git: bool = True,
+    verbose: bool = False,
 ):
     """
     Create a new repoyard repository.
@@ -53,6 +54,7 @@ from_path = None
 creator_hostname = None
 add_repoyard_exclude = True
 initialise_git = True
+verbose = True
 
 # %%
 # Run init
@@ -94,7 +96,7 @@ if creator_hostname is None:
 
 # %%
 #|export
-from repoyard._repos import RepoMeta
+from repoyard._models import RepoMeta
 repo_meta = RepoMeta(
     name=repo_name,
     storage_location=storage_location,
@@ -132,14 +134,23 @@ else:
 # %%
 #|export
 if initialise_git and not (repo_data_path / '.git').exists():
-    subprocess.run(["git", "init"], check=True, cwd=repo_data_path)
+    if verbose: print("Initialising git repository")
+    res = subprocess.run(
+        ["git", "init"], 
+        check=True, 
+        cwd=repo_data_path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    if res.returncode != 0:
+        if verbose: print("Warning: Failed to initialise git repository")
 
 # %% [markdown]
 # Refresh the repoyard meta file
 
 # %%
 #|export
-from repoyard._repos import refresh_repoyard_meta
+from repoyard._models import refresh_repoyard_meta
 refresh_repoyard_meta(config)
 
 # %% [markdown]

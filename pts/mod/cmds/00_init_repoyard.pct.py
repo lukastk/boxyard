@@ -21,6 +21,7 @@ from repoyard import const
 def init_repoyard(
     config_path: Path|None = None,
     data_path: Path|None = None,
+    verbose: bool = False,
 ):
     """
     Initialize repoyard.
@@ -42,6 +43,7 @@ test_folder_path = tests_working_dir / "_cmds" / "init_repoyard"
 # Args
 config_path = test_folder_path / "repoyard_config" / "config.toml"
 data_path = test_folder_path / "repoyard_data"
+verbose = True
 
 # %% [markdown]
 # # Function body
@@ -52,7 +54,7 @@ config_path = config_path or const.DEFAULT_CONFIG_PATH
 data_path = data_path or const.DEFAULT_DATA_PATH
 
 if config_path.expanduser().as_posix() != const.DEFAULT_CONFIG_PATH.expanduser().as_posix():
-    print(f"Using a non-default config path. Please set the environment variable {const.ENV_VAR_REPOYARD_CONFIG_PATH} to the given config path for repoyard to use it. ")
+    if verbose: print(f"Using a non-default config path. Please set the environment variable {const.ENV_VAR_REPOYARD_CONFIG_PATH} to the given config path for repoyard to use it. ")
 
 # %% [markdown]
 # Create a default config file if it doesn't exist
@@ -62,7 +64,7 @@ if config_path.expanduser().as_posix() != const.DEFAULT_CONFIG_PATH.expanduser()
 from repoyard.config import get_config, _get_default_config_dict, Config
 import toml
 if not config_path.expanduser().exists():
-    print("Creating config file at:", config_path)
+    if verbose: print("Creating config file at:", config_path)
     Path(config_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
     default_config_dict = _get_default_config_dict(config_path=config_path, data_path=data_path)
     del default_config_dict['config_path'] # Don't save the config path to the config file
@@ -106,7 +108,7 @@ paths = [
 
 for path in paths:
     if not path.exists():
-        print(f"Creating folder: {path}")
+        if verbose: print(f"Creating folder: {path}")
         path.mkdir(parents=True, exist_ok=True)
 
 # %% [markdown]
@@ -127,7 +129,7 @@ for storage_location_name, storage_location in config.storage_locations.items():
 #|export
 from repoyard.config import _default_rclone_config
 if not config.rclone_config_path.exists():
-    print(f"Creating rclone config file at: {config.rclone_config_path}")
+    if verbose: print(f"Creating rclone config file at: {config.rclone_config_path}")
     config.rclone_config_path.write_text(_default_rclone_config)
 
 # %% [markdown]
@@ -147,6 +149,7 @@ remote = {rclone_local_test_path}
 
 # %%
 #|export
-print("Done!\n")
-print("You can modify the config at:", config_path)
-print("All repoyard data is stored in:", config.repoyard_data_path)
+if verbose:
+    print("Done!\n")
+    print("You can modify the config at:", config_path)
+    print("All repoyard data is stored in:", config.repoyard_data_path)
