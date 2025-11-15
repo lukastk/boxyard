@@ -152,4 +152,8 @@ async def async_throttler(
                 return e
 
     tasks = [_task(coro) for coro in coros]
-    return await asyncio.gather(*tasks, return_exceptions=True)
+    res = await asyncio.gather(*tasks, return_exceptions=True)
+    for r in res:
+        if isinstance(r, Exception):
+            raise r
+    return res
