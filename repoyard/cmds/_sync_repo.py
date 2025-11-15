@@ -14,7 +14,7 @@ def sync_repo(
     repo_full_name: str,
     sync_direction: SyncDirection|None = None,
     sync_setting: SyncSetting = SyncSetting.CAREFUL,
-    sync_choices: list[RepoPart] = [RepoPart.DATA, RepoPart.META, RepoPart.CONF],
+    sync_choices: list[RepoPart]|None = None,
     verbose: bool = False,
     show_rclone_progress: bool = False,
 ) -> dict[RepoPart, SyncStatus]:
@@ -26,7 +26,7 @@ def sync_repo(
         repo_full_name: Full name of the repository to sync.
         sync_direction: Direction of sync.
         sync_setting: SyncSetting option (SAFE, CAREFUL, FORCE).
-        sync_choices: List of RepoPart specifying what to sync (data, meta, conf).
+        sync_choices: List of RepoPart specifying what to sync. If None, all parts are synced.
         force: Force syncing, possibly overwriting changes.
         verbose: Print verbose output during sync.
         show_rclone_progress: Show rclone progress during sync.
@@ -39,6 +39,8 @@ def sync_repo(
     
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 12
     config = get_config(config_path)
+    if sync_choices is None:
+        sync_choices = [repo_part for repo_part in RepoPart]
     
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 15
     from .._models import get_repoyard_meta
