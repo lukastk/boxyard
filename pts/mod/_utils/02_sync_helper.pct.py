@@ -21,12 +21,16 @@ from repoyard import const
 
 # %%
 #|top_export
-from repoyard._models import SyncDirection, SyncStatus
+from repoyard._models import SyncStatus
 
 class SyncSetting(Enum):
     CAREFUL = "careful"
     REPLACE = "replace"
     FORCE = "force"
+
+class SyncDirection(Enum):
+    PUSH = "push" # local -> remote
+    PULL = "pull" # remote -> local
 
 
 # %%
@@ -53,6 +57,7 @@ def sync_helper(
     include: list[str]|None = None,
     exclude: list[str]|None = None,
     filter: list[str]|None = None,
+    creator_hostname: str|None = None,
     verbose: bool = False,
     show_rclone_progress: bool = False,
 ) -> tuple[SyncStatus, bool]:
@@ -114,6 +119,7 @@ filters_path = None
 include = None
 exclude = None
 filter = None
+creator_hostname = None
 verbose = True
 show_rclone_progress = False
 
@@ -196,6 +202,9 @@ def _sync(dry_run: bool, source: str, source_path: str, dest: str, dest_path: st
     if not sync_path_is_dir:
         dest_path = Path(dest_path).parent.as_posix() # needed because rlcone sync doesn't seem to accept files on the dest path
         if dest_path == '.': dest_path = ''
+    
+    if verbose:
+        print(f"Syncing {source}:{source_path} to {dest}:{dest_path}.")
 
     return rclone_sync(
         rclone_config_path=rclone_config_path,
@@ -219,6 +228,7 @@ def _sync(dry_run: bool, source: str, source_path: str, dest: str, dest_path: st
 # %%
 #|export
 from repoyard._models import SyncRecord
+
 if sync_direction == SyncDirection.PULL:
     res, stdout, stderr = _sync(
         dry_run=False,
@@ -228,6 +238,11 @@ if sync_direction == SyncDirection.PULL:
         dest_path=local_path,
     )
     
+    if res:
+        # Retrieve the remote sync record and save it locally
+        rec = SyncRecord.rclone_read(rclone_config_path, remote, remote_sync_record_path)
+        rec.rclone_save(rclone_config_path, "", local_sync_record_path)
+
 elif sync_direction == SyncDirection.PUSH:
     res, stdout, stderr = _sync(
         dry_run=False,
@@ -237,15 +252,17 @@ elif sync_direction == SyncDirection.PUSH:
         dest_path=remote_path,
     )
 
+    if res:
+        # Create a new sync record and save it at the remote
+        rec = SyncRecord.create(creator_hostname=creator_hostname)
+        rec.rclone_save(rclone_config_path, "", local_sync_record_path)
+        rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
+
 else:
     raise ValueError(f"Unknown sync direction: {sync_direction}")
 
 if not res:
     raise SyncFailed(f"Sync failed. Rclone output:\n{stdout}\n{stderr}")
-else:
-    rec = SyncRecord.create(direction=sync_direction)
-    rec.rclone_save(rclone_config_path, "", local_sync_record_path)
-    rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
 
 # %% [markdown]
 # Check that the sync worked

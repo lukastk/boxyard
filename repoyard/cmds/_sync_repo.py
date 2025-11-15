@@ -55,11 +55,15 @@ def sync_repo(
         return #|return_line
     
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 19
+    if verbose:
+        print(f"Syncing repo {repo_full_name} at {repo_meta.storage_location}.")
+    
+    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 21
     sync_results = {}
     
     sync_part = RepoPart.META
     if sync_part in sync_choices:
-        if verbose: print("Syncing", sync_part.value)
+        if verbose: print(f"Syncing {sync_part.value}.")
         sync_results[RepoPart.META] = sync_helper(
             rclone_config_path=config.rclone_config_path,
             sync_direction=sync_direction,
@@ -73,7 +77,7 @@ def sync_repo(
             show_rclone_progress=show_rclone_progress,
         )
     
-    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 22
+    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 24
     sync_part = RepoPart.CONF
     if sync_part in sync_choices:
         if verbose: print("Syncing", sync_part.value)
@@ -90,7 +94,7 @@ def sync_repo(
             show_rclone_progress=show_rclone_progress,
         )
     
-    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 25
+    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 27
     _repoyard_include_path = repo_meta.get_local_repoconf_path(config) / ".repoyard_include"
     _repoyard_exclude_path = repo_meta.get_local_repoconf_path(config) / ".repoyard_exclude"
     _repoyard_filters_path = repo_meta.get_local_repoconf_path(config) / ".repoyard_filters"
@@ -99,7 +103,7 @@ def sync_repo(
     _repoyard_exclude_path = _repoyard_exclude_path if _repoyard_exclude_path.exists() else None
     _repoyard_filters_path = _repoyard_filters_path if _repoyard_filters_path.exists() else None
     
-    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 27
+    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 29
     sync_part = RepoPart.DATA
     if sync_part in sync_choices:
         if verbose: print("Syncing", sync_part.value)
@@ -119,7 +123,7 @@ def sync_repo(
             show_rclone_progress=show_rclone_progress,
         )
     
-    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 29
+    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/03_sync_repo.pct.py 31
     if RepoPart.META in sync_choices:
         from repoyard._models import refresh_repoyard_meta
         refresh_repoyard_meta(config)

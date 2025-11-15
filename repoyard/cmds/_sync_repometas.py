@@ -31,8 +31,9 @@ def sync_repometas(
         raise ValueError("Cannot provide both `repo_full_names` and `storage_locations`.")
     
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/04_sync_repometas.pct.py 14
-    from .._utils import rclone_lsjson
-    from .._utils import rclone_sync
+    from .._utils import rclone_lsjson, rclone_sync
+    from .._models import RepoMeta, SyncRecord, RepoPart, get_repoyard_meta
+    
     for sl_name, sl_config in config.storage_locations.items():
         if sl_config.storage_type == StorageType.LOCAL: continue
     
@@ -63,9 +64,10 @@ def sync_repometas(
         _ls_local = {f["Path"] for f in _ls_local} if _ls_local else set()
     
         missing_metas = _ls_remote - _ls_local
+        missing_repo_full_names = [Path(p).parts[0] for p in missing_metas]
     
         if repo_full_names is not None:
-            missing_metas = [p for p in missing_metas if p in repo_full_names]
+            missing_metas = [missing_meta for repo_full_name, missing_meta in zip(missing_repo_full_names, missing_metas) if repo_full_name in repo_full_names]
     
         if len(missing_metas) > 0:
             rclone_sync(
@@ -74,12 +76,17 @@ def sync_repometas(
                 source_path=sl_config.store_path / const.REMOTE_REPOS_REL_PATH,
                 dest="",
                 dest_path=config.local_store_path / sl_name,
-                filter=[f"+ /{p}" for p in missing_metas],
+                filter=[f"+ /{p}" for p in missing_metas] + ["- **"],
                 exclude=[],
             )
     
+            # Create sync records
+            for repo_full_name in missing_repo_full_names:
+                repo_meta = RepoMeta.load(config, sl_name, repo_full_name) # Used to get the paths consistently
+                rec = SyncRecord.rclone_read(config.rclone_config_path, sl_name, repo_meta.get_remote_sync_record_path(config, RepoPart.META))
+                rec.rclone_save(config.rclone_config_path, "", repo_meta.get_local_sync_record_path(config, RepoPart.META))
+    
     # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/04_sync_repometas.pct.py 17
-    from .._models import get_repoyard_meta
     from ._sync_repo import RepoPart, sync_repo
     repoyard_meta = get_repoyard_meta(config)
     
@@ -100,7 +107,7 @@ def sync_repometas(
                 sync_direction=None,
                 sync_setting=SyncSetting.CAREFUL,
                 sync_choices=[RepoPart.META],
-                verbose=False,
+                verbose=verbose,
             )
             sync_pre_status, sync_happened = sync_res[RepoPart.META]
             repo_meta_sync_res.append((True, None, sync_pre_status, sync_happened))

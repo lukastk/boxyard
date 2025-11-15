@@ -92,6 +92,21 @@ class RepoMeta(const.StrictModel):
         del model_dump['ulid']
         del model_dump['name']
         save_path.write_text(toml.dumps(model_dump))
+
+    @classmethod
+    def load(cls, config: repoyard.config.Config, storage_location_name: str, repo_full_name: str) -> None:
+        ulid, name = repo_full_name.split('__', 1)
+        
+        repometa_path = config.local_store_path / storage_location_name / repo_full_name / const.REPO_METAFILE_REL_PATH
+        if not repometa_path.exists():
+            raise ValueError(f"Repo meta file {repometa_path} does not exist.")
+        
+        return RepoMeta(**{
+            **toml.loads(repometa_path.read_text()),
+            'ulid': ulid,
+            'name': name,
+            'storage_location': storage_location_name,
+        })
         
     @model_validator(mode='after')
     def validate_config(self):
@@ -150,24 +165,8 @@ def create_repoyard_meta(
     repo_metas = []
     for storage_location_name in config.storage_locations:
         local_storage_location_path = config.local_store_path / storage_location_name
-        
         for repo_path in local_storage_location_path.glob('*'):
-            if not repo_path.is_dir():
-                raise ValueError(f"Repo path {repo_path} is not a directory.")
-            
-            full_name = repo_path.stem
-            ulid, name = full_name.split('__', 1)
-            
-            repometa_path = repo_path / const.REPO_METAFILE_REL_PATH
-            if not repometa_path.exists():
-                raise ValueError(f"Repo meta file {repometa_path} does not exist.")
-            
-            repo_metas.append(RepoMeta(**{
-                **toml.loads(repometa_path.read_text()),
-                'ulid': ulid,
-                'name': name,
-                'storage_location': storage_location_name,
-            }))
+            repo_metas.append(RepoMeta.load(config, storage_location_name, repo_path.stem))
     return RepoyardMeta(repo_metas=repo_metas)
 
 
@@ -280,28 +279,19 @@ def create_user_repo_group_symlinks(
 
 # %%
 #|export
-class SyncDirection(Enum):
-    PUSH = "push" # local -> remote
-    PULL = "pull" # remote -> local
-
-
-# %%
-#|export
 class SyncRecord(const.StrictModel):
     ulid: ULID = Field(default_factory=ULID)
     creator_hostname: str
-    direction: SyncDirection
 
     @property
     def datetime(self) -> datetime:
         return self.ulid.datetime
 
     @classmethod
-    def create(cls, direction: SyncDirection, creator_hostname: str|None=None) -> None:
+    def create(cls, creator_hostname: str|None=None) -> None:
         from repoyard._utils import get_hostname
         return SyncRecord(
             creator_hostname=creator_hostname or get_hostname(),
-            direction=direction,
         )
 
     def rclone_save(self, rclone_config_path: str, dest: str, dest_path: str) -> None:

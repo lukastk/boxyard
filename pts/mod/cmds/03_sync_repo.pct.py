@@ -137,6 +137,14 @@ if repo_meta.get_storage_location_config(config).storage_type == StorageType.LOC
     #|return_line
 
 # %% [markdown]
+# Prints
+
+# %%
+#|export
+if verbose:
+    print(f"Syncing repo {repo_full_name} at {repo_meta.storage_location}.")
+
+# %% [markdown]
 # Sync the repometa
 
 # %%
@@ -145,7 +153,7 @@ sync_results = {}
 
 sync_part = RepoPart.META
 if sync_part in sync_choices:
-    if verbose: print("Syncing", sync_part.value)
+    if verbose: print(f"Syncing {sync_part.value}.")
     sync_results[RepoPart.META] = sync_helper(
         rclone_config_path=config.rclone_config_path,
         sync_direction=sync_direction,

@@ -72,7 +72,7 @@ config_dump['storage_locations']['my_remote'] = {
     'storage_type' : "rclone",
     'store_path' : "repoyard",
 }
-config_path.write_text(toml.dumps(config_dump))
+config_path.write_text(toml.dumps(config_dump));
 
 # %% [markdown]
 # # Function body
@@ -105,8 +105,9 @@ for i in range(3):
 
 # %%
 #|export
-from repoyard._utils import rclone_lsjson
-from repoyard._utils import rclone_sync
+from repoyard._utils import rclone_lsjson, rclone_sync
+from repoyard._models import RepoMeta, SyncRecord, RepoPart, get_repoyard_meta
+
 for sl_name, sl_config in config.storage_locations.items():
     if sl_config.storage_type == StorageType.LOCAL: continue
 
@@ -137,9 +138,10 @@ for sl_name, sl_config in config.storage_locations.items():
     _ls_local = {f["Path"] for f in _ls_local} if _ls_local else set()
 
     missing_metas = _ls_remote - _ls_local
+    missing_repo_full_names = [Path(p).parts[0] for p in missing_metas]
 
     if repo_full_names is not None:
-        missing_metas = [p for p in missing_metas if p in repo_full_names]
+        missing_metas = [missing_meta for repo_full_name, missing_meta in zip(missing_repo_full_names, missing_metas) if repo_full_name in repo_full_names]
 
     if len(missing_metas) > 0:
         rclone_sync(
@@ -148,16 +150,21 @@ for sl_name, sl_config in config.storage_locations.items():
             source_path=sl_config.store_path / const.REMOTE_REPOS_REL_PATH,
             dest="",
             dest_path=config.local_store_path / sl_name,
-            filter=[f"+ /{p}" for p in missing_metas],
+            filter=[f"+ /{p}" for p in missing_metas] + ["- **"],
             exclude=[],
         )
+
+        # Create sync records
+        for repo_full_name in missing_repo_full_names:
+            repo_meta = RepoMeta.load(config, sl_name, repo_full_name) # Used to get the paths consistently
+            rec = SyncRecord.rclone_read(config.rclone_config_path, sl_name, repo_meta.get_remote_sync_record_path(config, RepoPart.META))
+            rec.rclone_save(config.rclone_config_path, "", repo_meta.get_local_sync_record_path(config, RepoPart.META))
 
 # %% [markdown]
 # Sync the remaining repometas
 
 # %%
 # Modify a local repometa to test if it syncs properly
-from repoyard._models import get_repoyard_meta, RepoMeta
 repoyard_meta = get_repoyard_meta(config)
 repo_meta = list(repoyard_meta.by_full_name.values())[0]
 repo_meta.groups = ["group1", "group2"]
@@ -165,7 +172,6 @@ repo_meta.save(config)
 
 # %%
 #|export
-from repoyard._models import get_repoyard_meta
 from repoyard.cmds._sync_repo import RepoPart, sync_repo
 repoyard_meta = get_repoyard_meta(config)
 
@@ -186,7 +192,7 @@ for repo_meta in repoyard_meta.by_full_name.values():
             sync_direction=None,
             sync_setting=SyncSetting.CAREFUL,
             sync_choices=[RepoPart.META],
-            verbose=False,
+            verbose=verbose,
         )
         sync_pre_status, sync_happened = sync_res[RepoPart.META]
         repo_meta_sync_res.append((True, None, sync_pre_status, sync_happened))
