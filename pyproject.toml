@@ -26,6 +26,7 @@ dev = [
     "jupyterlab>=4.4.0",
     "nblite>=0.6.8",
     "pytest>=9.0.0",
+    "python-dotenv>=1.2.1",
     "twine>=6.2.0",
 ]
 
