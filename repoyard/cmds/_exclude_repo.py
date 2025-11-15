@@ -10,7 +10,6 @@ from repoyard import const
 def exclude_repo(
     config_path: Path,
     repo_full_name: str,
-    sync_force: bool = False,
     skip_sync: bool = False,
 ):
     """

@@ -9,7 +9,6 @@ from repoyard import const
 def include_repo(
     config_path: Path,
     repo_full_name: str,
-    sync_force: bool = False,
 ):
     """
     """

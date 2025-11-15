@@ -23,7 +23,6 @@ from repoyard import const
 def exclude_repo(
     config_path: Path,
     repo_full_name: str,
-    sync_force: bool = False,
     skip_sync: bool = False,
 ):
     """
@@ -50,7 +49,6 @@ data_path = test_folder_path / ".repoyard"
 # %%
 # Args (1/2)
 config_path = test_folder_path / "repoyard_config" / "config.toml"
-sync_force = False
 skip_sync = True
 
 # %%
