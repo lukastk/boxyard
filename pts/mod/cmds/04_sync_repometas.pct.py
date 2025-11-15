@@ -109,6 +109,9 @@ from repoyard._utils import rclone_lsjson
 from repoyard._utils import rclone_sync
 for sl_name, sl_config in config.storage_locations.items():
     if sl_config.storage_type == StorageType.LOCAL: continue
+
+    if storage_locations is not None and sl_name not in storage_locations:
+        continue
     
     # Get remote repometas
     _ls_remote = rclone_lsjson(
@@ -134,6 +137,9 @@ for sl_name, sl_config in config.storage_locations.items():
     _ls_local = {f["Path"] for f in _ls_local} if _ls_local else set()
 
     missing_metas = _ls_remote - _ls_local
+
+    if repo_full_names is not None:
+        missing_metas = [p for p in missing_metas if p in repo_full_names]
 
     if len(missing_metas) > 0:
         rclone_sync(
@@ -166,6 +172,12 @@ repoyard_meta = get_repoyard_meta(config)
 repo_meta_sync_res = []
 
 for repo_meta in repoyard_meta.by_full_name.values():
+    if repo_full_names is not None and repo_meta.full_name not in repo_full_names:
+        continue
+
+    if storage_locations is not None and repo_meta.storage_location not in storage_locations:
+        continue
+
     sync_res = None
     try:
         sync_res = sync_repo(
