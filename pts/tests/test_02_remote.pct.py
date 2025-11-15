@@ -104,7 +104,7 @@ repo_meta3 = repoyard_meta.by_full_name[repo_full_name3]
 
 from repoyard._utils import rclone_lsjson
 for repo_meta in [repo_meta1, repo_meta2, repo_meta3]:
-    assert rclone_lsjson(
+    assert await rclone_lsjson(
         config.rclone_config_path,
         source=sl_name,
         source_path=repo_meta.get_remote_path(config),
