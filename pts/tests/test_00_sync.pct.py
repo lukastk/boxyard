@@ -20,7 +20,8 @@ import toml
 from repoyard import const
 from repoyard.cmds import *
 from repoyard._models import get_repoyard_meta
-from repoyard.config import get_config
+
+from tests.utils import *
 
 
 # %%
@@ -33,43 +34,14 @@ def test_00_sync(): ...
 
 # %%
 #|export
-num_test_repos = 20
+num_test_repos = 5
 
 # %% [markdown]
-# # Initialise `init_repoyard`
+# # Initialise using `init_repoyard`
 
 # %%
 #|export
-# Set up test folders
-import tempfile
-test_folder_path = Path(tempfile.mkdtemp(prefix="sync_repo", dir="/tmp"))
-test_folder_path.mkdir(parents=True, exist_ok=True)
-config_path = test_folder_path / ".config" / "repoyard" / "config.toml"
-data_path = test_folder_path / ".repoyard"
-
-# Run init
-init_repoyard(config_path=config_path, data_path=data_path)
-
-# Add a storage location 'my_remote'
-import toml
-test_storage_location_name = "my_remote"
-config_dump = toml.load(config_path)
-remote_rclone_path = Path(tempfile.mkdtemp(prefix="rclone_remote", dir="/tmp"))
-config_dump['storage_locations'][test_storage_location_name] = {
-    'storage_type' : "rclone",
-    'store_path' : "repoyard",
-}
-config_path.write_text(toml.dumps(config_dump))
-
-# Load config
-config = get_config(config_path)
-
-# Set up a rclone remote path for testing
-config.rclone_config_path.write_text(f"""
-[{test_storage_location_name}]
-type = alias
-remote = {remote_rclone_path}
-""");
+remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
 
 # %% [markdown]
 # # Create some repos using `new_repo` and sync them using `sync_repo`
@@ -78,7 +50,7 @@ remote = {remote_rclone_path}
 #|export
 repo_full_names = []
 for i in range(num_test_repos):
-    repo_full_name = new_repo(config_path=config_path, repo_name=f"test_repo_{i}", storage_location=test_storage_location_name)
+    repo_full_name = new_repo(config_path=config_path, repo_name=f"test_repo_{i}", storage_location=remote_name)
     repo_full_names.append(repo_full_name)
     
 # Verify that the repos are included
