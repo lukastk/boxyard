@@ -23,6 +23,7 @@ import asyncio
 import repoyard as proj
 from repoyard import const
 from repoyard.config import get_config
+from repoyard._utils import async_throttler
 from repoyard._utils.sync_helper import SyncSetting, SyncDirection
 from repoyard._models import RepoPart
 from repoyard._cli.app import app, app_state
@@ -179,7 +180,8 @@ def cli_new(
         repo_name = Path(from_path).name
         
     if repo_name is None:
-        raise typer.Exit("No repository name provided.", code=1)
+        typer.echo("No repository name provided.")
+        raise typer.Exit(code=1)
     
     repo_full_name = new_repo(
         config_path=app_state['config_path'],
@@ -211,7 +213,7 @@ def cli_new(
 #|export
 @app.command(name='sync')
 def cli_sync(
-    repo_full_name: str|None = Option(None, "--repo", "-r", help="The full name of the repository, in the form '{ULID}__{REPO_NAME}'."),
+    repo_full_name: str|None = Option(None, "--repo", "-r", help="The full name of the repository."),
     repo_id: str|None = Option(None, "--repo-id", "-i", help="The id of the repository to sync."),
     repo_name: str|None = Option(None, "--repo-name", "-n", help="The name of the repository to sync."),
     name_match_mode: NameMatchMode|None = Option(None, "--name-match-mode", "-m", help="The mode to use for matching the repository name."),
@@ -245,6 +247,66 @@ def cli_sync(
         sync_choices=sync_choices,
         verbose=True,
         show_rclone_progress=show_rclone_progress,
+    ))
+
+
+# %% [markdown]
+# # `multi-sync`
+
+# %%
+#|export
+@app.command(name='multi-sync')
+def cli_multi_sync(
+    repo_full_names: list[str]|None = Option(None, "--repo", "-r", help="The full names of the repository, in the form."),
+    storage_locations: list[str]|None = Option(None, "--storage-location", "-s", help="The storage locations to sync."),
+    max_concurrent_rclone_ops: int|None = Option(None, "--max-concurrent", "-m", help="The maximum number of concurrent rclone operations. If not provided, the default specified in the config will be used."),
+    sync_direction: SyncDirection|None = Option(None, "--sync-direction", help="The direction of the sync. If not provided, the appropriate direction will be automatically determined based on the sync status. This mode is only available for the 'CAREFUL' sync setting."),
+    sync_setting: SyncSetting = Option(SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."),
+    sync_choices: list[RepoPart]|None = Option(None, "--sync-choices", "-c", help="The parts of the repository to sync. If not provided, all parts will be synced. By default, all parts are synced."),
+):
+    """
+    Sync multiple repositories.
+    """
+    from repoyard._models import get_repoyard_meta
+    from repoyard.cmds import sync_repo
+
+    if repo_full_names is not None and storage_locations is not None:
+        typer.echo("Cannot provide both `--repo` and `--storage-location`.", err=True)
+        raise typer.Exit(code=1)
+
+    config = get_config(app_state['config_path'])
+
+    if storage_locations is None and repo_full_names is None:
+        storage_locations = list(config.storage_locations.keys())
+    if any(sl not in config.storage_locations for sl in storage_locations):
+        typer.echo(f"Invalid storage location: {storage_locations}")
+        raise typer.Exit(code=1)
+
+    if max_concurrent_rclone_ops is None:
+        max_concurrent_rclone_ops = config.max_concurrent_rclone_ops
+    
+    repoyard_meta = get_repoyard_meta(config)
+    if repo_full_names is None:
+        repo_metas = [repo_meta for repo_meta in repoyard_meta.repo_metas if repo_meta.storage_location in storage_locations]
+    else:
+        if any(repo_full_name not in repoyard_meta.by_full_name for repo_full_name in repo_full_names):
+            typer.echo(f"Non-existent repository: {repo_full_names}")
+            raise typer.Exit(code=1)
+        repo_metas = [repoyard_meta.by_full_name[repo_full_name] for repo_full_name in repo_full_names]
+
+    async def _task(repo_meta):
+        await sync_repo(
+            config_path=app_state['config_path'],
+            repo_full_name=repo_meta.full_name,
+            sync_direction=sync_direction,
+            sync_setting=sync_setting,
+            sync_choices=sync_choices,
+            verbose=False,
+        )
+
+    asyncio.run(async_throttler(
+        [_task(repo_meta) for repo_meta in repo_metas],
+        max_concurrency=max_concurrent_rclone_ops,
     ))
 
 
@@ -322,7 +384,8 @@ def cli_add_to_group(
     
     repoyard_meta = get_repoyard_meta(get_config(app_state['config_path']))
     if repo_full_name not in repoyard_meta.by_full_name:
-        raise typer.Exit(f"Repository with full name `{repo_full_name}` not found.", code=1)
+        typer.echo(f"Repository with full name `{repo_full_name}` not found.")
+        raise typer.Exit(code=1)
     repo_meta = repoyard_meta.by_full_name[repo_full_name]
     if group_name in repo_meta.groups:
         raise typer.echo(f"Repository `{repo_full_name}` already in group `{group_name}`.")
@@ -378,7 +441,8 @@ def cli_remove_from_group(
     
     repoyard_meta = get_repoyard_meta(get_config(app_state['config_path']))
     if repo_full_name not in repoyard_meta.by_full_name:
-        raise typer.Exit(f"Repository with full name `{repo_full_name}` not found.", code=1)
+        typer.echo(f"Repository with full name `{repo_full_name}` not found.")
+        raise typer.Exit(code=1)
     repo_meta = repoyard_meta.by_full_name[repo_full_name]
     if group_name not in repo_meta.groups:
         raise typer.echo(f"Repository `{repo_full_name}` not in group `{group_name}`.")
@@ -431,7 +495,8 @@ def cli_include(
     
     repoyard_meta = get_repoyard_meta(get_config(app_state['config_path']))
     if repo_full_name not in repoyard_meta.by_full_name:
-        raise typer.Exit(f"Repository with full name `{repo_full_name}` not found.", code=1)
+        typer.echo(f"Repository with full name `{repo_full_name}` not found.")
+        raise typer.Exit(code=1)
     
     asyncio.run(include_repo(
         config_path=app_state['config_path'],
@@ -469,7 +534,8 @@ def cli_exclude(
     
     repoyard_meta = get_repoyard_meta(get_config(app_state['config_path']))
     if repo_full_name not in repoyard_meta.by_full_name:
-        raise typer.Exit(f"Repository with full name `{repo_full_name}` not found.", code=1)
+        typer.echo(f"Repository with full name `{repo_full_name}` not found.")
+        raise typer.Exit(code=1)
     
     asyncio.run(exclude_repo(
         config_path=app_state['config_path'],
@@ -507,7 +573,8 @@ def cli_delete(
     
     repoyard_meta = get_repoyard_meta(get_config(app_state['config_path']))
     if repo_full_name not in repoyard_meta.by_full_name:
-        raise typer.Exit(f"Repository with full name `{repo_full_name}` not found.", code=1)
+        typer.echo(f"Repository with full name `{repo_full_name}` not found.")
+        raise typer.Exit(code=1)
     
     asyncio.run(delete_repo(
         config_path=app_state['config_path'],
@@ -520,13 +587,53 @@ def cli_delete(
 
 # %%
 #|exporti
-def _dict_to_hierarchical_text(data: dict, indents: int=0, lines: list[str]=[]) -> list[str]:
+def _dict_to_hierarchical_text(data: dict, indents: int=0, lines: list[str]=None) -> list[str]:
+    if lines is None:
+        lines = []
     for k, v in data.items():
         if isinstance(v, dict):
+            lines.append(f"{' ' *4*indents}{k}:")
             _dict_to_hierarchical_text(v, indents+1, lines)
         else:
             lines.append(f"{' ' *4*indents}{k}: {v}")
     return lines
+
+
+# %%
+lines = _dict_to_hierarchical_text({
+    'a': {
+        'b': {
+            'c': 1,
+            'd': 2
+        },
+        'e': 3
+    }
+})
+print("\n".join(lines))
+
+
+# %%
+#|exporti
+async def get_formatted_repo_status(config_path, repo_full_name):
+    from repoyard.cmds import get_repo_sync_status
+    from pydantic import BaseModel
+    import json
+    sync_status = await get_repo_sync_status(
+        config_path=app_state['config_path'],
+        repo_full_name=repo_full_name,
+    )
+
+    data = {}
+    for repo_part, part_sync_status in sync_status.items():
+        part_sync_status_dump = part_sync_status._asdict()
+        for k, v in part_sync_status_dump.items():
+            if isinstance(v, BaseModel):
+                part_sync_status_dump[k] = json.loads(v.model_dump_json())
+            if isinstance(v, Enum):
+                part_sync_status_dump[k] = v.value
+        data[repo_part.value] = part_sync_status_dump
+
+    return data
 
 
 # %%
@@ -539,13 +646,12 @@ def cli_repo_status(
     name_match_mode: NameMatchMode|None = Option(None, "--name-match-mode", "-m", help="The mode to use for matching the repository name."),
     name_match_case: bool = Option(False, "--name-match-case", "-c", help="Whether to match the repository name case-sensitively."),
     output_format: Literal['text', 'json'] = Option('text', "--output-format", "-o", help="The format of the output."),
+    max_concurrent_rclone_ops: int|None = Option(None, "--max-concurrent", help="The maximum number of concurrent rclone operations. If not provided, the default specified in the config will be used."),
 ):
     """
     Get the sync status of a repository.
     """
-    from repoyard.cmds import get_repo_sync_status
     from repoyard._models import get_repoyard_meta
-    from pydantic import BaseModel
     import json
     
     repo_full_name = _get_full_repo_name(
@@ -558,32 +664,102 @@ def cli_repo_status(
     
     repoyard_meta = get_repoyard_meta(get_config(app_state['config_path']))
     if repo_full_name not in repoyard_meta.by_full_name:
-        raise typer.Exit(f"Repository with full name `{repo_full_name}` not found.", code=1)
+        typer.echo(f"Repository with full name `{repo_full_name}` not found.")
+        raise typer.Exit(code=1)
     
-    sync_status = asyncio.run(get_repo_sync_status(
+    sync_status_data = asyncio.run(get_formatted_repo_status(
         config_path=app_state['config_path'],
         repo_full_name=repo_full_name,
     ))
 
-    data = {}
-    for repo_part, part_sync_status in sync_status.items():
-        part_sync_status_dump = part_sync_status._asdict()
-        for k, v in part_sync_status_dump.items():
-            if isinstance(v, BaseModel):
-                part_sync_status_dump[k] = v.model_dump()
-            if isinstance(v, Enum):
-                part_sync_status_dump[k] = v.value
-        data[repo_part.value] = part_sync_status_dump
-
     if output_format == 'json':
-        typer.echo(json.dumps(data, indent=2))
+        typer.echo(json.dumps(sync_status_data, indent=2))
     else:
-       typer.echo("\n".join(_dict_to_hierarchical_text(data)))
+       typer.echo("\n".join(_dict_to_hierarchical_text(sync_status_data)))
 
 
 
 # %% [markdown]
 # # `yard-status`
+
+# %%
+#|export
+@app.command(name='yard-status')
+def cli_yard_status(
+    storage_locations: list[str]|None = Option(None, "--storage-location", "-s", help="The storage location to get the status of. If not provided, the status of all storage locations will be shown."),
+    output_format: Literal['text', 'json'] = Option('text', "--output-format", "-o", help="The format of the output."),
+    max_concurrent_rclone_ops: int|None = Option(None, "--max-concurrent", "-m", help="The maximum number of concurrent rclone operations. If not provided, the default specified in the config will be used."),
+):
+    """
+    Get the sync status of all repositories in the yard.
+    """
+    from repoyard._models import get_repoyard_meta
+    import json
+
+    config = get_config(app_state['config_path'])
+    if storage_locations is None:
+        storage_locations = list(config.storage_locations.keys())
+    if any(sl not in config.storage_locations for sl in storage_locations):
+        typer.echo(f"Invalid storage location: {storage_locations}")
+        raise typer.Exit(code=1)
+
+    if max_concurrent_rclone_ops is None:
+        max_concurrent_rclone_ops = config.max_concurrent_rclone_ops
+    
+    repo_metas = [repo_meta for repo_meta in get_repoyard_meta(config).repo_metas if repo_meta.storage_location in storage_locations]
+
+    repo_sync_statuses = asyncio.run(
+        async_throttler(
+            [get_formatted_repo_status(config, repo_meta.full_name) for repo_meta in repo_metas],
+            max_concurrency=max_concurrent_rclone_ops,
+        )
+    )
+    
+    repo_sync_statuses_by_sl = {}
+    for repo_sync_status, repo_meta in zip(repo_sync_statuses, repo_metas):
+        repo_sync_statuses_by_sl.setdefault(repo_meta.storage_location, {})[repo_meta.full_name] = repo_sync_status
+
+    if output_format == 'json':
+        typer.echo(json.dumps(repo_sync_statuses_by_sl, indent=2))
+    else:
+        for sl_name, repo_sync_statuses in repo_sync_statuses_by_sl.items():
+            typer.echo(f"{sl_name}:")
+            typer.echo("\n".join(_dict_to_hierarchical_text(repo_sync_statuses, indents=1)))
+            typer.echo("\n")
+
+
+# %% [markdown]
+# # `list`
+
+# %%
+#|export
+@app.command(name='list')
+def cli_list(
+    storage_locations: list[str]|None = Option(None, "--storage-location", "-s", help="The storage location to get the status of. If not provided, the status of all storage locations will be shown."),
+    output_format: Literal['text', 'json'] = Option('text', "--output-format", "-o", help="The format of the output."),
+):
+    """
+    List all repositories in the yard.
+    """
+    from repoyard._models import get_repoyard_meta
+    import json
+
+    config = get_config(app_state['config_path'])
+    if storage_locations is None:
+        storage_locations = list(config.storage_locations.keys())
+    if any(sl not in config.storage_locations for sl in storage_locations):
+        typer.echo(f"Invalid storage location: {storage_locations}")
+        raise typer.Exit(code=1)
+
+    repo_metas = [repo_meta for repo_meta in get_repoyard_meta(config).repo_metas if repo_meta.storage_location in storage_locations]
+
+    if output_format == 'json':
+        typer.echo(json.dumps(repo_metas, indent=2))
+    else:
+        for repo_meta in repo_metas:
+            typer.echo(repo_meta.full_name)
+
+
 
 # %% [markdown]
 # # `path`
@@ -607,7 +783,7 @@ def cli_path(
             'sync-record-meta',
             'sync-record-conf',
 
-        ] = Option('data', "--path-option", "-p", help="The part of the repository to get the path of."),
+        ] = Option('data-user', "--path-option", "-p", help="The part of the repository to get the path of."),
 ):
     """
     Get the path of a repository.
@@ -627,7 +803,8 @@ def cli_path(
     
     repoyard_meta = get_repoyard_meta(get_config(app_state['config_path']))
     if repo_full_name not in repoyard_meta.by_full_name:
-        raise typer.Exit(f"Repository with full name `{repo_full_name}` not found.", code=1)
+        typer.echo(f"Repository with full name `{repo_full_name}` not found.")
+        raise typer.Exit(code=1)
     repo_meta = repoyard_meta.by_full_name[repo_full_name]  
 
     config = get_config(app_state['config_path'])
@@ -649,4 +826,5 @@ def cli_path(
     elif path_option == 'sync-record-conf':
         typer.echo(repo_meta.get_local_sync_record_path(config, RepoPart.CONF).as_posix())
     else:
-        raise typer.Exit(f"Invalid path option: {path_option}", code=1)
+        typer.echo(f"Invalid path option: {path_option}")
+        raise typer.Exit(code=1)
