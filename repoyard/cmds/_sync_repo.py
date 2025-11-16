@@ -117,13 +117,13 @@ async def sync_repo(
         )
     
     # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 29
-    _repoyard_include_path = repo_meta.get_local_repoconf_path(config) / ".repoyard_include"
-    _repoyard_exclude_path = repo_meta.get_local_repoconf_path(config) / ".repoyard_exclude"
-    _repoyard_filters_path = repo_meta.get_local_repoconf_path(config) / ".repoyard_filters"
+    _rclone_include_path = repo_meta.get_local_repoconf_path(config) / ".rclone_include"
+    _rclone_exclude_path = repo_meta.get_local_repoconf_path(config) / ".rclone_exclude"
+    _rclone_filters_path = repo_meta.get_local_repoconf_path(config) / ".rclone_filters"
     
-    _repoyard_include_path = _repoyard_include_path if _repoyard_include_path.exists() else None
-    _repoyard_exclude_path = _repoyard_exclude_path if _repoyard_exclude_path.exists() else config.default_repoyard_exclude_path
-    _repoyard_filters_path = _repoyard_filters_path if _repoyard_filters_path.exists() else None
+    _rclone_include_path = _rclone_include_path if _rclone_include_path.exists() else None
+    _rclone_exclude_path = _rclone_exclude_path if _rclone_exclude_path.exists() else config.default_rclone_exclude_path
+    _rclone_filters_path = _rclone_filters_path if _rclone_filters_path.exists() else None
     
     # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 31
     if check_interrupted(): raise SoftInterruption()
@@ -142,9 +142,9 @@ async def sync_repo(
             remote_sync_record_path=repo_meta.get_remote_sync_record_path(config, sync_part),
             local_sync_backups_path=local_sync_backups_path,
             remote_sync_backups_path=remote_sync_backups_path,
-            include_path=_repoyard_include_path,
-            exclude_path=_repoyard_exclude_path,
-            filters_path=_repoyard_filters_path,
+            include_path=_rclone_include_path,
+            exclude_path=_rclone_exclude_path,
+            filters_path=_rclone_filters_path,
             verbose=verbose,
             show_rclone_progress=show_rclone_progress,
         )

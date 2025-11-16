@@ -47,7 +47,7 @@ DEFAULT_FAKE_STORE_REL_PATH = "fake_store"
 
 # %%
 #|export
-DEFAULT_REPOYARD_EXCLUDE = inspect.cleandoc("""
+DEFAULT_RCLONE_EXCLUDE = inspect.cleandoc("""
 .venv/
 .pixi/
 .trunk/

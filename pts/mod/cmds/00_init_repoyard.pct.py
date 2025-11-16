@@ -74,12 +74,12 @@ if not config_path.expanduser().exists():
 config = get_config(config_path)
 
 # %% [markdown]
-# Create the default `.repoyard_exclude` file
+# Create the default `.rclone_exclude` file
 
 # %%
 #|export
-if not config.default_repoyard_exclude_path.exists():
-    config.default_repoyard_exclude_path.write_text(const.DEFAULT_REPOYARD_EXCLUDE)
+if not config.default_rclone_exclude_path.exists():
+    config.default_rclone_exclude_path.write_text(const.DEFAULT_RCLONE_EXCLUDE)
 
 # %% [markdown]
 # For testing purposes, modify the config

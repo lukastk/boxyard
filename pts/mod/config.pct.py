@@ -81,8 +81,8 @@ class Config(const.StrictModel):
         return Path(self.config_path).parent / "repoyard_rclone.conf"
     
     @property
-    def default_repoyard_exclude_path(self) -> str:
-        return self.config_path.parent / "default.repoyard_exclude"
+    def default_rclone_exclude_path(self) -> str:
+        return self.config_path.parent / "default.rclone_exclude"
     
     @model_validator(mode='after')
     def validate_config(self):

@@ -42,8 +42,8 @@ def init_repoyard(
     config = get_config(config_path)
     
     # %% ../../../pts/mod/cmds/00_init_repoyard.pct.py 13
-    if not config.default_repoyard_exclude_path.exists():
-        config.default_repoyard_exclude_path.write_text(const.DEFAULT_REPOYARD_EXCLUDE)
+    if not config.default_rclone_exclude_path.exists():
+        config.default_rclone_exclude_path.write_text(const.DEFAULT_RCLONE_EXCLUDE)
     
     # %% ../../../pts/mod/cmds/00_init_repoyard.pct.py 17
     paths = [
