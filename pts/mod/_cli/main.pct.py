@@ -385,7 +385,7 @@ def cli_multi_sync(
                         "Error": "red",
                     }.get(sync_stat, "white")
 
-                    lines.append(f"[bold]{num}/{len(repo_metas)}[/bold] {repo_full_name}")
+                    lines.append(f"[bold]{num+1}/{len(repo_metas)}[/bold] {repo_full_name}")
                     lines.append(f"    [bold {color}]{sync_stat}[/bold {color}]")
                     if e:
                         lines.append(f"    [red]{e}[/red]")
