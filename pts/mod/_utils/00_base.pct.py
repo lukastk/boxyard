@@ -7,7 +7,7 @@
 # %%
 #|hide
 import nblite; from nblite import show_doc; nblite.nbl_export()
-import repoyard._utils as this_module
+import repoyard._utils.base as this_module
 
 # %%
 #|export
