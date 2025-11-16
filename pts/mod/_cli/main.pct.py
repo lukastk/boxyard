@@ -175,7 +175,7 @@ def cli_init(
 @app.command(name='new')
 def cli_new(
     storage_location: str|None = Option(None, "--storage-location", "-s", help="The storage location to create the new repository in."),
-    repo_name: str|None = Option(None, "--repo", "-r", help="The full name of the repository, the id or the path of the repo."),
+    repo_name: str|None = Option(None, "--repo", "-n", help="The name of the repository, the id or the path of the repo."),
     from_path: Path|None = Option(None, "--from", "-f", help="Path to a local directory to move into repoyard as a new repository."),
     copy_from_path: bool = Option(False, "--copy", "-c", help="Copy the contents of the from_path into the new repository."),
     creator_hostname: str|None = Option(None, "--creator-hostname", help="Used to explicitly set the creator hostname of the new repository."),
