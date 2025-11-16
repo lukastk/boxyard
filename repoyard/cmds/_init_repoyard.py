@@ -57,7 +57,9 @@ def init_repoyard(
             path.mkdir(parents=True, exist_ok=True)
     
     # %% ../../../pts/mod/cmds/00_init_repoyard.pct.py 19
+    from ..config import StorageType
     for storage_location_name, storage_location in config.storage_locations.items():
+        if storage_location.storage_type != StorageType.LOCAL.value: continue
         storage_location.store_path.mkdir(parents=True, exist_ok=True)
         if (config.local_store_path / storage_location_name).exists():
             (config.local_store_path / storage_location_name).unlink()
