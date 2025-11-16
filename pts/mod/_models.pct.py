@@ -70,6 +70,8 @@ class RepoMeta(const.StrictModel):
     ) -> 'RepoMeta':
         if creation_timestamp_utc is None:
             creation_timestamp_utc = datetime.now(timezone.utc).strftime(const.REPO_TIMESTAMP_FORMAT)
+        else:
+            creation_timestamp_utc = creation_timestamp_utc.strftime(const.REPO_TIMESTAMP_FORMAT)
 
         return RepoMeta(
             creation_timestamp_utc=creation_timestamp_utc,

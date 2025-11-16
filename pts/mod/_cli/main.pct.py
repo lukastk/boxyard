@@ -201,6 +201,7 @@ def cli_new(
         raise typer.Exit(code=1)
 
     if creation_timestamp_utc is not None:
+        from datetime import datetime
         try:
             creation_timestamp_utc = datetime.strptime(creation_timestamp_utc, const.REPO_TIMESTAMP_FORMAT)
         except ValueError:
@@ -218,6 +219,7 @@ def cli_new(
         copy_from_path=copy_from_path,
         creator_hostname=creator_hostname,
         initialise_git=initialise_git,
+        creation_timestamp_utc=creation_timestamp_utc,
         verbose=False,
     )
     typer.echo(repo_full_name)
