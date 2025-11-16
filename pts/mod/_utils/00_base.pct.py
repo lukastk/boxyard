@@ -203,3 +203,30 @@ async def test_task():
 
 coros = [test_task() for _ in range(10)]
 res = await async_throttler(coros, max_concurrency=2)
+
+# %% [markdown]
+# #### Soft interruption
+
+# %%
+#|export
+import signal
+
+_interrupted = False
+
+class SoftInterruption(Exception):
+    pass
+
+def _soft_interruption_handler(signum, frame):
+    global _interrupted
+    sig_name = signal.Signals(signum).name
+    print(f"\nWARNING: {sig_name} received — will stop after the current operation.")
+    _interrupted = True
+
+def enable_soft_interruption():
+    signal.signal(signal.SIGINT, _soft_interruption_handler) # Ctrl-C
+    signal.signal(signal.SIGTERM, _soft_interruption_handler)   # shutdown
+    signal.signal(signal.SIGHUP, _soft_interruption_handler)  # logout / terminal closed
+
+def check_interrupted():
+    global _interrupted
+    return _interrupted

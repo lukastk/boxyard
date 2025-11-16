@@ -3,9 +3,9 @@
 # %% top_export
 from pathlib import Path
 
-from repoyard._utils.sync_helper import sync_helper, SyncSetting, SyncDirection
 from repoyard.config import get_config, StorageType
-from repoyard._utils.sync_helper import SyncFailed, SyncUnsafe, InvalidRemotePath, SyncStatus
+from repoyard._utils.sync_helper import SyncFailed, SyncUnsafe, InvalidRemotePath, SyncStatus, SyncSetting, SyncDirection
+from repoyard._utils import check_interrupted, enable_soft_interruption, SoftInterruption
 from repoyard import const
 
 async def sync_repometas(
@@ -16,6 +16,7 @@ async def sync_repometas(
     sync_setting: SyncSetting = SyncSetting.CAREFUL,
     sync_direction: SyncDirection|None = None,
     verbose: bool = False,
+    soft_interruption_enabled: bool = True,
 ) -> tuple[list[str], list[tuple[bool, SyncFailed|SyncUnsafe|InvalidRemotePath|None, SyncStatus, bool]]]:
     """
     """
@@ -33,8 +34,13 @@ async def sync_repometas(
     
     if max_concurrent_rclone_ops is None:
         max_concurrent_rclone_ops = config.max_concurrent_rclone_ops
+        
+    if soft_interruption_enabled:
+        enable_soft_interruption()
     
     # %% ../../../pts/mod/cmds/04_sync_repometas.pct.py 14
+    if check_interrupted(): raise SoftInterruption()
+    
     from .._utils import rclone_lsjson, rclone_sync, async_throttler
     from .._models import RepoMeta, SyncRecord, RepoPart, get_repoyard_meta
     
@@ -73,6 +79,8 @@ async def sync_repometas(
         if repo_full_names is not None:
             missing_metas = [missing_meta for repo_full_name, missing_meta in zip(missing_repo_full_names, missing_metas) if repo_full_name in repo_full_names]
     
+        if check_interrupted(): raise SoftInterruption()
+        
         if len(missing_metas) > 0:
             await rclone_sync(
                 rclone_config_path=config.rclone_config_path,
@@ -101,6 +109,8 @@ async def sync_repometas(
     repo_meta_sync_res = []
     
     async def _task(repo_meta):
+        if check_interrupted(): raise SoftInterruption()
+        
         if repo_full_names is not None and repo_meta.full_name not in repo_full_names: return
         if storage_locations is not None and repo_meta.storage_location not in storage_locations: return
     

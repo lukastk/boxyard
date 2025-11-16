@@ -17,6 +17,8 @@ from enum import Enum
 from repoyard._utils.sync_helper import sync_helper, SyncSetting, SyncDirection
 from repoyard._models import SyncStatus, RepoPart
 from repoyard.config import get_config, StorageType
+from repoyard._utils import async_throttler
+from repoyard._utils import check_interrupted, enable_soft_interruption, SoftInterruption
 from repoyard import const
 
 
@@ -30,6 +32,7 @@ async def sync_repo(
     sync_choices: list[RepoPart]|None = None,
     verbose: bool = False,
     show_rclone_progress: bool = False,
+    soft_interruption_enabled: bool = True,
 ) -> dict[RepoPart, SyncStatus]:
     """
     Syncs a repo with its remote.
@@ -71,6 +74,7 @@ sync_setting = SyncSetting.CAREFUL
 sync_choices = None
 verbose = True
 show_rclone_progress = False
+soft_interruption_enabled = True
 
 # %%
 # Run init
@@ -107,6 +111,9 @@ repo_full_name = new_repo(config_path=config_path, repo_name="test_repo", storag
 config = get_config(config_path)
 if sync_choices is None:
     sync_choices = [repo_part for repo_part in RepoPart]
+
+if soft_interruption_enabled:
+    enable_soft_interruption()
 
 # %%
 # Set up a rclone remote path for testing
@@ -147,11 +154,22 @@ if verbose:
     print(f"Syncing repo {repo_full_name} at {repo_meta.storage_location}.")
 
 # %% [markdown]
+# Get the backup locations
+
+# %%
+#|export
+sl_config = repo_meta.get_storage_location_config(config)
+local_sync_backups_path = config.local_sync_backups_path
+remote_sync_backups_path = sl_config.store_path / const.REMOTE_BACKUP_REL_PATH
+
+# %% [markdown]
 # Sync the repometa
 
 # %%
 #|export
 sync_results = {}
+
+if check_interrupted(): raise SoftInterruption()
 
 sync_part = RepoPart.META
 if sync_part in sync_choices:
@@ -165,6 +183,8 @@ if sync_part in sync_choices:
         remote=repo_meta.storage_location,
         remote_path=repo_meta.get_remote_repometa_path(config),
         remote_sync_record_path=repo_meta.get_remote_sync_record_path(config, sync_part),
+        local_sync_backups_path=local_sync_backups_path,
+        remote_sync_backups_path=remote_sync_backups_path,
         verbose=verbose,
         show_rclone_progress=show_rclone_progress,
     )
@@ -184,6 +204,8 @@ assert "repometa.toml" in {f["Name"] for f in _lsjson}
 
 # %%
 #|export
+if check_interrupted(): raise SoftInterruption()
+
 sync_part = RepoPart.CONF
 if sync_part in sync_choices:
     if verbose: print("Syncing", sync_part.value)
@@ -196,6 +218,8 @@ if sync_part in sync_choices:
         remote=repo_meta.storage_location,
         remote_path=repo_meta.get_remote_repoconf_path(config),
         remote_sync_record_path=repo_meta.get_remote_sync_record_path(config, sync_part),
+        local_sync_backups_path=local_sync_backups_path,
+        remote_sync_backups_path=remote_sync_backups_path,
         verbose=verbose,
         show_rclone_progress=show_rclone_progress,
     )
@@ -228,6 +252,8 @@ _repoyard_filters_path = _repoyard_filters_path if _repoyard_filters_path.exists
 
 # %%
 #|export
+if check_interrupted(): raise SoftInterruption()
+
 sync_part = RepoPart.DATA
 if sync_part in sync_choices:
     if verbose: print("Syncing", sync_part.value)
@@ -240,6 +266,8 @@ if sync_part in sync_choices:
         remote=repo_meta.storage_location,
         remote_path=repo_meta.get_remote_repodata_path(config),
         remote_sync_record_path=repo_meta.get_remote_sync_record_path(config, sync_part),
+        local_sync_backups_path=local_sync_backups_path,
+        remote_sync_backups_path=remote_sync_backups_path,
         include_path=_repoyard_include_path,
         exclude_path=_repoyard_exclude_path,
         filters_path=_repoyard_filters_path,

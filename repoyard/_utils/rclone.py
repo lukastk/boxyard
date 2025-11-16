@@ -2,7 +2,7 @@
 
 # %% auto 0
 __all__ = ['rclone_copy', 'rclone_copyto', 'rclone_sync', 'BisyncResult', 'rclone_bisync', 'rclone_mkdir', 'rclone_lsjson',
-           'rclone_path_exists', 'rclone_purge', 'rclone_cat']
+           'rclone_path_exists', 'rclone_purge', 'rclone_cat', 'rclone_move']
 
 # %% ../../../pts/mod/_utils/01_rclone.pct.py 3
 import subprocess
@@ -146,12 +146,16 @@ async def rclone_sync(
     include_file: str|None=None,
     exclude_file: str|None=None,
     filters_file: str|None=None,
+    backup_path: str|None=None,
     dry_run: bool=False,
     progress: bool=False,
     return_command: bool=False,
     verbose=False,
 ) -> bool:
     cmd = _rclone_cmd_helper("sync", rclone_config_path, source, source_path, dest, dest_path, include, exclude, filter, include_file, exclude_file, filters_file, dry_run, progress)
+    if backup_path:
+        cmd.append(f"--backup-dir")
+        cmd.append(backup_path)
     if not return_command:
         ret_code, stdout, stderr = await run_cmd_async(cmd)
         if verbose:
@@ -303,3 +307,20 @@ async def rclone_cat(
         return True, stdout
     else:
         return False, None
+
+# %% ../../../pts/mod/_utils/01_rclone.pct.py 37
+async def rclone_move(
+    rclone_config_path: str,
+    source: str,
+    source_path: str,
+    dest: str,
+    dest_path: str,
+) -> tuple[bool, str|None]:
+    source_str = f"{source}:{source_path}" if source else source_path
+    dest_str = f"{dest}:{dest_path}" if dest else dest_path
+    cmd = ["rclone", "move", '--config', rclone_config_path, source_str, dest_str]
+    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    if ret_code == 0:
+        return True, stdout
+    else:
+        return False, stderr

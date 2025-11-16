@@ -15,6 +15,7 @@ from pathlib import Path
 
 from repoyard.config import get_config
 from repoyard import const
+from repoyard._utils import enable_soft_interruption
 
 
 # %%
@@ -22,6 +23,7 @@ from repoyard import const
 async def delete_repo(
     config_path: Path,
     repo_full_name: str,
+    soft_interruption_enabled: bool = True,
 ):
     """
     """
@@ -49,6 +51,7 @@ data_path = test_folder_path / ".repoyard"
 config_path = test_folder_path / "repoyard_config" / "config.toml"
 sync_force = False
 skip_sync = True
+soft_interruption_enabled = True
 
 # %%
 # Run init
@@ -77,6 +80,9 @@ repo_full_name = new_repo(config_path=config_path, repo_name="test_repo", storag
 # %%
 #|export
 config = get_config(config_path)
+
+if soft_interruption_enabled:
+    enable_soft_interruption()
 
 # %%
 # Set up a rclone remote path for testing

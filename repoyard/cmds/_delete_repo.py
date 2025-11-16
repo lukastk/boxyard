@@ -5,10 +5,12 @@ from pathlib import Path
 
 from repoyard.config import get_config
 from repoyard import const
+from repoyard._utils import enable_soft_interruption
 
 async def delete_repo(
     config_path: Path,
     repo_full_name: str,
+    soft_interruption_enabled: bool = True,
 ):
     """
     """
@@ -20,6 +22,9 @@ async def delete_repo(
     
     # %% ../../../pts/mod/cmds/08_delete_repo.pct.py 11
     config = get_config(config_path)
+    
+    if soft_interruption_enabled:
+        enable_soft_interruption()
     
     # %% ../../../pts/mod/cmds/08_delete_repo.pct.py 14
     from .._models import get_repoyard_meta

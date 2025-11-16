@@ -22,6 +22,7 @@ from repoyard import const
 async def include_repo(
     config_path: Path,
     repo_full_name: str,
+    soft_interruption_enabled: bool = True,
 ):
     """
     """
@@ -47,6 +48,7 @@ data_path = test_folder_path / ".repoyard"
 # %%
 # Args (1/2)
 config_path = test_folder_path / "repoyard_config" / "config.toml"
+soft_interruption_enabled = True
 
 # %%
 # Run init
@@ -121,6 +123,7 @@ await sync_repo(
     sync_direction=SyncDirection.PULL,
     sync_setting=SyncSetting.FORCE,
     sync_choices=[RepoPart.DATA],
+    soft_interruption_enabled=soft_interruption_enabled,
 )
 
 # Then sync the rest
@@ -130,6 +133,7 @@ await sync_repo(
     sync_direction=None,
     sync_setting=SyncSetting.CAREFUL,
     sync_choices=[RepoPart.META, RepoPart.CONF],
+    soft_interruption_enabled=soft_interruption_enabled,
 );
 
 # %%

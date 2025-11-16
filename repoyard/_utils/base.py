@@ -2,7 +2,7 @@
 
 # %% auto 0
 __all__ = ['get_repo_full_name_from_sub_path', 'get_hostname', 'run_fzf', 'check_last_time_modified', 'run_cmd_async',
-           'async_throttler']
+           'async_throttler', 'SoftInterruption', 'enable_soft_interruption', 'check_interrupted']
 
 # %% ../../../pts/mod/_utils/00_base.pct.py 3
 import subprocess
@@ -146,3 +146,26 @@ async def async_throttler(
         if isinstance(r, Exception):
             raise r
     return res
+
+# %% ../../../pts/mod/_utils/00_base.pct.py 19
+import signal
+
+_interrupted = False
+
+class SoftInterruption(Exception):
+    pass
+
+def _soft_interruption_handler(signum, frame):
+    global _interrupted
+    sig_name = signal.Signals(signum).name
+    print(f"\nWARNING: {sig_name} received — will stop after the current operation.")
+    _interrupted = True
+
+def enable_soft_interruption():
+    signal.signal(signal.SIGINT, _soft_interruption_handler) # Ctrl-C
+    signal.signal(signal.SIGTERM, _soft_interruption_handler)   # shutdown
+    signal.signal(signal.SIGHUP, _soft_interruption_handler)  # logout / terminal closed
+
+def check_interrupted():
+    global _interrupted
+    return _interrupted

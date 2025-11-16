@@ -24,6 +24,7 @@ async def exclude_repo(
     config_path: Path,
     repo_full_name: str,
     skip_sync: bool = False,
+    soft_interruption_enabled: bool = True,
 ):
     """
     """
@@ -50,6 +51,7 @@ data_path = test_folder_path / ".repoyard"
 # Args (1/2)
 config_path = test_folder_path / "repoyard_config" / "config.toml"
 skip_sync = True
+soft_interruption_enabled = True
 
 # %%
 # Run init
@@ -87,7 +89,7 @@ type = alias
 remote = {remote_rclone_path}
 """);
 
-await sync_repo(config_path=config_path, repo_full_name=repo_full_name);
+await sync_repo(config_path=config_path, repo_full_name=repo_full_name, soft_interruption_enabled=soft_interruption_enabled);
 
 # %% [markdown]
 # Ensure that repo is included

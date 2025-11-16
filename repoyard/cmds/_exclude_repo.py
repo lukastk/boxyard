@@ -11,6 +11,7 @@ async def exclude_repo(
     config_path: Path,
     repo_full_name: str,
     skip_sync: bool = False,
+    soft_interruption_enabled: bool = True,
 ):
     """
     """

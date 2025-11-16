@@ -336,12 +336,14 @@ def create_user_repo_group_symlinks(
 class SyncRecord(const.StrictModel):
     ulid: ULID = Field(default_factory=ULID)
     timestamp: datetime|None = None # Is set after validation
+    sync_complete: bool
     creator_hostname: str
 
     @classmethod
-    def create(cls, creator_hostname: str|None=None) -> None:
+    def create(cls, sync_complete: bool, creator_hostname: str|None=None) -> None:
         from repoyard._utils import get_hostname
         return SyncRecord(
+            sync_complete=sync_complete,
             creator_hostname=creator_hostname or get_hostname(),
         )
 
@@ -386,6 +388,7 @@ from typing import NamedTuple
 
 class SyncCondition(Enum):
     SYNCED = "synced"
+    SYNC_INCOMPLETE = "sync_incomplete"
     CONFLICT = "conflict"
     NEEDS_PUSH = "needs_push"
     NEEDS_PULL = "needs_pull"
@@ -443,30 +446,38 @@ async def get_sync_status(
         sync_record_path=remote_sync_record_path,
     )
 
+    local_sync_incomplete = local_sync_record is not None and not local_sync_record.sync_complete
+    remote_sync_incomplete = remote_sync_record is not None and not remote_sync_record.sync_complete
+
     sync_records_match = (local_sync_record is not None and remote_sync_record is not None) and \
         (local_sync_record.ulid == remote_sync_record.ulid)
 
     local_last_modified = check_last_time_modified(local_path)
 
-    if sync_records_match:
-        if local_last_modified > local_sync_record.timestamp:
-            sync_condition = SyncCondition.NEEDS_PUSH
-        else:
-            sync_condition = SyncCondition.SYNCED
+    if local_sync_incomplete or remote_sync_incomplete:
+        sync_condition = SyncCondition.SYNC_INCOMPLETE
     else:
-        if local_path_exists:
-            if not remote_path_exists:
+        if sync_records_match:
+            if local_last_modified > local_sync_record.timestamp:
                 sync_condition = SyncCondition.NEEDS_PUSH
             else:
-                if local_last_modified > local_sync_record.timestamp:
-                    sync_condition = SyncCondition.CONFLICT
-                else:
-                    sync_condition = SyncCondition.NEEDS_PULL
+                sync_condition = SyncCondition.SYNCED
         else:
-            if remote_path_exists:
-                sync_condition = SyncCondition.NEEDS_PULL
+            if local_path_exists:
+                if not remote_path_exists:
+                    sync_condition = SyncCondition.NEEDS_PUSH
+                else:
+                    if local_sync_record is None:
+                        raise Exception("Something wrong here. Local sync record does not exist, but the remote path exists.")
+                    elif local_last_modified > local_sync_record.timestamp:
+                        sync_condition = SyncCondition.CONFLICT
+                    else:
+                        sync_condition = SyncCondition.NEEDS_PULL
             else:
-                raise Exception(f"Something went wrong here.")
+                if remote_path_exists:
+                    sync_condition = SyncCondition.NEEDS_PULL
+                else:
+                    raise Exception(f"Something went wrong here.")
 
     return SyncStatus(
         sync_condition=sync_condition,

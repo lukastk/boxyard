@@ -19,7 +19,7 @@ import asyncio
 import repoyard as proj
 from .. import const
 from ..config import get_config
-from .._utils import async_throttler
+from .._utils import async_throttler, check_interrupted, enable_soft_interruption
 from .._utils.sync_helper import SyncSetting, SyncDirection
 from .._models import RepoPart
 from .app import app, app_state
@@ -215,6 +215,7 @@ def cli_sync(
     sync_choices: list[RepoPart]|None = Option(None, "--sync-choices", "-c", help="The parts of the repository to sync. If not provided, all parts will be synced. By default, all parts are synced."),
     show_rclone_progress: bool = Option(False, "--progress", help="Show the progress of the sync in rclone."),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
+    soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
     Sync a repository.
@@ -248,6 +249,7 @@ def cli_sync(
         sync_choices=sync_choices,
         verbose=True,
         show_rclone_progress=show_rclone_progress,
+        soft_interruption_enabled=soft_interruption_enabled,
     ))
 
     if refresh_user_symlinks:
@@ -264,12 +266,16 @@ def cli_multi_sync(
     sync_setting: SyncSetting = Option(SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."),
     sync_choices: list[RepoPart]|None = Option(None, "--sync-choices", "-c", help="The parts of the repository to sync. If not provided, all parts will be synced. By default, all parts are synced."),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
+    soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
     Sync multiple repositories.
     """
     from repoyard._models import get_repoyard_meta
     from repoyard.cmds import sync_repo
+
+    if soft_interruption_enabled:
+        enable_soft_interruption()
 
     if repo_full_names is not None and storage_locations is not None:
         typer.echo("Cannot provide both `--repo` and `--storage-location`.", err=True)
@@ -296,6 +302,7 @@ def cli_multi_sync(
         repo_metas = [repoyard_meta.by_full_name[repo_full_name] for repo_full_name in repo_full_names]
 
     async def _task(repo_meta):
+        if check_interrupted(): raise SoftInterruption()
         await sync_repo(
             config_path=app_state['config_path'],
             repo_full_name=repo_meta.full_name,
@@ -303,6 +310,7 @@ def cli_multi_sync(
             sync_setting=sync_setting,
             sync_choices=sync_choices,
             verbose=False,
+            soft_interruption_enabled=soft_interruption_enabled,
         )
 
     asyncio.run(async_throttler(
@@ -324,6 +332,7 @@ def cli_sync_meta(
     sync_direction: SyncDirection|None = Option(None, "--sync-direction", "-d", help="The direction of the sync. If not provided, the appropriate direction will be automatically determined based on the sync status. This mode is only available for the 'CAREFUL' sync setting."),
     max_concurrent_rclone_ops: int|None = Option(None, "--max-concurrent", "-m", help="The maximum number of concurrent rclone operations. If not provided, the default specified in the config will be used."),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
+    soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
     Syncs the metadata of a repository.
@@ -350,6 +359,7 @@ def cli_sync_meta(
         sync_direction=sync_direction,
         verbose=True,
         max_concurrent_rclone_ops=max_concurrent_rclone_ops,
+        soft_interruption_enabled=soft_interruption_enabled,
     ))
 
     if refresh_user_symlinks:
@@ -369,6 +379,7 @@ def cli_add_to_group(
     sync_after: bool = Option(False, "--sync-after", "-s", help="Sync the repository after adding it to the group."),
     sync_setting: SyncSetting = Option(SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
+    soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
     Modify the metadata of a repository.
@@ -416,6 +427,7 @@ def cli_add_to_group(
                 sync_setting=sync_setting,
                 sync_direction=SyncDirection.PUSH,
                 verbose=True,
+                soft_interruption_enabled=soft_interruption_enabled,
             ))
 
     if refresh_user_symlinks:
@@ -435,6 +447,7 @@ def cli_remove_from_group(
     sync_after: bool = Option(False, "--sync-after", "-s", help="Sync the repository after adding it to the group."),
     sync_setting: SyncSetting = Option(SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
+    soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
     Modify the metadata of a repository.
@@ -482,6 +495,7 @@ def cli_remove_from_group(
                 sync_setting=sync_setting,
                 sync_direction=SyncDirection.PUSH,
                 verbose=True,
+                soft_interruption_enabled=soft_interruption_enabled,
             ))
 
     if refresh_user_symlinks:
@@ -497,6 +511,7 @@ def cli_include(
     name_match_mode: NameMatchMode|None = Option(None, "--name-match-mode", "-m", help="The mode to use for matching the repository name."),
     name_match_case: bool = Option(False, "--name-match-case", "-c", help="Whether to match the repository name case-sensitively."),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
+    soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
     Include a repository in the local store.
@@ -520,6 +535,7 @@ def cli_include(
     asyncio.run(include_repo(
         config_path=app_state['config_path'],
         repo_full_name=repo_full_name,
+        soft_interruption_enabled=soft_interruption_enabled,
     ))
 
     if refresh_user_symlinks:
@@ -536,6 +552,7 @@ def cli_exclude(
     name_match_case: bool = Option(False, "--name-match-case", "-c", help="Whether to match the repository name case-sensitively."),
     skip_sync: bool = Option(False, "--skip-sync", "-s", help="Skip the sync before excluding the repository."),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
+    soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
     Exclude a repository from the local store.
@@ -560,6 +577,7 @@ def cli_exclude(
         config_path=app_state['config_path'],
         repo_full_name=repo_full_name,
         skip_sync=skip_sync,
+        soft_interruption_enabled=soft_interruption_enabled,
     ))
 
     if refresh_user_symlinks:
@@ -575,6 +593,7 @@ def cli_delete(
     name_match_mode: NameMatchMode|None = Option(None, "--name-match-mode", "-m", help="The mode to use for matching the repository name."),
     name_match_case: bool = Option(False, "--name-match-case", "-c", help="Whether to match the repository name case-sensitively."),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
+    soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
     Delete a repository.
@@ -598,6 +617,7 @@ def cli_delete(
     asyncio.run(delete_repo(
         config_path=app_state['config_path'],
         repo_full_name=repo_full_name,
+        soft_interruption_enabled=soft_interruption_enabled,
     ))
 
     if refresh_user_symlinks:
