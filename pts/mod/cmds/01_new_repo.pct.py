@@ -151,13 +151,6 @@ else:
     repo_data_path.mkdir(parents=True, exist_ok=True)
 
 # %% [markdown]
-# Add `.repoyard_exclude`
-
-# %%
-#|export
-(repo_conf_path / ".repoyard_exclude").write_text(const.DEFAULT_REPOYARD_EXCLUDE);
-
-# %% [markdown]
 # Run `git init`
 
 # %%

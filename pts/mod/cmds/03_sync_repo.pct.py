@@ -232,7 +232,7 @@ _lsjson = await rclone_lsjson(
     source=repo_meta.storage_location,
     source_path=repo_meta.get_remote_repoconf_path(config)
 )
-assert ".repoyard_exclude" in {f["Name"] for f in _lsjson}
+assert _lsjson is None # Empty by default
 
 # %% [markdown]
 # Get the now locally synced conf files for the sync of the repo data
@@ -244,7 +244,7 @@ _repoyard_exclude_path = repo_meta.get_local_repoconf_path(config) / ".repoyard_
 _repoyard_filters_path = repo_meta.get_local_repoconf_path(config) / ".repoyard_filters"
 
 _repoyard_include_path = _repoyard_include_path if _repoyard_include_path.exists() else None
-_repoyard_exclude_path = _repoyard_exclude_path if _repoyard_exclude_path.exists() else None
+_repoyard_exclude_path = _repoyard_exclude_path if _repoyard_exclude_path.exists() else config.default_repoyard_exclude_path
 _repoyard_filters_path = _repoyard_filters_path if _repoyard_filters_path.exists() else None
 
 # %% [markdown]

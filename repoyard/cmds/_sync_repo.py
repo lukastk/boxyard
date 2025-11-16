@@ -122,7 +122,7 @@ async def sync_repo(
     _repoyard_filters_path = repo_meta.get_local_repoconf_path(config) / ".repoyard_filters"
     
     _repoyard_include_path = _repoyard_include_path if _repoyard_include_path.exists() else None
-    _repoyard_exclude_path = _repoyard_exclude_path if _repoyard_exclude_path.exists() else None
+    _repoyard_exclude_path = _repoyard_exclude_path if _repoyard_exclude_path.exists() else config.default_repoyard_exclude_path
     _repoyard_filters_path = _repoyard_filters_path if _repoyard_filters_path.exists() else None
     
     # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 31

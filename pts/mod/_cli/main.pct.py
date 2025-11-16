@@ -351,8 +351,8 @@ def cli_multi_sync(
             raise typer.Exit(code=1)
         repo_metas = [repoyard_meta.by_full_name[repo_full_name] for repo_full_name in repo_full_names]
 
-    async def _task(repo_meta):
-        sync_stats[repo_meta.full_name] =("Syncing...", None)
+    async def _task(num, repo_meta):
+        sync_stats[repo_meta.full_name] = (num, "Syncing...", None)
         try:
             await sync_repo(
                 config_path=app_state['config_path'],
@@ -362,11 +362,11 @@ def cli_multi_sync(
                 sync_choices=sync_choices,
                 verbose=False,
             )
-            sync_stats[repo_meta.full_name] = ("Success", None)
+            sync_stats[repo_meta.full_name] = (num, "Success", None)
         except SoftInterruption:
-            sync_stats[repo_meta.full_name] = ("Interrupted", None)
+            sync_stats[repo_meta.full_name] = (num, "Interrupted", None)
         except Exception as e:
-            sync_stats[repo_meta.full_name] = ("Error", str(e))
+            sync_stats[repo_meta.full_name] = (num, "Error", str(e))
         
     sync_stats = {}
 
@@ -377,7 +377,7 @@ def cli_multi_sync(
         with Live(console=console, refresh_per_second=4) as live:
             def _update_live():
                 lines = []
-                for repo_full_name, (sync_stat, e) in sync_stats.items():
+                for repo_full_name, (num, sync_stat, e) in sync_stats.items():
                     color = {
                         "Syncing...": "yellow",
                         "Success": "green",
@@ -385,7 +385,7 @@ def cli_multi_sync(
                         "Error": "red",
                     }.get(sync_stat, "white")
 
-                    lines.append(f"{repo_full_name}")
+                    lines.append(f"[bold]{num}/{len(repo_metas)}[/bold] {repo_full_name}")
                     lines.append(f"    [bold {color}]{sync_stat}[/bold {color}]")
                     if e:
                         lines.append(f"    [red]{e}[/red]")
@@ -399,7 +399,7 @@ def cli_multi_sync(
             _update_live()
 
     sync_task = async_throttler(
-        [_task(repo_meta) for repo_meta in repo_metas],
+        [_task(num, repo_meta) for num, repo_meta in enumerate(repo_metas)],
         max_concurrency=max_concurrent_rclone_ops,
     )
 

@@ -478,9 +478,6 @@ async def get_sync_status(
         _local = "directory" if local_path_is_dir else "file"
         _remote = "directory" if remote_path_is_dir else "file"
         raise Exception(f"Local and remote paths are not both files or both directories. Local is {_local} and remote is {_remote}.")
-
-    if not local_path_exists and not remote_path_exists:
-        raise Exception(f"Local and remote paths do not exist!")
     
     is_dir = local_path_is_dir or remote_path_is_dir
 
@@ -508,7 +505,7 @@ async def get_sync_status(
         sync_condition = SyncCondition.SYNC_INCOMPLETE
     else:
         if sync_records_match:
-            if local_last_modified > local_sync_record.timestamp:
+            if local_last_modified is not None and local_last_modified > local_sync_record.timestamp:
                 sync_condition = SyncCondition.NEEDS_PUSH
             else:
                 sync_condition = SyncCondition.SYNCED
@@ -519,7 +516,7 @@ async def get_sync_status(
                 else:
                     if local_sync_record is None:
                         raise Exception("Something wrong here. Local sync record does not exist, but the remote path exists.")
-                    elif local_last_modified > local_sync_record.timestamp:
+                    elif local_last_modified is not None and local_last_modified > local_sync_record.timestamp:
                         sync_condition = SyncCondition.CONFLICT
                     else:
                         sync_condition = SyncCondition.NEEDS_PULL
@@ -527,7 +524,7 @@ async def get_sync_status(
                 if remote_path_exists:
                     sync_condition = SyncCondition.NEEDS_PULL
                 else:
-                    raise Exception(f"Something went wrong here.")
+                    sync_condition = SyncCondition.SYNCED # Synced by default, since neither local nor remote path exists
 
     return SyncStatus(
         sync_condition=sync_condition,

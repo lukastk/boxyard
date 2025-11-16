@@ -98,9 +98,6 @@ def new_repo(
         repo_data_path.mkdir(parents=True, exist_ok=True)
     
     # %% ../../../pts/mod/cmds/01_new_repo.pct.py 17
-    (repo_conf_path / ".repoyard_exclude").write_text(const.DEFAULT_REPOYARD_EXCLUDE);
-    
-    # %% ../../../pts/mod/cmds/01_new_repo.pct.py 19
     if initialise_git and not (repo_data_path / '.git').exists():
         if verbose: print("Initialising git repository")
         res = subprocess.run(
@@ -113,7 +110,7 @@ def new_repo(
         if res.returncode != 0:
             if verbose: print("Warning: Failed to initialise git repository")
     
-    # %% ../../../pts/mod/cmds/01_new_repo.pct.py 21
+    # %% ../../../pts/mod/cmds/01_new_repo.pct.py 19
     from .._models import refresh_repoyard_meta
     refresh_repoyard_meta(config)
     return repo_meta.full_name;

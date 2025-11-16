@@ -49,8 +49,12 @@ DEFAULT_FAKE_STORE_REL_PATH = "fake_store"
 #|export
 DEFAULT_REPOYARD_EXCLUDE = inspect.cleandoc("""
 .venv/
+.pixi/
+.trunk/
 node_modules/
 __pycache__/
+
+.DS_Store
 """)
 
 REPO_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
