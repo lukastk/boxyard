@@ -51,6 +51,7 @@ __pycache__/
 """)
 
 REPO_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
+REPO_TIMESTAMP_FORMAT_DATE_ONLY = "%Y%m%d"
 DEFAULT_REPO_SUBID_CHARACTER_SET = string.ascii_lowercase + string.ascii_uppercase + string.digits
 DEFAULT_REPO_SUBID_LENGTH = 5
 

@@ -45,8 +45,18 @@ class RepoMeta(const.StrictModel):
     groups: list[str]
 
     @classmethod
-    def create(cls, config: repoyard.config.Config, name: str, storage_location_name: str, creator_hostname: str, groups: list[str]) -> 'RepoMeta':
-        creation_timestamp_utc = datetime.now(timezone.utc).strftime(const.REPO_TIMESTAMP_FORMAT)
+    def create(
+        cls,
+        config: repoyard.config.Config,
+        name: str,
+        storage_location_name: str,
+        creator_hostname: str,
+        groups: list[str],
+        creation_timestamp_utc: datetime|None = None,
+    ) -> 'RepoMeta':
+        if creation_timestamp_utc is None:
+            creation_timestamp_utc = datetime.now(timezone.utc).strftime(const.REPO_TIMESTAMP_FORMAT)
+
         return RepoMeta(
             creation_timestamp_utc=creation_timestamp_utc,
             repo_subid=_create_repo_subid(config.repo_subid_character_set, config.repo_subid_length),

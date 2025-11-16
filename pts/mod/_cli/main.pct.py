@@ -179,6 +179,11 @@ def cli_new(
     from_path: Path|None = Option(None, "--from", "-f", help="Path to a local directory to move into repoyard as a new repository."),
     copy_from_path: bool = Option(False, "--copy", "-c", help="Copy the contents of the from_path into the new repository."),
     creator_hostname: str|None = Option(None, "--creator-hostname", help="Used to explicitly set the creator hostname of the new repository."),
+    creation_timestamp_utc: str|None = Option(
+        None,
+        "--creation-timestamp-utc",
+        help="The timestamp of the new repository. Should be in the form '%Y%m%d_%H%M%S' (e.g. '20251116_105532') or '%Y%m%d' (e.g. '20251116'). If not provided, the current UTC timestamp will be used."
+    ),
     groups: list[str]|None = Option(None, "--groups", "-g", help="The groups to add the new repository to."),
     initialise_git: bool = Option(True, help="Initialise a git repository in the new repository."),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
@@ -194,6 +199,16 @@ def cli_new(
     if repo_name is None:
         typer.echo("No repository name provided.")
         raise typer.Exit(code=1)
+
+    if creation_timestamp_utc is not None:
+        try:
+            creation_timestamp_utc = datetime.strptime(creation_timestamp_utc, const.REPO_TIMESTAMP_FORMAT)
+        except ValueError:
+            try:
+                creation_timestamp_utc = datetime.strptime(creation_timestamp_utc, const.REPO_TIMESTAMP_FORMAT_DATE_ONLY)
+            except ValueError:
+                typer.echo(f"Invalid creation timestamp: {creation_timestamp_utc}")
+                raise typer.Exit(code=1)
     
     repo_full_name = new_repo(
         config_path=app_state['config_path'],

@@ -13,6 +13,7 @@ import nblite; from nblite import show_doc; nblite.nbl_export()
 #|top_export
 from pathlib import Path
 import subprocess
+from datetime import datetime
 
 from repoyard import const
 from repoyard.config import StorageType
@@ -27,11 +28,26 @@ def new_repo(
     from_path: Path|None = None,
     copy_from_path: bool = False,
     creator_hostname: str|None = None,
+    creation_timestamp_utc: datetime|None = None,
     initialise_git: bool = True,
     verbose: bool = False,
 ):
     """
     Create a new repoyard repository.
+
+    Args:
+        config_path: The path to the repoyard config file.
+        storage_location: The storage location to create the new repository in.
+        repo_name: The name of the new repository.
+        from_path: The path to a local directory to move into repoyard as a new repository.
+        copy_from_path: Whether to copy the contents of the from_path into the new repository.
+        creator_hostname: The hostname of the creator of the new repository.
+        creation_timestamp_utc: The timestamp of the new repository. If not provided, the current UTC timestamp will be used.
+        initialise_git: Whether to initialise a git repository in the new repository.
+        verbose: Whether to print verbose output.
+
+    Returns:
+        The full name of the new repository.
     """
     ...
 
@@ -55,6 +71,7 @@ from_path = None
 copy_from_path = False
 creator_hostname = None
 add_repoyard_exclude = True
+creation_timestamp_utc = None
 initialise_git = True
 verbose = True
 
@@ -108,6 +125,7 @@ repo_meta = RepoMeta.create(
     storage_location_name=storage_location,
     groups=[],
     creator_hostname=creator_hostname,
+    creation_timestamp_utc=creation_timestamp_utc,
 )
 
 repo_meta.save(config)
