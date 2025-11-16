@@ -58,50 +58,61 @@ def _get_full_repo_name(
     repo_full_name: str|None,
     name_match_mode: NameMatchMode|None,
     name_match_case: bool,
+    repo_metas = None,
 ) -> str:
+    from repoyard._models import RepoyardMeta
     if sum(1 for x in [repo_name, repo_full_name, repo_id] if x is not None) > 1:
         raise typer.Exit("Cannot provide more than one of `repo-name`, `repo-full-name` or `repo-id`.")
-
+    
     if name_match_mode is not None and repo_name is None:
         raise typer.Exit("`repo-name` must be provided if `name-match-mode` is provided.")
     
-    if repo_id is not None or repo_name is not None:
-        from repoyard._models import get_repoyard_meta
-        config = get_config(app_state['config_path'])
-        repoyard_meta = get_repoyard_meta(config)
-        
+    search_mode = (repo_id is None) and (repo_name is None) and (repo_full_name is None)
+
+    from repoyard._models import get_repoyard_meta
+    config = get_config(app_state['config_path'])
+    if repo_metas is None:
+        repo_metas = get_repoyard_meta(config).repo_metas
+    repoyard_meta = RepoyardMeta(repo_metas=repo_metas)
+
+    if (repo_id is not None or repo_name is not None) or search_mode:        
         if repo_id is not None:
             if not repo_id in repoyard_meta.by_id:
                 raise typer.Exit(f"Repository with id `{repo_id}` not found.")
             repo_full_name = repoyard_meta.by_id[repo_id].full_name
         else:
-            if name_match_mode is None: name_match_mode = NameMatchMode.SUBSEQUENCE
-            if name_match_mode == NameMatchMode.EXACT:
-                cmp = lambda x: x.name == repo_name if not name_match_case else x.name.lower() == repo_name.lower()
-                repos_with_name = [x for x in repoyard_meta.by_full_name.values() if cmp(x)]
-            elif name_match_mode == NameMatchMode.CONTAINS:
-                cmp = lambda x: repo_name in x.name if not name_match_case else repo_name.lower() in x.name.lower()
-                repos_with_name = [x for x in repoyard_meta.by_full_name.values() if cmp(x)]
-            elif name_match_mode == NameMatchMode.SUBSEQUENCE:
-                cmp = lambda x: _is_subsequence_match(repo_name, x.name) if not name_match_case else _is_subsequence_match(repo_name.lower(), x.name.lower())
-                repos_with_name = [x for x in repoyard_meta.by_full_name.values() if cmp(x)]
+            if repo_name is not None:
+                if name_match_mode is None: name_match_mode = NameMatchMode.SUBSEQUENCE
+                if name_match_mode == NameMatchMode.EXACT:
+                    cmp = lambda x: x.name == repo_name if not name_match_case else x.name.lower() == repo_name.lower()
+                    repos_with_name = [x for x in repoyard_meta.repo_metas if cmp(x)]
+                elif name_match_mode == NameMatchMode.CONTAINS:
+                    cmp = lambda x: repo_name in x.name if not name_match_case else repo_name.lower() in x.name.lower()
+                    repos_with_name = [x for x in repoyard_meta.repo_metas if cmp(x)]
+                elif name_match_mode == NameMatchMode.SUBSEQUENCE:
+                    cmp = lambda x: _is_subsequence_match(repo_name, x.name) if not name_match_case else _is_subsequence_match(repo_name.lower(), x.name.lower())
+                    repos_with_name = [x for x in repoyard_meta.repo_metas if cmp(x)]
+            else:
+                repos_with_name = repoyard_meta.repo_metas
+
             repos_with_name = sorted(repos_with_name, key=lambda x: x.full_name)
-                
+            
             if len(repos_with_name) == 0:
-                raise typer.Exit(f"Repository with name `{repo_name}` not found.")
+                typer.echo(f"Repository not found.", err=True)
+                raise typer.Exit(code=1)
             elif len(repos_with_name) == 1:
                 repo_full_name = repos_with_name[0].full_name
             else:
                 from repoyard._utils import run_fzf
                 _, repo_full_name = run_fzf(
                     terms=[r.full_name for r in repos_with_name],
-                    disp_terms=[f"{r.name} ({r.repo_id})" for r in repos_with_name],
+                    disp_terms=[f"{r.name} ({r.repo_id}) groups: {', '.join(r.groups)}" for r in repos_with_name],
                 )
         
     if repo_full_name is None:
         from repoyard._utils import get_repo_full_name_from_cwd
         repo_full_name = get_repo_full_name_from_cwd(
-            config=get_config(app_state['config_path']),
+            config=config,
         )
         if repo_full_name is None:
             raise typer.Exit("Repo not specified and could not be inferred from current working directory.")
@@ -670,10 +681,25 @@ def cli_yard_status(
             typer.echo("\n")
 
 # %% ../../../pts/mod/_cli/main.pct.py 39
+def _get_filtered_repo_metas(repo_metas, include_groups, exclude_groups, group_filter):
+    # Apply filter
+    if include_groups:
+        repo_metas = [repo_meta for repo_meta in repo_metas if any(group in repo_meta.groups for group in include_groups)]
+    if exclude_groups:
+        repo_metas = [repo_meta for repo_meta in repo_metas if not any(group in repo_meta.groups for group in exclude_groups)]
+    if group_filter:
+        from repoyard._utils.logical_expressions import evaluate_group_expression
+        repo_metas = [repo_meta for repo_meta in repo_metas if evaluate_group_expression(group_filter, repo_meta.groups)]
+    return repo_metas
+
+# %% ../../../pts/mod/_cli/main.pct.py 40
 @app.command(name='list')
 def cli_list(
     storage_locations: list[str]|None = Option(None, "--storage-location", "-s", help="The storage location to get the status of. If not provided, the status of all storage locations will be shown."),
     output_format: Literal['text', 'json'] = Option('text', "--output-format", "-o", help="The format of the output."),
+    include_groups: list[str]|None = Option(None, "--include-group", "-g", help="The group to include in the output."),
+    exclude_groups: list[str]|None = Option(None, "--exclude-group", "-e", help="The group to exclude from the output."),
+    group_filter: str|None = Option(None, "--group-filter", "-f", help="The filter to apply to the groups. The filter is a boolean expression over the groups of the repositories. Allowed operators are `AND`, `OR`, `NOT`, and parentheses for grouping.."),
 ):
     """
     List all repositories in the yard.
@@ -689,16 +715,32 @@ def cli_list(
         raise typer.Exit(code=1)
 
     repo_metas = [repo_meta for repo_meta in get_repoyard_meta(config).repo_metas if repo_meta.storage_location in storage_locations]
+    repo_metas = _get_filtered_repo_metas(repo_metas, include_groups, exclude_groups, group_filter)
 
     if output_format == 'json':
-        typer.echo(json.dumps(repo_metas, indent=2))
+        typer.echo(json.dumps([rm.model_dump() for rm in repo_metas], indent=2))
     else:
         for repo_meta in repo_metas:
             typer.echo(repo_meta.full_name)
 
 
 
-# %% ../../../pts/mod/_cli/main.pct.py 41
+# %% ../../../pts/mod/_cli/main.pct.py 42
+@app.command(name='list-groups')
+def cli_list(
+    storage_locations: list[str]|None = Option(None, "--storage-location", "-s", help="The storage location to get the status of. If not provided, the status of all storage locations will be shown."),
+):
+    from repoyard._models import get_repoyard_meta, get_repo_group_configs
+    config = get_config(app_state['config_path'])
+    if storage_locations is None:
+        storage_locations = list(config.storage_locations.keys())
+    repo_metas = [repo_meta for repo_meta in get_repoyard_meta(config).repo_metas if repo_meta.storage_location in storage_locations]
+    group_configs = get_repo_group_configs(config, repo_metas)
+
+    for group_name in sorted(group_configs.keys()):
+        typer.echo(group_name)
+
+# %% ../../../pts/mod/_cli/main.pct.py 44
 @app.command(name='path')
 def cli_path(
     repo_full_name: str|None = Option(None, "--repo", "-r", help="The full name of the repository, in the form '{ULID}__{REPO_NAME}'."),
@@ -717,6 +759,9 @@ def cli_path(
             'sync-record-conf',
 
         ] = Option('data-user', "--path-option", "-p", help="The part of the repository to get the path of."),
+    include_groups: list[str]|None = Option(None, "--include-group", "-g", help="The group to include in the output."),
+    exclude_groups: list[str]|None = Option(None, "--exclude-group", "-e", help="The group to exclude from the output."),
+    group_filter: str|None = Option(None, "--group-filter", "-f", help="The filter to apply to the groups. The filter is a boolean expression over the groups of the repositories. Allowed operators are `AND`, `OR`, `NOT`, and parentheses for grouping.."),
 ):
     """
     Get the path of a repository.
@@ -725,6 +770,14 @@ def cli_path(
     from repoyard._models import get_repoyard_meta
     from pydantic import BaseModel
     import json
+
+    repoyard_meta = get_repoyard_meta(get_config(app_state['config_path']))
+    repo_metas = _get_filtered_repo_metas(
+        repo_metas=repoyard_meta.repo_metas,
+        include_groups=include_groups,
+        exclude_groups=exclude_groups,
+        group_filter=group_filter,
+    )
     
     repo_full_name = _get_full_repo_name(
         repo_name=repo_name,
@@ -732,9 +785,9 @@ def cli_path(
         repo_full_name=repo_full_name,
         name_match_mode=name_match_mode,
         name_match_case=name_match_case,
+        repo_metas=repo_metas,
     )
     
-    repoyard_meta = get_repoyard_meta(get_config(app_state['config_path']))
     if repo_full_name not in repoyard_meta.by_full_name:
         typer.echo(f"Repository with full name `{repo_full_name}` not found.")
         raise typer.Exit(code=1)
@@ -762,7 +815,7 @@ def cli_path(
         typer.echo(f"Invalid path option: {path_option}")
         raise typer.Exit(code=1)
 
-# %% ../../../pts/mod/_cli/main.pct.py 43
+# %% ../../../pts/mod/_cli/main.pct.py 46
 @app.command(name='create-user-symlinks')
 def cli_create_user_symlinks(
     user_repos_path: Path|None = Option(None, "--user-repos-path", "-u", help="The path to the user repositories. If not provided, the default specified in the config will be used."),
