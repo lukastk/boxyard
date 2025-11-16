@@ -45,7 +45,7 @@ async def sync_helper(
     exclude: list[str]|None = None,
     filter: list[str]|None = None,
     delete_backup: bool = True,
-    creator_hostname: str|None = None,
+    syncer_hostname: str|None = None,
     verbose: bool = False,
     show_rclone_progress: bool = False,
 ) -> tuple[SyncStatus, bool]:
@@ -165,7 +165,7 @@ async def sync_helper(
     
     if check_interrupted(): raise SoftInterruption()
     
-    rec = SyncRecord.create(creator_hostname=creator_hostname, sync_complete=False)
+    rec = SyncRecord.create(syncer_hostname=syncer_hostname, sync_complete=False)
     backup_name = str(rec.ulid)
     
     if sync_direction == SyncDirection.PULL:
@@ -209,7 +209,7 @@ async def sync_helper(
     
         if res:
             # Create a new sync record and save it at the remote
-            rec = SyncRecord.create(creator_hostname=creator_hostname, sync_complete=True)
+            rec = SyncRecord.create(syncer_hostname=syncer_hostname, sync_complete=True)
             await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
             await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
     

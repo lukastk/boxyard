@@ -337,14 +337,14 @@ class SyncRecord(const.StrictModel):
     ulid: ULID = Field(default_factory=ULID)
     timestamp: datetime|None = None # Is set after validation
     sync_complete: bool
-    creator_hostname: str
+    syncer_hostname: str
 
     @classmethod
-    def create(cls, sync_complete: bool, creator_hostname: str|None=None) -> None:
+    def create(cls, sync_complete: bool, syncer_hostname: str|None=None) -> None:
         from repoyard._utils import get_hostname
         return SyncRecord(
             sync_complete=sync_complete,
-            creator_hostname=creator_hostname or get_hostname(),
+            syncer_hostname=syncer_hostname or get_hostname(),
         )
 
     async def rclone_save(self, rclone_config_path: str, dest: str, dest_path: str) -> None:
