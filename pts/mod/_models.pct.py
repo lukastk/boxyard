@@ -309,14 +309,16 @@ def get_repo_group_configs(
 def create_user_repo_group_symlinks(
     config: repoyard.config.Config,
 ):
+    from collections import defaultdict
     from repoyard.config import RepoGroupTitleMode
     repo_metas = [repo_meta for repo_meta in get_repoyard_meta(config).repo_metas if repo_meta.check_included(config)]
     repo_metas.sort(key=lambda x: x.creation_timestamp_datetime)
     groups = get_repo_group_configs(config, repo_metas)
     symlink_paths = []
-    
+
     # Create all symlinks
     for group_name, group_config in groups.items():
+        title_counter = defaultdict(int)
         for repo_meta in repo_metas:
             if not repo_meta.check_included(config): continue
             if group_name not in repo_meta.groups: continue
@@ -327,6 +329,11 @@ def create_user_repo_group_symlinks(
                 title = f"{repo_meta.creation_timestamp_utc}__{repo_meta.name}"
             elif group_config.repo_title_mode == RepoGroupTitleMode.NAME:
                 title = repo_meta.name
+
+            if title_counter[title] > 1:
+                title = f"{title} (CONFLICT {title_counter[title]})" # TODO this will break if the title contains a `(CONFLICT ...`
+            title_counter[title] += 1
+
             symlink_path = config.user_repo_groups_path / group_name / title        
             symlink_path.parent.mkdir(parents=True, exist_ok=True)
 

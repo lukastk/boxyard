@@ -80,6 +80,20 @@ modify_repometa(
     }
 )
 
+# Create a new repo with the same name, to test the conflict handling when adding it to the same group
+from repoyard.cmds._modify_repometa import RepoNameConflict
+try:
+    repo_full_name2 = new_repo(config_path=config_path, repo_name="test_repo")
+    modify_repometa(
+        config_path=config_path,
+        repo_full_name=repo_full_name2,
+        modifications={
+            'groups': ['test_group'],
+        }
+    )
+    raise ValueError("Should not happen")
+except RepoNameConflict: pass
+
 # %% [markdown]
 # # Function body
 
@@ -110,7 +124,8 @@ create_user_repos_symlinks(
 )
 
 # %%
-assert next(p.name for p in config.user_repos_path.glob('*')) == repo_full_name
+ps = [p.name for p in config.user_repos_path.glob('*')]
+assert repo_full_name in ps
 
 # %% [markdown]
 # Create repo group symlinks

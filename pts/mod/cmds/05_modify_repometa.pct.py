@@ -22,6 +22,11 @@ from repoyard import const
 
 
 # %%
+#|top_export
+class RepoNameConflict(Exception): pass
+
+
+# %%
 #|set_func_signature
 def modify_repometa(
     config_path: Path,
@@ -125,10 +130,17 @@ modified_repo_meta = RepoMeta(**{
 #|export
 #TESTREF: test_modify_repometa_unique_names
 from repoyard._models import get_repo_group_configs
-repo_group_configs = get_repo_group_configs(config, repoyard_meta.repo_metas)
-for g in repo_meta.groups:
+
+# Construct modified repo_metas list
+_old_repo_meta = repoyard_meta.by_full_name[repo_full_name]
+_repo_metas = list(repoyard_meta.repo_metas)
+_repo_metas.remove(_old_repo_meta)
+_repo_metas.append(modified_repo_meta)
+
+repo_group_configs = get_repo_group_configs(config, _repo_metas)
+for g in modified_repo_meta.groups:
     repo_group_config = repo_group_configs[g]
-    repo_metas_in_group = [repo_meta for repo_meta in repoyard_meta.repo_metas if g in repo_meta.groups]
+    repo_metas_in_group = [rm for rm in _repo_metas if g in modified_repo_meta.groups]
 
     if repo_group_config.unique_repo_names:
         name_counts = {repo_meta.name: 0 for repo_meta in repo_metas_in_group}
@@ -137,7 +149,7 @@ for g in repo_meta.groups:
         duplicate_names = [(name, count) for name, count in name_counts.items() if count > 1]
         if duplicate_names:
             names_str = ", ".join(f"'{name}' (count: {count})" for name, count in duplicate_names)
-            raise ValueError(f"Error modifying repo meta for '{repo_full_name}':\n"
+            raise RepoNameConflict(f"Error modifying repo meta for '{repo_full_name}':\n"
                              f"Repo is in group '{g}' which requires unique names. After the modification, the following name(s) appear multiple times in this group: {names_str}.")
 
 

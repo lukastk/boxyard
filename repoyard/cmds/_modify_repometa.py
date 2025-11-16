@@ -10,6 +10,9 @@ from repoyard._utils import get_repo_full_name_from_sub_path
 from repoyard.config import get_config, StorageType
 from repoyard import const
 
+# %% top_export
+class RepoNameConflict(Exception): pass
+
 def modify_repometa(
     config_path: Path,
     repo_full_name: str,
@@ -23,10 +26,10 @@ def modify_repometa(
     # %% auto 0
     __all__ = ['config', 'repoyard_meta', 'repo_meta', 'modified_repo_meta', 'repo_group_configs']
     
-    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/05_modify_repometa.pct.py 11
+    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/05_modify_repometa.pct.py 12
     config = get_config(config_path)
     
-    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/05_modify_repometa.pct.py 14
+    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/05_modify_repometa.pct.py 15
     from .._models import get_repoyard_meta, RepoMeta
     repoyard_meta = get_repoyard_meta(config)
     
@@ -35,19 +38,26 @@ def modify_repometa(
     
     repo_meta = repoyard_meta.by_full_name[repo_full_name]
     
-    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/05_modify_repometa.pct.py 16
+    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/05_modify_repometa.pct.py 17
     modified_repo_meta = RepoMeta(**{
         **repo_meta.model_dump(),
         **modifications
     })
     
-    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/05_modify_repometa.pct.py 18
+    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/05_modify_repometa.pct.py 19
     #TESTREF: test_modify_repometa_unique_names
     from .._models import get_repo_group_configs
-    repo_group_configs = get_repo_group_configs(config, repoyard_meta.repo_metas)
-    for g in repo_meta.groups:
+    
+    # Construct modified repo_metas list
+    _old_repo_meta = repoyard_meta.by_full_name[repo_full_name]
+    _repo_metas = list(repoyard_meta.repo_metas)
+    _repo_metas.remove(_old_repo_meta)
+    _repo_metas.append(modified_repo_meta)
+    
+    repo_group_configs = get_repo_group_configs(config, _repo_metas)
+    for g in modified_repo_meta.groups:
         repo_group_config = repo_group_configs[g]
-        repo_metas_in_group = [repo_meta for repo_meta in repoyard_meta.repo_metas if g in repo_meta.groups]
+        repo_metas_in_group = [rm for rm in _repo_metas if g in modified_repo_meta.groups]
     
         if repo_group_config.unique_repo_names:
             name_counts = {repo_meta.name: 0 for repo_meta in repo_metas_in_group}
@@ -56,12 +66,12 @@ def modify_repometa(
             duplicate_names = [(name, count) for name, count in name_counts.items() if count > 1]
             if duplicate_names:
                 names_str = ", ".join(f"'{name}' (count: {count})" for name, count in duplicate_names)
-                raise ValueError(f"Error modifying repo meta for '{repo_full_name}':\n"
+                raise RepoNameConflict(f"Error modifying repo meta for '{repo_full_name}':\n"
                                  f"Repo is in group '{g}' which requires unique names. After the modification, the following name(s) appear multiple times in this group: {names_str}.")
     
-    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/05_modify_repometa.pct.py 20
+    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/05_modify_repometa.pct.py 21
     modified_repo_meta.save(config)
     
-    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/05_modify_repometa.pct.py 23
+    # %% ../../../../../../../../../Users/lukastk/dev/2025-11-09_00__repoyard/pts/mod/cmds/05_modify_repometa.pct.py 24
     from .._models import refresh_repoyard_meta
     refresh_repoyard_meta(config)
