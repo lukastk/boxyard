@@ -369,6 +369,12 @@ def create_user_repo_group_symlinks(
             elif symlink_path.exists():
                 raise Exception(f"'{symlink_path}' is in the user repo group path '{config.user_repo_groups_path}' but is not a symlink!")
 
+    # Remove all empty group folders that are not in the group configs
+    for group_folder_path in config.user_repo_groups_path.glob('*'):
+        if group_folder_path.name not in groups:
+            if group_folder_path.is_dir() and not list(group_folder_path.iterdir()):
+                group_folder_path.rmdir()
+
 
 # %% [markdown]
 # # `SyncRecord`
