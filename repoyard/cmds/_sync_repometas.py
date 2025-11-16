@@ -3,9 +3,8 @@
 # %% top_export
 from pathlib import Path
 
-from repoyard._utils.sync_helper import sync_helper, SyncSetting, SyncDirection
 from repoyard.config import get_config, StorageType
-from repoyard._utils.sync_helper import SyncFailed, SyncUnsafe, InvalidRemotePath, SyncStatus
+from repoyard._utils.sync_helper import SyncFailed, SyncUnsafe, InvalidRemotePath, SyncStatus, SyncSetting, SyncDirection
 from repoyard import const
 
 async def sync_repometas(

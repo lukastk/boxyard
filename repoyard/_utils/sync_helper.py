@@ -35,12 +35,15 @@ async def sync_helper(
     remote: str,
     remote_path: str,
     remote_sync_record_path: str,
+    local_sync_backups_path: str,
+    remote_sync_backups_path: str,
     include_path: Path|None = None,
     exclude_path: Path|None = None,
     filters_path: Path|None = None,
     include: list[str]|None = None,
     exclude: list[str]|None = None,
     filter: list[str]|None = None,
+    delete_backup: bool = True,
     creator_hostname: str|None = None,
     verbose: bool = False,
     show_rclone_progress: bool = False,
@@ -55,17 +58,17 @@ async def sync_helper(
     
     # %% auto 0
     __all__ = ['sync_status', 'sync_condition', 'local_path_exists', 'remote_path_exists', 'local_sync_record', 'remote_sync_record',
-               'sync_path_is_dir']
+               'sync_path_is_dir', 'rec', 'backup_name']
     
-    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 13
+    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 14
     if not remote_path:
         raise InvalidRemotePath("Remote path cannot be empty.") # Disqualifying empty remote paths as it can cause issues with the safety mechanisms
     
-    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 14
+    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 15
     if sync_direction is None and sync_setting != SyncSetting.CAREFUL:
         raise ValueError("Auto sync direction can only be used with careful sync setting.")
     
-    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 15
+    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 17
     from .._models import get_sync_status, SyncCondition
     
     sync_status = await get_sync_status(
@@ -78,7 +81,7 @@ async def sync_helper(
     )
     sync_condition, local_path_exists, remote_path_exists, local_sync_record, remote_sync_record, sync_path_is_dir = sync_status
     
-    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 18
+    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 19
     def _raise_unsafe():
         raise SyncUnsafe(inspect.cleandoc(f"""
             Sync is unsafe. Info:
@@ -98,6 +101,8 @@ async def sync_helper(
             sync_direction = SyncDirection.PUSH
         elif sync_condition == SyncCondition.NEEDS_PULL:
             sync_direction = SyncDirection.PULL
+        elif sync_condition == SyncCondition.SYNC_INCOMPLETE:
+            _raise_unsafe()
         else:
             _raise_unsafe() # In the case where the sync status is SYNCED, 'auto'-mode should not reach this, as it should have already returned (as auto can only be used in CAREFUL mode)
     
@@ -107,18 +112,35 @@ async def sync_helper(
         elif sync_direction == SyncDirection.PULL and sync_condition not in [SyncCondition.NEEDS_PULL, SyncCondition.SYNCED]:
             _raise_unsafe()
     
-    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 20
-    from . import rclone_bisync, rclone_sync, BisyncResult, rclone_mkdir, rclone_path_exists
+    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 21
+    from . import rclone_sync, BisyncResult, rclone_mkdir, rclone_path_exists, rclone_purge
         
-    def _sync(dry_run: bool, source: str, source_path: str, dest: str, dest_path: str, return_command: bool=False,) -> BisyncResult:
+    async def _sync(
+        dry_run: bool,
+        source: str,
+        source_path: str,
+        dest: str,
+        dest_path: str,
+        backup_remote: str,
+        backup_path: str,
+        return_command: bool=False,
+    ) -> BisyncResult:
         if not sync_path_is_dir:
             dest_path = Path(dest_path).parent.as_posix() # needed because rlcone sync doesn't seem to accept files on the dest path
             if dest_path == '.': dest_path = ''
         
         if verbose:
-            print(f"Syncing {source}:{source_path} to {dest}:{dest_path}.")
+            print(f"Syncing {source}:{source_path} to {dest}:{dest_path}.  Backup path: {backup_remote}:{backup_path}")
     
-        return rclone_sync(
+        # Create backup store directory if it doesn't already exist
+        from repoyard._utils import rclone_mkdir
+        await rclone_mkdir(
+            rclone_config_path=rclone_config_path,
+            source=backup_remote,
+            source_path=backup_path,
+        )
+    
+        return await rclone_sync(
             rclone_config_path=rclone_config_path,
             source=source,
             source_path=source_path,
@@ -130,22 +152,34 @@ async def sync_helper(
             include_file=include_path,
             exclude_file=exclude_path,
             filters_file=filters_path,
+            backup_path=f"{backup_remote}:{backup_path}" if backup_remote else backup_path,
             dry_run=dry_run,
             return_command=return_command,
             verbose=False,
             progress=show_rclone_progress,
         )
     
-    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 21
+    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 23
     from .._models import SyncRecord
     
+    rec = SyncRecord.create(creator_hostname=creator_hostname, sync_complete=False)
+    backup_name = str(rec.ulid)
+    
     if sync_direction == SyncDirection.PULL:
+        # Save the sync record on local to signify an ongoing sync
+        await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
+    
+        backup_remote = ""
+        backup_path = Path(local_sync_backups_path) / backup_name
+    
         res, stdout, stderr = await _sync(
             dry_run=False,
             source=remote,
             source_path=remote_path,
             dest="",
             dest_path=local_path,
+            backup_remote=backup_remote,
+            backup_path=backup_path,
         )
         
         if res:
@@ -154,17 +188,25 @@ async def sync_helper(
             await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
     
     elif sync_direction == SyncDirection.PUSH:
+        # Save the sync record on remote to signify an ongoing sync
+        await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
+    
+        backup_remote = remote
+        backup_path = Path(remote_sync_backups_path) / backup_name
+    
         res, stdout, stderr = await _sync(
             dry_run=False,
             source="",
             source_path=local_path,
             dest=remote,
             dest_path=remote_path,
+            backup_remote=backup_remote,
+            backup_path=backup_path,
         )
     
         if res:
             # Create a new sync record and save it at the remote
-            rec = SyncRecord.create(creator_hostname=creator_hostname)
+            rec = SyncRecord.create(creator_hostname=creator_hostname, sync_complete=True)
             await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
             await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
     
@@ -173,4 +215,11 @@ async def sync_helper(
     
     if not res:
         raise SyncFailed(f"Sync failed. Rclone output:\n{stdout}\n{stderr}")
+    
+    if res and delete_backup:
+        await rclone_purge(
+            rclone_config_path=rclone_config_path,
+            source=backup_remote,
+            source_path=backup_path,
+        )
     return sync_status, True

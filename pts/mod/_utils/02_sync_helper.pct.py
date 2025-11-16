@@ -1,6 +1,16 @@
 # %% [markdown]
 # # sync_helper
 
+# %% [markdown]
+# Syncing from A to B:
+#
+# 1. Check the sync records. If the sync records says a sync is ongoing, crash.
+# 2. Replace the sync record with a new temporary sync record indicating an ongoing sync.
+# 3. Sync from A to B with a backup dir on B.
+# 4. If...
+#    - ...sync completes, then delete the backup and create a sync record.
+#    - ...sync is interrupted. Do nothing.
+
 # %%
 #|default_exp _utils.sync_helper
 #|export_as_func true
@@ -51,12 +61,15 @@ async def sync_helper(
     remote: str,
     remote_path: str,
     remote_sync_record_path: str,
+    local_sync_backups_path: str,
+    remote_sync_backups_path: str,
     include_path: Path|None = None,
     exclude_path: Path|None = None,
     filters_path: Path|None = None,
     include: list[str]|None = None,
     exclude: list[str]|None = None,
     filter: list[str]|None = None,
+    delete_backup: bool = True,
     creator_hostname: str|None = None,
     verbose: bool = False,
     show_rclone_progress: bool = False,
@@ -113,12 +126,15 @@ local_sync_record_path = test_folder_path / "local_syncrecord.rec"
 remote = "my_remote"
 remote_path = "data"
 remote_sync_record_path = "remote_syncrecord.rec"
+local_sync_backups_path = None # Should not be needed here
+remote_sync_backups_path = "backup"
 include_path = None
 exclude_path = None
 filters_path = None
 include = None
 exclude = None
 filter = None
+delete_backup = True
 creator_hostname = None
 verbose = True
 show_rclone_progress = False
@@ -135,6 +151,9 @@ if not remote_path:
 #|export
 if sync_direction is None and sync_setting != SyncSetting.CAREFUL:
     raise ValueError("Auto sync direction can only be used with careful sync setting.")
+
+# %% [markdown]
+# Check sync status
 
 # %%
 #|export
@@ -158,9 +177,6 @@ assert local_sync_record is None
 assert remote_sync_record is None
 
 
-# %% [markdown]
-# Check sync status
-
 # %%
 #|export
 def _raise_unsafe():
@@ -182,6 +198,8 @@ if sync_direction is None: # auto
         sync_direction = SyncDirection.PUSH
     elif sync_condition == SyncCondition.NEEDS_PULL:
         sync_direction = SyncDirection.PULL
+    elif sync_condition == SyncCondition.SYNC_INCOMPLETE:
+        _raise_unsafe()
     else:
         _raise_unsafe() # In the case where the sync status is SYNCED, 'auto'-mode should not reach this, as it should have already returned (as auto can only be used in CAREFUL mode)
 
@@ -196,17 +214,34 @@ if sync_setting == SyncSetting.CAREFUL:
 
 # %%
 #|export
-from repoyard._utils import rclone_bisync, rclone_sync, BisyncResult, rclone_mkdir, rclone_path_exists
+from repoyard._utils import rclone_sync, BisyncResult, rclone_mkdir, rclone_path_exists, rclone_purge
     
-def _sync(dry_run: bool, source: str, source_path: str, dest: str, dest_path: str, return_command: bool=False,) -> BisyncResult:
+async def _sync(
+    dry_run: bool,
+    source: str,
+    source_path: str,
+    dest: str,
+    dest_path: str,
+    backup_remote: str,
+    backup_path: str,
+    return_command: bool=False,
+) -> BisyncResult:
     if not sync_path_is_dir:
         dest_path = Path(dest_path).parent.as_posix() # needed because rlcone sync doesn't seem to accept files on the dest path
         if dest_path == '.': dest_path = ''
     
     if verbose:
-        print(f"Syncing {source}:{source_path} to {dest}:{dest_path}.")
+        print(f"Syncing {source}:{source_path} to {dest}:{dest_path}.  Backup path: {backup_remote}:{backup_path}")
 
-    return rclone_sync(
+    # Create backup store directory if it doesn't already exist
+    from repoyard._utils import rclone_mkdir
+    await rclone_mkdir(
+        rclone_config_path=rclone_config_path,
+        source=backup_remote,
+        source_path=backup_path,
+    )
+
+    return await rclone_sync(
         rclone_config_path=rclone_config_path,
         source=source,
         source_path=source_path,
@@ -218,6 +253,7 @@ def _sync(dry_run: bool, source: str, source_path: str, dest: str, dest_path: st
         include_file=include_path,
         exclude_file=exclude_path,
         filters_file=filters_path,
+        backup_path=f"{backup_remote}:{backup_path}" if backup_remote else backup_path,
         dry_run=dry_run,
         return_command=return_command,
         verbose=False,
@@ -226,16 +262,31 @@ def _sync(dry_run: bool, source: str, source_path: str, dest: str, dest_path: st
 
 
 # %%
+from repoyard._models import SyncRecord
+u = SyncRecord.create(creator_hostname=creator_hostname, sync_complete=False).ulid
+
+# %%
 #|export
 from repoyard._models import SyncRecord
 
+rec = SyncRecord.create(creator_hostname=creator_hostname, sync_complete=False)
+backup_name = str(rec.ulid)
+
 if sync_direction == SyncDirection.PULL:
+    # Save the sync record on local to signify an ongoing sync
+    await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
+
+    backup_remote = ""
+    backup_path = Path(local_sync_backups_path) / backup_name
+
     res, stdout, stderr = await _sync(
         dry_run=False,
         source=remote,
         source_path=remote_path,
         dest="",
         dest_path=local_path,
+        backup_remote=backup_remote,
+        backup_path=backup_path,
     )
     
     if res:
@@ -244,17 +295,25 @@ if sync_direction == SyncDirection.PULL:
         await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
 
 elif sync_direction == SyncDirection.PUSH:
+    # Save the sync record on remote to signify an ongoing sync
+    await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
+
+    backup_remote = remote
+    backup_path = Path(remote_sync_backups_path) / backup_name
+
     res, stdout, stderr = await _sync(
         dry_run=False,
         source="",
         source_path=local_path,
         dest=remote,
         dest_path=remote_path,
+        backup_remote=backup_remote,
+        backup_path=backup_path,
     )
 
     if res:
         # Create a new sync record and save it at the remote
-        rec = SyncRecord.create(creator_hostname=creator_hostname)
+        rec = SyncRecord.create(creator_hostname=creator_hostname, sync_complete=True)
         await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
         await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
 
@@ -263,6 +322,13 @@ else:
 
 if not res:
     raise SyncFailed(f"Sync failed. Rclone output:\n{stdout}\n{stderr}")
+
+if res and delete_backup:
+    await rclone_purge(
+        rclone_config_path=rclone_config_path,
+        source=backup_remote,
+        source_path=backup_path,
+    )
 
 # %% [markdown]
 # Check that the sync worked

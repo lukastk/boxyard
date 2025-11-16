@@ -147,6 +147,15 @@ if verbose:
     print(f"Syncing repo {repo_full_name} at {repo_meta.storage_location}.")
 
 # %% [markdown]
+# Get the backup locations
+
+# %%
+#|export
+sl_config = repo_meta.get_storage_location_config(config)
+local_sync_backups_path = config.local_sync_backups_path
+remote_sync_backups_path = sl_config.store_path / const.REMOTE_BACKUP_REL_PATH
+
+# %% [markdown]
 # Sync the repometa
 
 # %%
@@ -165,6 +174,8 @@ if sync_part in sync_choices:
         remote=repo_meta.storage_location,
         remote_path=repo_meta.get_remote_repometa_path(config),
         remote_sync_record_path=repo_meta.get_remote_sync_record_path(config, sync_part),
+        local_sync_backups_path=local_sync_backups_path,
+        remote_sync_backups_path=remote_sync_backups_path,
         verbose=verbose,
         show_rclone_progress=show_rclone_progress,
     )
@@ -196,6 +207,8 @@ if sync_part in sync_choices:
         remote=repo_meta.storage_location,
         remote_path=repo_meta.get_remote_repoconf_path(config),
         remote_sync_record_path=repo_meta.get_remote_sync_record_path(config, sync_part),
+        local_sync_backups_path=local_sync_backups_path,
+        remote_sync_backups_path=remote_sync_backups_path,
         verbose=verbose,
         show_rclone_progress=show_rclone_progress,
     )
@@ -240,6 +253,8 @@ if sync_part in sync_choices:
         remote=repo_meta.storage_location,
         remote_path=repo_meta.get_remote_repodata_path(config),
         remote_sync_record_path=repo_meta.get_remote_sync_record_path(config, sync_part),
+        local_sync_backups_path=local_sync_backups_path,
+        remote_sync_backups_path=remote_sync_backups_path,
         include_path=_repoyard_include_path,
         exclude_path=_repoyard_exclude_path,
         filters_path=_repoyard_filters_path,

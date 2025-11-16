@@ -67,6 +67,10 @@ class Config(const.StrictModel):
     @property
     def local_store_path(self) -> Path:
         return self.repoyard_data_path / "local_store"
+
+    @property
+    def local_sync_backups_path(self) -> Path:
+        return self.repoyard_data_path / "sync_backups"
     
     @property
     def repoyard_meta_path(self) -> Path:

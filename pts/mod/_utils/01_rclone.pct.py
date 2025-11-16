@@ -258,12 +258,16 @@ async def rclone_sync(
     include_file: str|None=None,
     exclude_file: str|None=None,
     filters_file: str|None=None,
+    backup_path: str|None=None,
     dry_run: bool=False,
     progress: bool=False,
     return_command: bool=False,
     verbose=False,
 ) -> bool:
     cmd = _rclone_cmd_helper("sync", rclone_config_path, source, source_path, dest, dest_path, include, exclude, filter, include_file, exclude_file, filters_file, dry_run, progress)
+    if backup_path:
+        cmd.append(f"--backup-dir")
+        cmd.append(backup_path)
     if not return_command:
         ret_code, stdout, stderr = await run_cmd_async(cmd)
         if verbose:
@@ -526,3 +530,43 @@ res, content = await rclone_cat(
 
 assert res
 assert content == "Hello, world!"
+
+# %%
+#|hide
+show_doc(this_module.rclone_move)
+
+
+# %%
+#|export
+async def rclone_move(
+    rclone_config_path: str,
+    source: str,
+    source_path: str,
+    dest: str,
+    dest_path: str,
+) -> tuple[bool, str|None]:
+    source_str = f"{source}:{source_path}" if source else source_path
+    dest_str = f"{dest}:{dest_path}" if dest else dest_path
+    cmd = ["rclone", "move", '--config', rclone_config_path, source_str, dest_str]
+    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    if ret_code == 0:
+        return True, stdout
+    else:
+        return False, stderr
+
+
+# %%
+_path = setup_test_folder('move')
+(_path / "my_remote" / "folder1").mkdir(parents=True, exist_ok=True)
+
+res, _ = await rclone_move(
+    _path / "rclone.conf",
+    source="my_remote",
+    source_path="folder1",
+    dest="my_remote",
+    dest_path="folder2",
+)
+assert res
+
+assert not (_path / "my_remote" / "folder1").exists()
+assert (_path / "my_remote" / "folder2").exists()
