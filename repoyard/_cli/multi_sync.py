@@ -29,6 +29,7 @@ def cli_multi_sync(
     sync_choices: list[RepoPart]|None = Option(None, "--sync-choices", "-c", help="The parts of the repository to sync. If not provided, all parts will be synced. By default, all parts are synced."),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
     show_progress: bool = Option(True, help="Show the progress of the sync."),
+    no_print_skipped: bool = Option(True, help="Do not print repositories for which no syncs happened."),
     soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
@@ -137,6 +138,9 @@ def cli_multi_sync(
                 dots = 1
     
             line = f"{left} {'.' * dots} {right}"
+            syncs_happened = [False if sync_results is None else sync_results[repo_part][1] for repo_part in RepoPart]
+            if finished and no_print_skipped and all([not synced for synced in syncs_happened]):
+                continue
             lines.append(line)
     
             indent = "    "
@@ -144,9 +148,8 @@ def cli_multi_sync(
                 lines.append(f"{indent}[red]{e}[/red]")
             elif sync_stat == "Success":
                 line = []
-                syncs_happened = [False if sync_results is None else sync_results[repo_part][1] for repo_part in RepoPart]
                 for repo_part, synced in zip(RepoPart, syncs_happened):
-                    line.append(f"[bold]{repo_part.value}:[/bold] [green]{'Synced' if synced else 'Skipped'}[/green]")
+                    line.append(f"[bold]{repo_part.value}:[/bold] {'[green]Synced[/green]' if synced else '[blue]Skipped[/blue]'}")
                 lines.append(indent + f",{indent}".join(line))
             else:
                 lines.append(f"{indent}[yellow]Results pending...[/yellow]")
