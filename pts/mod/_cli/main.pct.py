@@ -143,9 +143,10 @@ def _get_full_repo_name(
                 )
         
     if repo_full_name is None:
-        from repoyard._utils import get_repo_full_name_from_cwd
-        repo_full_name = get_repo_full_name_from_cwd(
+        from repoyard._utils import get_repo_full_name_from_sub_path
+        repo_full_name = get_repo_full_name_from_sub_path(
             config=config,
+            sub_path=Path.cwd(),
         )
         if repo_full_name is None:
             raise typer.Exit("Repo not specified and could not be inferred from current working directory.")
@@ -330,9 +331,10 @@ def cli_sync_meta(
         raise typer.Exit("Cannot provide both `--all` and `--repo` or `--storage-location`.")
 
     if not sync_all and repo_full_names is None and storage_locations is None:
-        from repoyard._utils import get_repo_full_name_from_cwd
-        repo_full_name = get_repo_full_name_from_cwd(
+        from repoyard._utils import get_repo_full_name_from_sub_path
+        repo_full_name = get_repo_full_name_from_sub_path(
             config=get_config(app_state['config_path']),
+            sub_path=Path.cwd(),
         )
         if repo_full_name is None:
             raise typer.Exit("Repo names to sync not specified and could not be inferred from current working directory.")
