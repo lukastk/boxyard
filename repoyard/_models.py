@@ -336,7 +336,7 @@ def create_user_repo_group_symlinks(
 # %% ../../pts/mod/_models.pct.py 18
 class SyncRecord(const.StrictModel):
     ulid: ULID = Field(default_factory=ULID)
-    timestamp: datetime|None = None # Is set after validation
+    timestamp: datetime|None = None # Is set after validation. It's just to read it easier in printouts.
     sync_complete: bool
     syncer_hostname: str
 
@@ -402,6 +402,7 @@ class SyncStatus(NamedTuple):
     remote_sync_record: SyncRecord
     is_dir: bool
 
+# %% ../../pts/mod/_models.pct.py 20
 async def get_sync_status(
     rclone_config_path: str,
     local_path: str,
@@ -409,7 +410,7 @@ async def get_sync_status(
     remote: str,
     remote_path: str,
     remote_sync_record_path: str,
-) -> tuple[SyncStatus, bool, bool, SyncRecord, SyncRecord]:
+) -> SyncStatus:
     from repoyard._utils import check_last_time_modified
     from repoyard._utils import rclone_path_exists
 
@@ -418,6 +419,8 @@ async def get_sync_status(
         source="",
         source_path=local_path,
     )
+    if local_path_is_dir and local_path_exists:
+        local_path_is_empty = len(list(local_path.iterdir())) == 0 # a bit hacky
 
     remote_path_exists, remote_path_is_dir = await rclone_path_exists(
         rclone_config_path=rclone_config_path,
@@ -450,7 +453,48 @@ async def get_sync_status(
     sync_records_match = (local_sync_record is not None and remote_sync_record is not None) and \
         (local_sync_record.ulid == remote_sync_record.ulid)
 
+    if remote_path_exists and local_sync_record is None:
+        raise Exception("Something wrong here. Local sync record exists but remote path does not exist.")
+    if remote_path_exists and remote_sync_record is None:
+        raise Exception("Something wrong here. Remote path exists, but remote sync record does not exist.")
+
     local_last_modified = check_last_time_modified(local_path)
+
+    if local_last_modified is None and local_path_exists:
+        if (not local_path_is_dir) or (local_path_is_dir and not local_path_is_empty):
+            # Logic here: If the local path is a file, it should be able to be checked for last modification.
+            # If the local path is a non-empty directory, it should also be able to be checked for last modification.
+            raise Exception("Something wrong here. Local path exists and is not empty, but cannot be checked for last modification.")
+
+    if local_sync_incomplete or remote_sync_incomplete:
+        sync_condition = SyncCondition.SYNC_INCOMPLETE
+    else:
+        if sync_records_match:
+            if local_last_modified is not None and local_last_modified > local_sync_record.timestamp:
+                sync_condition = SyncCondition.NEEDS_PUSH
+            else:
+                sync_condition = SyncCondition.SYNCED
+        else:
+            if local_path_exists:
+                if remote_path_exists:
+                    remote_sync_more_recent = remote_sync_record.ulid.datetime > local_sync_record.ulid.datetime
+                    if remote_sync_more_recent:
+                        if local_last_modified is not None and local_last_modified > local_sync_record.timestamp:
+                            sync_condition = SyncCondition.CONFLICT
+                        else:
+                            sync_condition = SyncCondition.NEEDS_PULL
+                    else:
+                        sync_condition = SyncCondition.CONFLICT
+                else:
+                    sync_condition = SyncCondition.NEEDS_PUSH
+            else:
+                if remote_path_exists:
+                    sync_condition = SyncCondition.NEEDS_PULL
+                else:
+                    raise Exception("Neither local nor remote paths exist.")
+
+
+
 
     if local_sync_incomplete or remote_sync_incomplete:
         sync_condition = SyncCondition.SYNC_INCOMPLETE
