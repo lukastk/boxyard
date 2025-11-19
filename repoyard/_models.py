@@ -286,52 +286,78 @@ def create_user_repo_group_symlinks(
     groups = get_repo_group_configs(config, repo_metas)
     symlink_paths = []
 
-    # Create all symlinks
+    def _get_symlink_title(repo_meta: RepoMeta, group_config: RepoGroupConfig) -> str:
+        if group_config.repo_title_mode == RepoGroupTitleMode.FULL_NAME:
+            title = repo_meta.full_name
+        elif group_config.repo_title_mode == RepoGroupTitleMode.DATETIME_AND_NAME:
+            title = f"{repo_meta.creation_timestamp_utc}__{repo_meta.name}"
+        elif group_config.repo_title_mode == RepoGroupTitleMode.NAME:
+            title = repo_meta.name
+        else:
+            raise Exception(f"Invalid repo title mode: {group_config.repo_title_mode}")
+        return title
+
+    # Generate all symlink paths to create
+    _symlinks = []
     for group_name, group_config in groups.items():
         title_counter = defaultdict(int)
         for repo_meta in repo_metas:
             if not repo_meta.check_included(config): continue
             if group_name not in repo_meta.groups: continue
-            source_path = repo_meta.get_local_repodata_path(config)
-            if group_config.repo_title_mode == RepoGroupTitleMode.FULL_NAME:
-                title = repo_meta.full_name
-            elif group_config.repo_title_mode == RepoGroupTitleMode.DATETIME_AND_NAME:
-                title = f"{repo_meta.creation_timestamp_utc}__{repo_meta.name}"
-            elif group_config.repo_title_mode == RepoGroupTitleMode.NAME:
-                title = repo_meta.name
-
+            dest_path = repo_meta.get_local_repodata_path(config)
+            title = _get_symlink_title(repo_meta, group_config)
             if title_counter[title] > 1:
                 title = f"{title} (CONFLICT {title_counter[title]})" # TODO this will break if the title contains a `(CONFLICT ...`
             title_counter[title] += 1
+            symlink_path = config.user_repo_groups_path / group_name / title   
+            _symlinks.append((dest_path, symlink_path))
 
-            symlink_path = config.user_repo_groups_path / group_name / title        
-            symlink_path.parent.mkdir(parents=True, exist_ok=True)
+    # Remove all existing symlinks that are not in the _symlinks list
+    for path in config.user_repo_groups_path.glob('**/*'):
+        if path in _symlinks: continue
+        if path.is_symlink():
+            path.unlink()
 
-            if symlink_path.exists():
-                if not symlink_path.is_symlink():
-                    raise Exception(f"'{symlink_path}' is in the user repo group path '{config.user_repos_path}' but is not a symlink!")
-                if symlink_path.resolve() != source_path.resolve():
+    # Now check for any remaining debris
+    _symlink_paths = [symlink_path for _, symlink_path in _symlinks]
+    def _inspect_folder(path: Path) -> None:
+        if path.is_symlink(): return
+        for p in path.iterdir():
+            if p.is_dir():
+                _inspect_folder(p)
+            else:
+                if p not in _symlink_paths:
+                    raise Exception(f"File '{p}' is in the user repo group path '{config.user_repo_groups_path}'.")
+    for path in config.user_repo_groups_path.glob('*'):
+        if path.is_dir():
+            _inspect_folder(path)
+        else:
+            raise Exception(f"'{path}' is in the user repo group path '{config.user_repo_groups_path}' but is not a directory!")
+
+    # Create the symlinks
+    for dest_path, symlink_path in _symlinks:
+        symlink_path.parent.mkdir(parents=True, exist_ok=True)
+        if symlink_path.exists():
+            if symlink_path.is_symlink():
+                if symlink_path.resolve() != dest_path.resolve():
                     symlink_path.unlink()
                 else:
-                    symlink_paths.append(symlink_path)
-                    continue
-            symlink_path.symlink_to(source_path, target_is_directory=True)
-            symlink_paths.append(symlink_path)
-            
-    # Remove all existing symlinks
-    for group_folder_path in config.user_repo_groups_path.glob('*'):
-        for symlink_path in group_folder_path.glob('*'):
-            if symlink_path in symlink_paths: continue
-            if symlink_path.is_symlink():
-                symlink_path.unlink()
-            elif symlink_path.exists():
+                    continue # The symlink already points to the correct destination so leave it as it is
+            else:
                 raise Exception(f"'{symlink_path}' is in the user repo group path '{config.user_repo_groups_path}' but is not a symlink!")
+        symlink_path.symlink_to(dest_path, target_is_directory=True)
 
-    # Remove all empty group folders that are not in the group configs
-    for group_folder_path in config.user_repo_groups_path.glob('*'):
-        if group_folder_path.name not in groups:
-            if group_folder_path.is_dir() and not list(group_folder_path.iterdir()):
-                group_folder_path.rmdir()
+    # Remove all empty group folders that are not existing groups
+    def _remove_empty_non_group_folders(path: Path) -> None:
+        if path.is_symlink(): return
+        for p in path.iterdir():
+            if p.is_dir():
+                _remove_empty_non_group_folders(p)
+        is_group_folder = path.relative_to(config.user_repo_groups_path).as_posix() in groups
+        if not is_group_folder and len(list(path.iterdir())) == 0:
+            path.rmdir()
+    for path in config.user_repo_groups_path.glob('*'):
+        _remove_empty_non_group_folders(path)
 
 # %% ../../pts/mod/_models.pct.py 18
 class SyncRecord(const.StrictModel):
