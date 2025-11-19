@@ -389,7 +389,7 @@ def cli_add_to_group(
         raise typer.Exit(code=1)
     repo_meta = repoyard_meta.by_full_name[repo_full_name]
     if group_name in repo_meta.groups:
-        raise typer.echo(f"Repository `{repo_full_name}` already in group `{group_name}`.")
+        typer.echo(f"Repository `{repo_full_name}` already in group `{group_name}`.")
     else:
         modify_repometa(
             config_path=app_state['config_path'],
@@ -842,13 +842,19 @@ def cli_list(
 #|export
 @app.command(name='list-groups')
 def cli_list(
-    storage_locations: list[str]|None = Option(None, "--storage-location", "-s", help="The storage location to get the status of. If not provided, the status of all storage locations will be shown."),
+    repo_full_names: list[str]|None = Option(None, "--repo", "-r", help="The repository full names to get the groups of."),
+    storage_locations: list[str]|None = Option(None, "--storage-location", "-s", help="The storage location to get the groups of. If not provided, the status of all storage locations will be shown."),
 ):
     from repoyard._models import get_repoyard_meta, get_repo_group_configs
     config = get_config(app_state['config_path'])
-    if storage_locations is None:
-        storage_locations = list(config.storage_locations.keys())
-    repo_metas = [repo_meta for repo_meta in get_repoyard_meta(config).repo_metas if repo_meta.storage_location in storage_locations]
+    if repo_full_names is not None and storage_locations is not None:
+        typer.echo("Both --repo-meta and --storage-location cannot be provided.")
+        raise typer.Exit(code=1)
+    if repo_full_names is not None:
+        repo_metas = [repo_meta for repo_meta in get_repoyard_meta(config).repo_metas if repo_meta.full_name in repo_full_names]
+    else:
+        if storage_locations is None: storage_locations = list(config.storage_locations.keys())
+        repo_metas = [repo_meta for repo_meta in get_repoyard_meta(config).repo_metas if repo_meta.storage_location in storage_locations]
     group_configs = get_repo_group_configs(config, repo_metas)
 
     for group_name in sorted(group_configs.keys()):
