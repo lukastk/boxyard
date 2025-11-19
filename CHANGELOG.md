@@ -1,3 +1,53 @@
+## [0.1.8] - 2025-11-19
+
+### 🚀 Features
+
+- Improved the results UI for multi-sync
+- Lowered the DEFAULT_MAX_CONCURRENT_RCLONE_OPS
+- Added --pick-first option to CLI 'path'
+- Removed 'sync_repometas' and replaced it with 'sync_missing_repometas'
+- Option --no-print-skipped in multi-sync
+- 'create_user_symlinks' now reloads the repoyard_meta file before doing anything
+- Include symlinks in rclone_lsjson
+- Improved prints
+- Changed default NameMatchMode for 'path'
+- Optimised 'check_last_time_modified'
+- Allow for nested repo groups now in the user repo group symlink creation
+- List-groups can now be targeted towards specific repos
+- Default repo groups
+
+### 🐛 Bug Fixes
+
+- Had not pushed these. the multi-sync cli with better UI
+- Missing dev dependency
+- Typo in 'new' cli
+- Normalise 'group' flags in cli
+- References to non-existing function get_repo_full_name_from_cwd
+- 'create_repoyard_meta' was trying to any file in the local store as a repometa (e.g. '.DS_Store')
+- Improved the 'get_sync_status' logic
+- Typo
+- Bugs in 'get_sync_status'
+- 'exclude' now checks if the repo is local
+- Proper validation on group names and allow for '/' in the group filters
+
+### 🚜 Refactor
+
+- Headline
+
+### ⚙️ Miscellaneous Tasks
+
+- Uv.lock
+- Update version in pyproject.toml
+## [0.1.7] - 2025-11-16
+
+### 🐛 Bug Fixes
+
+- Typo SyncRecord.creator_hostname -> SyncRecord.syncer_hostname
+
+### ⚙️ Miscellaneous Tasks
+
+- Update CHANGELOG.md
+- Update version in pyproject.toml
 ## [0.1.6] - 2025-11-16
 
 ### 🚀 Features
