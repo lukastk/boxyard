@@ -95,13 +95,34 @@ def run_fzf(terms: list[str], disp_terms: list[str]|None=None):
 
 # %% ../../../pts/mod/_utils/00_base.pct.py 11
 def check_last_time_modified(path: str | Path) -> float | None:
+    import os
     from datetime import datetime, timezone
     path = Path(path).expanduser().resolve()
+    
     if path.is_file():
-        mtimes = [path.stat().st_mtime]
+        max_mtime = path.stat().st_mtime
     else:
-        mtimes = (p.stat().st_mtime for p in path.rglob("*") if p.is_file())
-    max_mtime =  max(mtimes, default=None)
+        max_mtime = None
+        stack = [str(path)]
+        
+        while stack:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        if entry.is_file(follow_symlinks=False):
+                            try:
+                                stat_result = entry.stat()
+                                mtime = stat_result.st_mtime
+                                if max_mtime is None or mtime > max_mtime:
+                                    max_mtime = mtime
+                            except (OSError, PermissionError):
+                                continue
+                        elif entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+            except (OSError, PermissionError):
+                continue
+    
     return datetime.fromtimestamp(max_mtime, tz=timezone.utc) if max_mtime is not None else None
 
 # %% ../../../pts/mod/_utils/00_base.pct.py 13
