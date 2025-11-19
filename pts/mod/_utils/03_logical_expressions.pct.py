@@ -9,6 +9,13 @@
 import nblite; from nblite import show_doc; nblite.nbl_export()
 import repoyard._utils.logical_expressions as this_module
 
+# %%
+#|hide
+show_doc(this_module._tokenize_expression)
+
+
+# %%
+# "a".isalnum?
 
 # %%
 #|exporti
@@ -43,7 +50,7 @@ def _tokenize_expression(expression: str) -> list[str]:
         else:
             # Read identifier (group name)
             start = i
-            while i < len(expression) and (expression[i].isalnum() or expression[i] in '_-'):
+            while i < len(expression) and (expression[i].isalnum() or expression[i] in '_-/'):
                 i += 1
             if i == start:
                 raise ValueError(f"Invalid character at position {i}: {expression[i]}")
@@ -105,53 +112,14 @@ def _parse_not_expression(tokens: list[str], pos: list[int], repo_groups: set[st
 
 
 # %%
-#|hide
-show_doc(this_module.evaluate_group_expression)
-
+_tokenize_expression("group1 AND (group2 OR group3)")
 
 # %%
-#|export
-def evaluate_group_expression(expression: str, repo_groups: set[str] | list[str]) -> bool:
-    """
-    Evaluate a boolean expression against a set of repository groups.
-    
-    Supports AND, OR, NOT operators and parentheses for grouping.
-    Operator precedence: NOT > AND > OR
-    
-    Examples:
-        "group1 AND group2"
-        "group1 OR group2"
-        "NOT group1"
-        "group1 AND (group2 OR group3)"
-        "(group1 OR group2) AND NOT group3"
-    
-    Args:
-        expression: Boolean expression string
-        repo_groups: Set or list of group names that the repository belongs to
-        
-    Returns:
-        True if the expression evaluates to True for the given groups, False otherwise
-        
-    Raises:
-        ValueError: If the expression is invalid or contains syntax errors
-    """
-    if isinstance(repo_groups, list):
-        repo_groups = set(repo_groups)
-    
-    # Tokenize the expression
-    tokens = _tokenize_expression(expression)
-    if not tokens:
-        raise ValueError("Empty expression")
-    
-    # Parse and evaluate
-    pos = [0]  # Use list to allow modification in nested calls
-    result = _parse_or_expression(tokens, pos, repo_groups)
-    
-    # Check if we consumed all tokens
-    if pos[0] < len(tokens):
-        raise ValueError(f"Unexpected token at position {pos[0]}: {tokens[pos[0]]}")
-    
-    return result
+_tokenize_expression("group1 AND parent_group/child_group")
+
+# %%
+#|hide
+show_doc(this_module.get_group_filter_func)
 
 
 # %%

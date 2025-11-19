@@ -148,11 +148,28 @@ class RepoMeta(const.StrictModel):
             'name': name,
             'storage_location': storage_location_name,
         })
-        
+
+    @classmethod
+    def validate_group_name(cls, group_name: str) -> None:
+        """
+        Allowed characters: alphanumeric + `_`, `-`, `/`
+        """
+        import re
+
+        pattern = r'^[A-Za-z0-9_\-/]+$'
+        if not isinstance(group_name, str) or not re.match(pattern, group_name):
+            raise ValueError(
+                f"Invalid group name '{group_name}'. "
+                "Allowed characters: alphanumeric, '_', '-', '/'."
+            )
+            
     @model_validator(mode='after')
     def validate_repo_meta(self):
         if len(self.groups) != len(set(self.groups)):
             raise ValueError("Groups must be unique.")
+
+        for group_name in self.groups:
+            self.validate_group_name(group_name)
 
         # Test that the creation timestamp is valid
         try:

@@ -90,6 +90,10 @@ class Config(const.StrictModel):
         # Check that the default storage location exists
         if not any(name == self.default_storage_location for name in self.storage_locations):
             raise ValueError(f"default_storage_location '{self.default_storage_location}' not found in storage_locations")
+
+        from repoyard._models import RepoMeta
+        for group_name in self.repo_groups.keys():
+            RepoMeta.validate_group_name(group_name)
         
         return self
 
