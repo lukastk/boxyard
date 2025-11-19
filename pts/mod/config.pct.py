@@ -58,10 +58,9 @@ class Config(const.StrictModel):
     user_repo_groups_path : Path
     storage_locations : dict[str, StorageConfig]
     repo_groups : dict[str, RepoGroupConfig]
-
+    default_repo_groups : list[str]
     repo_subid_character_set: str
     repo_subid_length: int
-
     max_concurrent_rclone_ops: int
 
     @property
@@ -139,6 +138,7 @@ def _get_default_config_dict(config_path=None, data_path=None) -> Config:
             )
         },
         repo_groups = {},
+        default_repo_groups = [],
         repo_subid_character_set = const.DEFAULT_REPO_SUBID_CHARACTER_SET,
         repo_subid_length = const.DEFAULT_REPO_SUBID_LENGTH,
         max_concurrent_rclone_ops = const.DEFAULT_MAX_CONCURRENT_RCLONE_OPS,

@@ -123,7 +123,7 @@ repo_meta = RepoMeta.create(
     config,
     name=repo_name,
     storage_location_name=storage_location,
-    groups=[],
+    groups=config.default_repo_groups,
     creator_hostname=creator_hostname,
     creation_timestamp_utc=creation_timestamp_utc,
 )
