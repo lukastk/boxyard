@@ -842,25 +842,43 @@ def cli_list(
 #|export
 @app.command(name='list-groups')
 def cli_list(
-    repo_full_names: list[str]|None = Option(None, "--repo", "-r", help="The repository full names to get the groups of."),
-    storage_locations: list[str]|None = Option(None, "--storage-location", "-s", help="The storage location to get the groups of. If not provided, the status of all storage locations will be shown."),
+    repo_path: Path|None = Option(None, "--repo-path", "-p", help="The path to the repository to get the groups of."),
+    repo_full_name: str|None = Option(None, "--repo", "-r", help="The repository full name to get the groups of."),
 ):
     from repoyard._models import get_repoyard_meta, get_repo_group_configs
     config = get_config(app_state['config_path'])
-    if repo_full_names is not None and storage_locations is not None:
-        typer.echo("Both --repo-meta and --storage-location cannot be provided.")
+    if repo_full_name is not None and repo_path is not None:
+        typer.echo("Both --repo and --repo-path cannot be provided.")
         raise typer.Exit(code=1)
-    if repo_full_names is not None:
-        repo_metas = [repo_meta for repo_meta in get_repoyard_meta(config).repo_metas if repo_meta.full_name in repo_full_names]
-    else:
-        if storage_locations is None: storage_locations = list(config.storage_locations.keys())
-        repo_metas = [repo_meta for repo_meta in get_repoyard_meta(config).repo_metas if repo_meta.storage_location in storage_locations]
-    group_configs, virtual_repo_groups = get_repo_group_configs(config, repo_metas)
-    for vg, vg_config in virtual_repo_groups.items():
+
+    if repo_full_name is None and repo_path is None:
+        repo_path = Path.cwd()
+
+    if repo_path is not None:
+        from repoyard._utils import get_repo_full_name_from_sub_path
+        repo_full_name = get_repo_full_name_from_sub_path(
+            config=config,
+            sub_path=repo_path,
+        )
+        if repo_full_name is None:
+            typer.echo("Could not determine the repository full name from the provided repository path.")
+            raise typer.Exit(code=1)
+
+    if repo_full_name is None:
+        typer.echo("Must provied repo full namae.")
+        raise typer.Exit(code=1)
+    repoyard_meta = get_repoyard_meta(config)
+    if repo_full_name not in repoyard_meta.by_full_name:
+        typer.echo(f"Repository with full name `{repo_full_name}` not found.")
+        raise typer.Exit(code=1)
+    repo_meta = repoyard_meta.by_full_name[repo_full_name]
+    repo_groups = repo_meta.groups
+    group_configs, virtual_repo_group_configs = get_repo_group_configs(config, [repo_meta])
+    for vg, vg_config in virtual_repo_group_configs.items():
         if vg in group_configs:
             print(f"Warning: Virtual repo group '{vg}' is also a regular repo group.")
-        if any(vg_config.is_in_group(repo_meta.groups) for repo_meta in repo_metas):
-            group_configs[vg] = vg_config
+        if vg_config.is_in_group(repo_meta.groups):
+            repo_groups.append(vg)
 
     for group_name in sorted(group_configs.keys()):
         typer.echo(group_name)
