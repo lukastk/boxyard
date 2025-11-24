@@ -2,8 +2,8 @@
 
 # %% auto 0
 __all__ = ['entrypoint', 'cli_init', 'cli_new', 'cli_sync', 'cli_sync_missing_meta', 'cli_add_to_group', 'cli_remove_from_group',
-           'cli_include', 'cli_exclude', 'cli_delete', 'cli_repo_status', 'cli_yard_status', 'cli_list', 'cli_path',
-           'cli_create_user_symlinks']
+           'cli_include', 'cli_exclude', 'cli_delete', 'cli_repo_status', 'cli_yard_status', 'cli_list',
+           'cli_list_groups', 'cli_path', 'cli_create_user_symlinks']
 
 # %% ../../../pts/mod/_cli/main.pct.py 3
 import os
@@ -733,15 +733,34 @@ def cli_list(
 
 # %% ../../../pts/mod/_cli/main.pct.py 40
 @app.command(name='list-groups')
-def cli_list(
+def cli_list_groups(
     repo_path: Path|None = Option(None, "--repo-path", "-p", help="The path to the repository to get the groups of."),
     repo_full_name: str|None = Option(None, "--repo", "-r", help="The repository full name to get the groups of."),
+    list_all: bool = Option(False, "--all", "-a", help="List all groups, including virtual groups."),
+    include_virtual: bool = Option(False, "--include-virtual", "-v", help="Include virtual groups in the output."),
 ):
+    """
+    List all groups a repository belongs to, or all groups if `--all` is provided.
+    """
     from repoyard._models import get_repoyard_meta, get_repo_group_configs
     config = get_config(app_state['config_path'])
+    repoyard_meta = get_repoyard_meta(config)
     if repo_full_name is not None and repo_path is not None:
         typer.echo("Both --repo and --repo-path cannot be provided.")
         raise typer.Exit(code=1)
+
+    if list_all and (repo_path is not None or repo_full_name is not None):
+        typer.echo("Cannot provide both --repo and --repo-path when using --all.")
+        raise typer.Exit(code=1)
+
+    if list_all:
+        group_configs, virtual_repo_group_configs = get_repo_group_configs(config, repoyard_meta.repo_metas)
+        groups = list(group_configs.keys())
+        if include_virtual:
+            groups.extend(virtual_repo_group_configs.keys())
+        for group_name in sorted(groups):
+            typer.echo(group_name)
+        return
 
     if repo_full_name is None and repo_path is None:
         repo_path = Path.cwd()
@@ -759,18 +778,20 @@ def cli_list(
     if repo_full_name is None:
         typer.echo("Must provied repo full namae.")
         raise typer.Exit(code=1)
-    repoyard_meta = get_repoyard_meta(config)
+    
     if repo_full_name not in repoyard_meta.by_full_name:
         typer.echo(f"Repository with full name `{repo_full_name}` not found.")
         raise typer.Exit(code=1)
     repo_meta = repoyard_meta.by_full_name[repo_full_name]
     repo_groups = repo_meta.groups
-    group_configs, virtual_repo_group_configs = get_repo_group_configs(config, [repo_meta])
-    for vg, vg_config in virtual_repo_group_configs.items():
-        if vg in group_configs:
-            print(f"Warning: Virtual repo group '{vg}' is also a regular repo group.")
-        if vg_config.is_in_group(repo_meta.groups):
-            repo_groups.append(vg)
+    group_configs, virtual_repo_group_configs = get_repo_group_configs(config, [repo_meta])\
+
+    if include_virtual:
+        for vg, vg_config in virtual_repo_group_configs.items():
+            if vg in group_configs:
+                print(f"Warning: Virtual repo group '{vg}' is also a regular repo group.")
+            if vg_config.is_in_group(repo_meta.groups):
+                repo_groups.append(vg)
 
     for group_name in sorted(group_configs.keys()):
         typer.echo(group_name)
