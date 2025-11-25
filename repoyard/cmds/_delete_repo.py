@@ -38,6 +38,8 @@ async def delete_repo(
     # %% ../../../pts/mod/cmds/08_delete_repo.pct.py 16
     # Delete local repo
     import shutil
+    from .._models import RepoPart
+    shutil.rmtree(repo_meta.get_local_part_path(config, RepoPart.DATA)) # Deleting separately as the data part is in a separate directory
     shutil.rmtree(repo_meta.get_local_path(config))
     
     # Delete remote repo

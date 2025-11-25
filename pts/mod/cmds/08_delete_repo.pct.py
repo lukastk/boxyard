@@ -86,6 +86,8 @@ assert (remote_rclone_path / repo_meta.get_remote_path(config)).exists()
 
 # Delete local repo
 import shutil
+from repoyard._models import RepoPart
+shutil.rmtree(repo_meta.get_local_part_path(config, RepoPart.DATA)) # Deleting separately as the data part is in a separate directory
 shutil.rmtree(repo_meta.get_local_path(config))
 
 # Delete remote repo
