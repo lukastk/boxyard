@@ -21,7 +21,7 @@ import asyncio
 
 from repoyard import const
 from repoyard.cmds import *
-from repoyard._models import get_repoyard_meta
+from repoyard._models import get_repoyard_meta, RepoPart
 from repoyard.config import get_config
 
 from tests.utils import *
