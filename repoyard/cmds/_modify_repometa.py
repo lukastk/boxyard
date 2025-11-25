@@ -26,10 +26,10 @@ def modify_repometa(
     # %% auto 0
     __all__ = ['config', 'repoyard_meta', 'repo_meta', 'modified_repo_meta', 'repo_group_configs', 'virtual_repo_groups']
     
-    # %% ../../../pts/mod/cmds/05_modify_repometa.pct.py 12
+    # %% ../../../pts/mod/cmds/05_modify_repometa.pct.py 11
     config = get_config(config_path)
     
-    # %% ../../../pts/mod/cmds/05_modify_repometa.pct.py 15
+    # %% ../../../pts/mod/cmds/05_modify_repometa.pct.py 14
     from .._models import get_repoyard_meta, RepoMeta
     repoyard_meta = get_repoyard_meta(config)
     
@@ -38,13 +38,13 @@ def modify_repometa(
     
     repo_meta = repoyard_meta.by_full_name[repo_full_name]
     
-    # %% ../../../pts/mod/cmds/05_modify_repometa.pct.py 17
+    # %% ../../../pts/mod/cmds/05_modify_repometa.pct.py 16
     modified_repo_meta = RepoMeta(**{
         **repo_meta.model_dump(),
         **modifications
     })
     
-    # %% ../../../pts/mod/cmds/05_modify_repometa.pct.py 19
+    # %% ../../../pts/mod/cmds/05_modify_repometa.pct.py 18
     #TESTREF: test_modify_repometa_unique_names
     from .._models import get_repo_group_configs
     
@@ -72,9 +72,9 @@ def modify_repometa(
                 raise RepoNameConflict(f"Error modifying repo meta for '{repo_full_name}':\n"
                                  f"Repo is in group '{g}' which requires unique names. After the modification, the following name(s) appear multiple times in this group: {names_str}.")
     
-    # %% ../../../pts/mod/cmds/05_modify_repometa.pct.py 21
+    # %% ../../../pts/mod/cmds/05_modify_repometa.pct.py 20
     modified_repo_meta.save(config)
     
-    # %% ../../../pts/mod/cmds/05_modify_repometa.pct.py 24
+    # %% ../../../pts/mod/cmds/05_modify_repometa.pct.py 23
     from .._models import refresh_repoyard_meta
     refresh_repoyard_meta(config)

@@ -26,7 +26,7 @@ async def sync_missing_repometas(
     # %% auto 0
     __all__ = ['config']
     
-    # %% ../../../pts/mod/cmds/04_sync_missing_repometas.pct.py 11
+    # %% ../../../pts/mod/cmds/04_sync_missing_repometas.pct.py 10
     config = get_config(config_path)
     
     if repo_full_names is not None and storage_locations is not None:
@@ -38,7 +38,7 @@ async def sync_missing_repometas(
     if soft_interruption_enabled:
         enable_soft_interruption()
     
-    # %% ../../../pts/mod/cmds/04_sync_missing_repometas.pct.py 14
+    # %% ../../../pts/mod/cmds/04_sync_missing_repometas.pct.py 13
     if check_interrupted(): raise SoftInterruption()
     
     from .._utils import rclone_lsjson, rclone_sync, async_throttler
@@ -110,7 +110,7 @@ async def sync_missing_repometas(
             if verbose:
                 print(f"No missing repometas in '{sl_name}' to sync.")
     
-    # %% ../../../pts/mod/cmds/04_sync_missing_repometas.pct.py 16
+    # %% ../../../pts/mod/cmds/04_sync_missing_repometas.pct.py 15
     from .._models import refresh_repoyard_meta
     refresh_repoyard_meta(config)
     return missing_metas;

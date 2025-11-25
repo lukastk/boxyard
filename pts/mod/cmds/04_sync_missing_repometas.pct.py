@@ -40,43 +40,18 @@ async def sync_missing_repometas(
 # Set up testing args
 
 # %%
-# Set up test environment
-import tempfile
-tests_working_dir = const.pkg_path.parent / "tmp_tests"
-test_folder_path = Path(tempfile.mkdtemp(prefix="sync_missing_repometas", dir="/tmp"))
-test_folder_path.mkdir(parents=True, exist_ok=True)
-symlink_path = tests_working_dir / "_cmds" / "sync_missing_repometas"
-symlink_path.parent.mkdir(parents=True, exist_ok=True)
-if symlink_path.exists() or symlink_path.is_symlink():
-    symlink_path.unlink()
-symlink_path.symlink_to(test_folder_path, target_is_directory=True) # So that it can be viewed from within the project working directory
-data_path = test_folder_path / ".repoyard"
+from tests.utils import *
+remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
 
 # %%
 # Args (1/2)
-config_path = test_folder_path / "repoyard_config" / "config.toml"
+config_path = config_path
 max_concurrent_rclone_ops = None
 repo_full_names = None
 storage_locations = None
 sync_direction = None
 verbose = True
 soft_interruption_enabled = True
-
-# %%
-# Run init
-from repoyard.cmds import init_repoyard
-from repoyard.cmds import new_repo, sync_repo
-init_repoyard(config_path=config_path, data_path=data_path)
-
-# Add a storage location 'my_remote'
-import toml
-config_dump = toml.load(config_path)
-remote_rclone_path = Path(tempfile.mkdtemp(prefix="rclone_remote", dir="/tmp"))
-config_dump['storage_locations']['my_remote'] = {
-    'storage_type' : "rclone",
-    'store_path' : "repoyard",
-}
-config_path.write_text(toml.dumps(config_dump));
 
 # %% [markdown]
 # # Function body
@@ -98,14 +73,8 @@ if soft_interruption_enabled:
     enable_soft_interruption()
 
 # %%
-# Set up a rclone remote path for testing
-config.rclone_config_path.write_text(f"""
-[my_remote]
-type = alias
-remote = {remote_rclone_path}
-""");
-
 # Set up synced repos
+from repoyard.cmds import new_repo, sync_repo
 import asyncio
 async def _task(i):
     repo_full_name = new_repo(config_path=config_path, repo_name=f"test_repo{i}", storage_location="my_remote")

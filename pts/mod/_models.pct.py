@@ -105,7 +105,7 @@ class RepoMeta(const.StrictModel):
 
     def get_remote_part_path(self, config: repoyard.config.Config, repo_part: RepoPart) -> Path:
         if repo_part == RepoPart.DATA:
-            return self.get_remote_path(config) / self.name
+            return self.get_remote_path(config) / const.REPO_DATA_REL_PATH
         elif repo_part == RepoPart.META:
             return self.get_remote_path(config) / const.REPO_METAFILE_REL_PATH
         elif repo_part == RepoPart.CONF:
@@ -115,7 +115,7 @@ class RepoMeta(const.StrictModel):
 
     def get_local_part_path(self, config: repoyard.config.Config, repo_part: RepoPart) -> Path:
         if repo_part == RepoPart.DATA:
-            return self.get_local_path(config) / self.name
+            return config.user_repos_path / self.full_name
         elif repo_part == RepoPart.META:
             return self.get_local_path(config) / const.REPO_METAFILE_REL_PATH
         elif repo_part == RepoPart.CONF:
@@ -129,9 +129,6 @@ class RepoMeta(const.StrictModel):
     
     def get_local_sync_record_path(self, config: repoyard.config.Config, repo_part: RepoPart) -> Path:
         return config.repoyard_data_path / const.SYNC_RECORDS_REL_PATH / self.full_name / f"{repo_part.value}.rec"
-
-    def get_user_repos_path(self, config: repoyard.config.Config) -> Path:
-        return config.user_repos_path / self.full_name
     
     def check_included(self, config: repoyard.config.Config) -> bool:
         included_repo_path = self.get_local_part_path(config, RepoPart.DATA)
@@ -181,9 +178,6 @@ class RepoMeta(const.StrictModel):
             
     @model_validator(mode='after')
     def validate_repo_meta(self):
-        if self.name in ["conf", "repometa.toml"]:
-            raise ValueError(f"Invalid repo name: {self.name}")
-
         if len(self.groups) != len(set(self.groups)):
             raise ValueError("Groups must be unique.")
 
@@ -287,42 +281,6 @@ def get_repoyard_meta(
     if not config.repoyard_meta_path.exists() or force_create:
         refresh_repoyard_meta(config)
     return RepoyardMeta.model_validate_json(config.repoyard_meta_path.read_text())
-
-
-# %%
-#|export
-def create_user_repos_symlinks(
-    config: repoyard.config.Config,
-    repo_metas: list[RepoMeta],
-):
-    for path in config.user_repos_path.glob('*'):
-        if path.is_symlink(): path.unlink()
-
-    symlink_paths = []
-    for repo_meta in repo_metas:
-        source_path = repo_meta.get_local_part_path(config, RepoPart.DATA)
-        symlink_path = repo_meta.get_user_repos_path(config)
-        symlink_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if symlink_path.exists():
-            if not symlink_path.is_symlink():
-                raise Exception(f"'{symlink_path}' is in the user repo path '{config.user_repos_path}' but is not a symlink!")
-            if symlink_path.resolve() != source_path.resolve():
-                symlink_path.unlink()
-            else:
-                symlink_paths.append(symlink_path)
-                continue
-        symlink_path.symlink_to(source_path, target_is_directory=True)
-        symlink_paths.append(symlink_path)
-
-    # Remove all other symlinks
-    for symlink_path in config.user_repos_path.glob('*'):
-        if symlink_path in symlink_paths: continue
-        if symlink_path.is_symlink():
-            symlink_path.unlink()
-        elif symlink_path.exists():
-            raise Exception(f"'{symlink_path}' is in the user repo path '{config.user_repos_path}' but is not a symlink!")
-        
 
 
 # %%

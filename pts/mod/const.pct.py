@@ -34,6 +34,7 @@ SYNC_RECORDS_REL_PATH = "sync_records"
 REMOTE_REPOS_REL_PATH = "repos"
 REMOTE_BACKUP_REL_PATH = "sync_backups"
 
+REPO_DATA_REL_PATH = "data"
 REPO_METAFILE_REL_PATH = "repometa.toml"
 REPO_CONF_REL_PATH = "conf"
 

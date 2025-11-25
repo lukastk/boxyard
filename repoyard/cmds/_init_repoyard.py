@@ -71,7 +71,7 @@ def init_repoyard(
         if verbose: print(f"Creating rclone config file at: {config.rclone_config_path}")
         config.rclone_config_path.write_text(_default_rclone_config)
     
-    # %% ../../../pts/mod/cmds/00_init_repoyard.pct.py 25
+    # %% ../../../pts/mod/cmds/00_init_repoyard.pct.py 23
     if verbose:
         print("Done!\n")
         print("You can modify the config at:", config_path)

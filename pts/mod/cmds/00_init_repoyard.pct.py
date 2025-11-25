@@ -35,14 +35,13 @@ def init_repoyard(
 # Set up testing args
 
 # %%
-tests_working_dir = const.pkg_path.parent / "tmp_tests"
-test_folder_path = tests_working_dir / "_cmds" / "init_repoyard"
-# !rm -rf {test_folder_path}
+from tests.utils import *
+remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
 
 # %%
 # Args
-config_path = test_folder_path / "repoyard_config" / "config.toml"
-data_path = test_folder_path / "repoyard_data"
+config_path = config_path
+data_path = data_path
 verbose = True
 
 # %% [markdown]
@@ -133,18 +132,6 @@ from repoyard.config import _default_rclone_config
 if not config.rclone_config_path.exists():
     if verbose: print(f"Creating rclone config file at: {config.rclone_config_path}")
     config.rclone_config_path.write_text(_default_rclone_config)
-
-# %% [markdown]
-# Create a rclone destination locally to test with
-
-# %%
-rclone_local_test_path = test_folder_path / 'rclone_local_test'
-rclone_local_test_path.mkdir(parents=True, exist_ok=True)
-config.rclone_config_path.write_text(f"""
-[test_local]
-type = alias
-remote = {rclone_local_test_path}
-""");
 
 # %% [markdown]
 # Done

@@ -42,7 +42,7 @@ def new_repo(
     # %% auto 0
     __all__ = ['config', 'repo_meta', 'repo_path', 'repo_data_path', 'repo_conf_path']
     
-    # %% ../../../pts/mod/cmds/01_new_repo.pct.py 11
+    # %% ../../../pts/mod/cmds/01_new_repo.pct.py 10
     from ..config import get_config
     config = get_config(config_path)
         
@@ -68,7 +68,7 @@ def new_repo(
     if creator_hostname is None:
         creator_hostname = get_hostname()
     
-    # %% ../../../pts/mod/cmds/01_new_repo.pct.py 13
+    # %% ../../../pts/mod/cmds/01_new_repo.pct.py 12
     from .._models import RepoMeta
     repo_meta = RepoMeta.create(
         config,
@@ -81,7 +81,7 @@ def new_repo(
     
     repo_meta.save(config)
     
-    # %% ../../../pts/mod/cmds/01_new_repo.pct.py 15
+    # %% ../../../pts/mod/cmds/01_new_repo.pct.py 14
     from .._models import RepoPart
     repo_path = repo_meta.get_local_path(config)
     repo_data_path = repo_meta.get_local_part_path(config, RepoPart.DATA)
@@ -98,7 +98,7 @@ def new_repo(
     else:
         repo_data_path.mkdir(parents=True, exist_ok=True)
     
-    # %% ../../../pts/mod/cmds/01_new_repo.pct.py 17
+    # %% ../../../pts/mod/cmds/01_new_repo.pct.py 16
     if initialise_git and not (repo_data_path / '.git').exists():
         if verbose: print("Initialising git repository")
         res = subprocess.run(
@@ -111,7 +111,7 @@ def new_repo(
         if res.returncode != 0:
             if verbose: print("Warning: Failed to initialise git repository")
     
-    # %% ../../../pts/mod/cmds/01_new_repo.pct.py 19
+    # %% ../../../pts/mod/cmds/01_new_repo.pct.py 18
     from .._models import refresh_repoyard_meta
     refresh_repoyard_meta(config)
     return repo_meta.full_name;

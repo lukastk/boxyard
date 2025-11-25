@@ -26,7 +26,7 @@ async def delete_repo(
     if soft_interruption_enabled:
         enable_soft_interruption()
     
-    # %% ../../../pts/mod/cmds/08_delete_repo.pct.py 14
+    # %% ../../../pts/mod/cmds/08_delete_repo.pct.py 13
     from .._models import get_repoyard_meta
     repoyard_meta = get_repoyard_meta(config)
     
@@ -35,7 +35,7 @@ async def delete_repo(
     
     repo_meta = repoyard_meta.by_full_name[repo_full_name]
     
-    # %% ../../../pts/mod/cmds/08_delete_repo.pct.py 17
+    # %% ../../../pts/mod/cmds/08_delete_repo.pct.py 16
     # Delete local repo
     import shutil
     shutil.rmtree(repo_meta.get_local_path(config))
@@ -50,6 +50,6 @@ async def delete_repo(
             source_path=repo_meta.get_remote_path(config),
         )
     
-    # %% ../../../pts/mod/cmds/08_delete_repo.pct.py 20
+    # %% ../../../pts/mod/cmds/08_delete_repo.pct.py 19
     from .._models import refresh_repoyard_meta
     refresh_repoyard_meta(config)

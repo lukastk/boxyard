@@ -852,9 +852,7 @@ def cli_path(
 
     config = get_config(app_state['config_path'])
 
-    if path_option == 'data-user':
-        typer.echo(repo_meta.get_user_repos_path(config).as_posix())
-    elif path_option == 'data':
+    if path_option == 'data':
         typer.echo(repo_meta.get_local_part_path(config, RepoPart.DATA).as_posix())
     elif path_option == 'meta':
         typer.echo(repo_meta.get_local_part_path(config, RepoPart.META).as_posix())

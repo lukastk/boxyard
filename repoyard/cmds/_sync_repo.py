@@ -41,7 +41,7 @@ async def sync_repo(
     __all__ = ['config', 'repoyard_meta', 'repo_meta', 'sl_config', 'local_sync_backups_path', 'remote_sync_backups_path',
                'sync_results', 'sync_part']
     
-    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 12
+    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 11
     config = get_config(config_path)
     if sync_choices is None:
         sync_choices = [repo_part for repo_part in RepoPart]
@@ -49,7 +49,7 @@ async def sync_repo(
     if soft_interruption_enabled:
         enable_soft_interruption()
     
-    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 15
+    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 14
     from .._models import get_repoyard_meta
     repoyard_meta = get_repoyard_meta(config)
     
@@ -58,21 +58,21 @@ async def sync_repo(
     
     repo_meta = repoyard_meta.by_full_name[repo_full_name]
     
-    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 17
+    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 16
     if repo_meta.get_storage_location_config(config).storage_type == StorageType.LOCAL:
         pass
         return #|return_line
     
-    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 19
+    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 18
     if verbose:
         print(f"Syncing repo {repo_full_name} at {repo_meta.storage_location}.")
     
-    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 21
+    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 20
     sl_config = repo_meta.get_storage_location_config(config)
     local_sync_backups_path = config.local_sync_backups_path
     remote_sync_backups_path = sl_config.store_path / const.REMOTE_BACKUP_REL_PATH
     
-    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 23
+    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 22
     sync_results = {}
     
     if check_interrupted(): raise SoftInterruption()
@@ -95,7 +95,7 @@ async def sync_repo(
             show_rclone_progress=show_rclone_progress,
         )
     
-    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 26
+    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 25
     if check_interrupted(): raise SoftInterruption()
     
     sync_part = RepoPart.CONF
@@ -116,7 +116,7 @@ async def sync_repo(
             show_rclone_progress=show_rclone_progress,
         )
     
-    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 29
+    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 28
     _rclone_include_path = repo_meta.get_local_part_path(config, RepoPart.CONF) / ".rclone_include"
     _rclone_exclude_path = repo_meta.get_local_part_path(config, RepoPart.CONF) / ".rclone_exclude"
     _rclone_filters_path = repo_meta.get_local_part_path(config, RepoPart.CONF) / ".rclone_filters"
@@ -125,7 +125,7 @@ async def sync_repo(
     _rclone_exclude_path = _rclone_exclude_path if _rclone_exclude_path.exists() else config.default_rclone_exclude_path
     _rclone_filters_path = _rclone_filters_path if _rclone_filters_path.exists() else None
     
-    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 31
+    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 30
     if check_interrupted(): raise SoftInterruption()
     
     sync_part = RepoPart.DATA
@@ -149,7 +149,7 @@ async def sync_repo(
             show_rclone_progress=show_rclone_progress,
         )
     
-    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 34
+    # %% ../../../pts/mod/cmds/03_sync_repo.pct.py 33
     if RepoPart.META in sync_choices:
         from repoyard._models import refresh_repoyard_meta
         refresh_repoyard_meta(config)

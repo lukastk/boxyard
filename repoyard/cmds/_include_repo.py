@@ -19,10 +19,10 @@ async def include_repo(
     # %% auto 0
     __all__ = ['config', 'repoyard_meta', 'repo_meta']
     
-    # %% ../../../pts/mod/cmds/07_include_repo.pct.py 11
+    # %% ../../../pts/mod/cmds/07_include_repo.pct.py 10
     config = get_config(config_path)
     
-    # %% ../../../pts/mod/cmds/07_include_repo.pct.py 14
+    # %% ../../../pts/mod/cmds/07_include_repo.pct.py 13
     from .._models import get_repoyard_meta
     repoyard_meta = get_repoyard_meta(config)
     
@@ -34,7 +34,7 @@ async def include_repo(
     if repo_meta.check_included(config):
         raise ValueError(f"Repo '{repo_full_name}' is already included.")
     
-    # %% ../../../pts/mod/cmds/07_include_repo.pct.py 16
+    # %% ../../../pts/mod/cmds/07_include_repo.pct.py 15
     from . import sync_repo
     from .._models import RepoPart
     from .._utils.sync_helper import sync_helper, SyncSetting, SyncDirection

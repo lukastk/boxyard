@@ -24,7 +24,7 @@ async def exclude_repo(
     # %% ../../../pts/mod/cmds/06_exclude_repo.pct.py 11
     config = get_config(config_path)
     
-    # %% ../../../pts/mod/cmds/06_exclude_repo.pct.py 14
+    # %% ../../../pts/mod/cmds/06_exclude_repo.pct.py 13
     from .._models import get_repoyard_meta
     repoyard_meta = get_repoyard_meta(config)
     
@@ -36,12 +36,12 @@ async def exclude_repo(
     if not repo_meta.check_included(config):
         raise ValueError(f"Repo '{repo_full_name}' is already excluded.")
     
-    # %% ../../../pts/mod/cmds/06_exclude_repo.pct.py 16
+    # %% ../../../pts/mod/cmds/06_exclude_repo.pct.py 15
     from ..config import StorageType
     if repo_meta.get_storage_location_config(config).storage_type == StorageType.LOCAL:
         raise ValueError(f"Repo '{repo_full_name}' in local storage location '{repo_meta.storage_location}' cannot be excluded.")
     
-    # %% ../../../pts/mod/cmds/06_exclude_repo.pct.py 18
+    # %% ../../../pts/mod/cmds/06_exclude_repo.pct.py 17
     from . import sync_repo
     
     if not skip_sync:
@@ -51,7 +51,7 @@ async def exclude_repo(
             sync_setting=SyncSetting.CAREFUL,
         )
     
-    # %% ../../../pts/mod/cmds/06_exclude_repo.pct.py 20
+    # %% ../../../pts/mod/cmds/06_exclude_repo.pct.py 19
     import shutil
     from .._models import RepoPart
     shutil.rmtree(repo_meta.get_local_part_path(config, RepoPart.DATA))
