@@ -806,7 +806,6 @@ def cli_path(
     name_match_mode: NameMatchMode|None = Option(None, "--name-match-mode", "-m", help="The mode to use for matching the repository name."),
     name_match_case: bool = Option(False, "--name-match-case", "-c", help="Whether to match the repository name case-sensitively."),
     path_option: Literal[
-            'data-user',
             'data',
             'meta',
             'conf',
@@ -814,7 +813,7 @@ def cli_path(
             'sync-record-data',
             'sync-record-meta',
             'sync-record-conf',
-        ] = Option('data-user', "--path-option", "-p", help="The part of the repository to get the path of."),
+        ] = Option('data', "--path-option", "-p", help="The part of the repository to get the path of."),
     include_groups: list[str]|None = Option(None, "--include-group", "-g", help="The group to include in the output."),
     exclude_groups: list[str]|None = Option(None, "--exclude-group", "-e", help="The group to exclude from the output."),
     group_filter: str|None = Option(None, "--group-filter", "-f", help="The filter to apply to the groups. The filter is a boolean expression over the groups of the repositories. Allowed operators are `AND`, `OR`, `NOT`, and parentheses for grouping.."),
