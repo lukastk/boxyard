@@ -60,7 +60,12 @@ def _get_full_repo_name(
     name_match_case: bool,
     repo_metas = None,
     pick_first: bool = False,
+    allow_no_args: bool = True,
 ) -> str:
+    if not allow_no_args and (repo_name is None and repo_full_name is None and repo_id is None and repo_metas is None):
+        typer.echo("No repository name, id or full name provided.", err=True)
+        raise typer.Exit(code=1)
+
     from repoyard._models import RepoyardMeta
     if sum(1 for x in [repo_name, repo_full_name, repo_id] if x is not None) > 1:
         raise typer.Exit("Cannot provide more than one of `repo-name`, `repo-full-name` or `repo-id`.")
@@ -540,6 +545,7 @@ def cli_delete(
         repo_full_name=repo_full_name,
         name_match_mode=name_match_mode,
         name_match_case=name_match_case,
+        allow_no_args=False,
     )
     
     repoyard_meta = get_repoyard_meta(get_config(app_state['config_path']))
