@@ -223,7 +223,7 @@ def get_sync_stat_board(finished: bool):
 def print_finished(repo_full_name: str):
     num, sync_stat, e, timestamp, sync_results = sync_stats[repo_full_name]
     syncs_happened = [False if sync_results is None else sync_results[repo_part][1] for repo_part in RepoPart]
-    if no_print_skipped and not any(syncs_happened):
+    if no_print_skipped and sync_stat == "Success" and not any(syncs_happened):
         return
     lines = get_status_lines(repo_full_name)
     console.print(Text.from_markup("\n".join(lines).strip()))
