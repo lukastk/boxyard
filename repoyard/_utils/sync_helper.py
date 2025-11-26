@@ -59,7 +59,7 @@ async def sync_helper(
     
     # %% auto 0
     __all__ = ['sync_status', 'sync_condition', 'local_path_exists', 'remote_path_exists', 'local_sync_record', 'remote_sync_record',
-               'sync_path_is_dir', 'rec', 'backup_name']
+               'sync_path_is_dir', 'error_message', 'rec', 'backup_name']
     
     # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 14
     if not remote_path:
@@ -80,7 +80,10 @@ async def sync_helper(
         remote_path=remote_path,
         remote_sync_record_path=remote_sync_record_path,
     )
-    sync_condition, local_path_exists, remote_path_exists, local_sync_record, remote_sync_record, sync_path_is_dir = sync_status
+    sync_condition, local_path_exists, remote_path_exists, local_sync_record, remote_sync_record, sync_path_is_dir, error_message = sync_status
+    
+    if sync_condition == SyncCondition.ERROR and sync_setting != SyncSetting.FORCE:
+        raise Exception(error_message)
     
     # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 19
     def _raise_unsafe():
@@ -160,7 +163,7 @@ async def sync_helper(
             progress=show_rclone_progress,
         )
     
-    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 23
+    # %% ../../../pts/mod/_utils/02_sync_helper.pct.py 22
     from .._models import SyncRecord
     
     if check_interrupted(): raise SoftInterruption()

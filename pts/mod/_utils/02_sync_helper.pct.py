@@ -92,11 +92,6 @@ import tempfile
 tests_working_dir = const.pkg_path.parent / "tmp_tests"
 test_folder_path = Path(tempfile.mkdtemp(prefix="sync_helper", dir="/tmp"))
 test_folder_path.mkdir(parents=True, exist_ok=True)
-symlink_path = tests_working_dir / "_utils" / "sync_helper"
-symlink_path.parent.mkdir(parents=True, exist_ok=True)
-if symlink_path.exists() or symlink_path.is_symlink():
-    symlink_path.unlink()
-symlink_path.symlink_to(test_folder_path, target_is_directory=True) # So that it can be viewed from within the project working directory
 data_path = test_folder_path / ".repoyard"
 
 # %%
@@ -168,7 +163,10 @@ sync_status = await get_sync_status(
     remote_path=remote_path,
     remote_sync_record_path=remote_sync_record_path,
 )
-sync_condition, local_path_exists, remote_path_exists, local_sync_record, remote_sync_record, sync_path_is_dir = sync_status
+sync_condition, local_path_exists, remote_path_exists, local_sync_record, remote_sync_record, sync_path_is_dir, error_message = sync_status
+
+if sync_condition == SyncCondition.ERROR and sync_setting != SyncSetting.FORCE:
+    raise Exception(error_message)
 
 # %%
 assert sync_condition == SyncCondition.NEEDS_PUSH
@@ -261,10 +259,6 @@ async def _sync(
         progress=show_rclone_progress,
     )
 
-
-# %%
-from repoyard._models import SyncRecord
-u = SyncRecord.create(syncer_hostname=syncer_hostname, sync_complete=False).ulid
 
 # %%
 #|export
