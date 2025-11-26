@@ -501,40 +501,14 @@ async def get_sync_status(
                     else:
                         sync_condition = SyncCondition.CONFLICT
                 else:
+                    if local_sync_record is not None:
+                        raise Exception(f"Something wrong here. Local sync record exists, but remote path does not exist. Local path: '{local_path}', remote path: '{remote_path}.")
                     sync_condition = SyncCondition.NEEDS_PUSH
             else:
                 if remote_path_exists:
                     sync_condition = SyncCondition.NEEDS_PULL
                 else:
                     sync_condition = SyncCondition.SYNCED # Synced by default, since neither local nor remote path exists. This will often be the case for `conf`, for example.
-
-
-
-
-    if local_sync_incomplete or remote_sync_incomplete:
-        sync_condition = SyncCondition.SYNC_INCOMPLETE
-    else:
-        if sync_records_match:
-            if local_last_modified is not None and local_last_modified > local_sync_record.timestamp:
-                sync_condition = SyncCondition.NEEDS_PUSH
-            else:
-                sync_condition = SyncCondition.SYNCED
-        else:
-            if local_path_exists:
-                if not remote_path_exists:
-                    sync_condition = SyncCondition.NEEDS_PUSH
-                else:
-                    if local_sync_record is None:
-                        raise Exception("Something wrong here. Local sync record does not exist, but the remote path exists.")
-                    elif local_last_modified is not None and local_last_modified > local_sync_record.timestamp:
-                        sync_condition = SyncCondition.CONFLICT
-                    else:
-                        sync_condition = SyncCondition.NEEDS_PULL
-            else:
-                if remote_path_exists:
-                    sync_condition = SyncCondition.NEEDS_PULL
-                else:
-                    sync_condition = SyncCondition.SYNCED # Synced by default, since neither local nor remote path exists
 
     return SyncStatus(
         sync_condition=sync_condition,
