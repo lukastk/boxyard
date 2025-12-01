@@ -454,6 +454,9 @@ def cli_remove_from_group(
     from repoyard.cmds import modify_repometa
     from repoyard._models import get_repoyard_meta
 
+    if all([arg is None for arg in [repo_path, repo_full_name, repo_id, repo_name]]):
+        repo_path = Path.cwd()
+
     if repo_path is not None:
         from repoyard._utils import get_repo_full_name_from_sub_path
         config = get_config(app_state['config_path'])
