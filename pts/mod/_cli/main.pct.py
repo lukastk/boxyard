@@ -945,6 +945,7 @@ def cli_path(
         ] = Option('data', "--path-option", "-p", help="The part of the repository to get the path of."),
     include_groups: list[str]|None = Option(None, "--include-group", "-g", help="The group to include in the output."),
     exclude_groups: list[str]|None = Option(None, "--exclude-group", "-e", help="The group to exclude from the output."),
+    only_included: bool = Option(True, "--only-included", "-o", help="Only show included repositories."),
     group_filter: str|None = Option(None, "--group-filter", "-f", help="The filter to apply to the groups. The filter is a boolean expression over the groups of the repositories. Allowed operators are `AND`, `OR`, `NOT`, and parentheses for grouping.."),
 ):
     """
@@ -955,13 +956,17 @@ def cli_path(
     from pydantic import BaseModel
     import json
 
-    repoyard_meta = get_repoyard_meta(get_config(app_state['config_path']))
+    config = get_config(app_state['config_path'])
+    repoyard_meta = get_repoyard_meta(config)
     repo_metas = _get_filtered_repo_metas(
         repo_metas=repoyard_meta.repo_metas,
         include_groups=include_groups,
         exclude_groups=exclude_groups,
         group_filter=group_filter,
     )
+
+    if only_included:
+        repo_metas = [rm for rm in repo_metas if rm.check_included(config)]
     
     repo_index_name = _get_repo_index_name(
         repo_name=repo_name,
