@@ -112,3 +112,14 @@ repo_meta.get_local_sync_record_path(config, RepoPart.DATA).unlink()
 # %%
 # Should now be included
 assert not repo_meta.check_included(config)
+
+# %% [markdown]
+# Test that syncing the repo will not automatically include it again
+
+# %%
+from repoyard.cmds import sync_repo
+await sync_repo(
+    config_path=config_path,
+    repo_index_name=repo_index_name,
+)
+assert not repo_meta.check_included(config)

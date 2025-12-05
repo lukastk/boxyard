@@ -105,6 +105,9 @@ async def sync_helper(
             sync_direction = SyncDirection.PUSH
         elif sync_condition == SyncCondition.NEEDS_PULL:
             sync_direction = SyncDirection.PULL
+        elif sync_condition == SyncCondition.EXCLUDED:
+            if verbose: print("Sync not needed as the repo is excluded.")
+            return sync_status, False #|return_line
         elif sync_condition == SyncCondition.SYNC_INCOMPLETE:
             _raise_unsafe()
         else:

@@ -83,7 +83,7 @@ def _get_repo_index_name(
     if repo_metas is None:
         repo_metas = get_repoyard_meta(config).repo_metas
     repoyard_meta = RepoyardMeta(repo_metas=repo_metas)
-
+    
     if (repo_id is not None or repo_name is not None) or search_mode:        
         if repo_id is not None:
             if not repo_id in repoyard_meta.by_id:
@@ -854,7 +854,7 @@ def cli_path(
 
     if only_included:
         repo_metas = [rm for rm in repo_metas if rm.check_included(config)]
-    
+
     repo_index_name = _get_repo_index_name(
         repo_name=repo_name,
         repo_id=repo_id,

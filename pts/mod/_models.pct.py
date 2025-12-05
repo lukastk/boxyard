@@ -457,6 +457,7 @@ class SyncCondition(Enum):
     CONFLICT = "conflict"
     NEEDS_PUSH = "needs_push"
     NEEDS_PULL = "needs_pull"
+    EXCLUDED = "excluded"
     ERROR = "error"
 
 class SyncStatus(NamedTuple):
@@ -575,7 +576,7 @@ async def get_sync_status(
                     sync_condition = SyncCondition.NEEDS_PUSH
             else:
                 if remote_path_exists:
-                    sync_condition = SyncCondition.NEEDS_PULL
+                    sync_condition = SyncCondition.EXCLUDED
                 else:
                     sync_condition = SyncCondition.SYNCED # Synced by default, since neither local nor remote path exists. This will often be the case for `conf`, for example.
 

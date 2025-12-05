@@ -197,6 +197,9 @@ if sync_direction is None: # auto
         sync_direction = SyncDirection.PUSH
     elif sync_condition == SyncCondition.NEEDS_PULL:
         sync_direction = SyncDirection.PULL
+    elif sync_condition == SyncCondition.EXCLUDED:
+        if verbose: print("Sync not needed as the repo is excluded.")
+        sync_status, False #|return_line
     elif sync_condition == SyncCondition.SYNC_INCOMPLETE:
         _raise_unsafe()
     else:
