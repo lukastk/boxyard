@@ -21,7 +21,7 @@ from ulid import ULID
 from enum import Enum
 import repoyard.config
 from repoyard import const
-from repoyard.config import RepoGroupConfig
+from repoyard.config import RepoGroupConfig, RepoTimestampFormat
 
 
 # %% [markdown]
@@ -39,13 +39,6 @@ class RepoPart(Enum):
 #|exporti
 def _create_repo_subid(character_set: str, length: int) -> str:
     return ''.join(random.choices(character_set, k=length))
-
-___repo_timestamp_length = {}
-def _get_repo_timestamp_length(config: repoyard.config.Config) -> int:
-    if config.config_path not in ___repo_timestamp_length:
-        test_repo_meta = RepoMeta.create(config, "test", "test", "test", [])
-        ___repo_timestamp_length[config.config_path] = len(test_repo_meta.creation_timestamp_utc)
-    return ___repo_timestamp_length[config.config_path]
 
 
 # %%
@@ -69,7 +62,12 @@ class RepoMeta(const.StrictModel):
         creation_timestamp_utc: datetime|None = None,
     ) -> 'RepoMeta':
         if creation_timestamp_utc is None:
-            creation_timestamp_utc = datetime.now(timezone.utc).strftime(const.REPO_TIMESTAMP_FORMAT)
+            if config.repo_timestamp_format == RepoTimestampFormat.DATE_AND_TIME:
+                creation_timestamp_utc = datetime.now(timezone.utc).strftime(const.REPO_TIMESTAMP_FORMAT)
+            elif config.repo_timestamp_format == RepoTimestampFormat.DATE_ONLY:
+                creation_timestamp_utc = datetime.now(timezone.utc).strftime(const.REPO_TIMESTAMP_FORMAT_DATE_ONLY)
+            else:
+                raise Exception(f"Invalid repo timestamp format: {config.repo_timestamp_format}")
         else:
             creation_timestamp_utc = creation_timestamp_utc.strftime(const.REPO_TIMESTAMP_FORMAT)
 
@@ -84,7 +82,10 @@ class RepoMeta(const.StrictModel):
 
     @property
     def creation_timestamp_datetime(self) -> datetime:
-        return datetime.strptime(self.creation_timestamp_utc, const.REPO_TIMESTAMP_FORMAT)
+        if '_' in self.creation_timestamp_utc:
+            return datetime.strptime(self.creation_timestamp_utc, const.REPO_TIMESTAMP_FORMAT)
+        else:
+            return datetime.strptime(self.creation_timestamp_utc, const.REPO_TIMESTAMP_FORMAT_DATE_ONLY)
 
     @property
     def repo_id(self) -> str:
@@ -146,9 +147,14 @@ class RepoMeta(const.StrictModel):
     @classmethod
     def load(cls, config: repoyard.config.Config, storage_location_name: str, repo_index_name: str) -> None:
         repo_id, name = repo_index_name.split('__', 1)
-        timestamp_len =_get_repo_timestamp_length(config)
-        creation_timestamp = repo_id[:timestamp_len]
-        repo_subid = repo_id[timestamp_len+1:]
+        repo_id_parts = repo_id.split('_')
+        if len(repo_id_parts) == 3:
+            creation_timestamp = f"{repo_id_parts[0]}_{repo_id_parts[1]}"
+        elif len(repo_id_parts) == 2:
+            creation_timestamp = repo_id_parts[0]
+        else:
+            raise ValueError(f"Invalid repo id: {repo_id}")
+        repo_subid = repo_id_parts[-1]
         
         repometa_path = config.local_store_path / storage_location_name / repo_index_name / const.REPO_METAFILE_REL_PATH
         if not repometa_path.exists():
