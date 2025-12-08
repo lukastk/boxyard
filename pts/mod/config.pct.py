@@ -59,11 +59,16 @@ class VirtualRepoGroupConfig(const.StrictModel):
             self._filter_func = get_group_filter_func(self.filter_expr)
         return self._filter_func(groups)
 
+class RepoTimestampFormat(Enum):
+    DATE_AND_TIME = "date_and_time"
+    DATE_ONLY = "date_only"
+
 class Config(const.StrictModel):
     config_path : Path # Path to the config file. Will not be saved to the config file.
     
     default_storage_location : str
     repoyard_data_path : Path
+    repo_timestamp_format: RepoTimestampFormat
     user_repos_path : Path
     user_repo_groups_path : Path
     storage_locations : dict[str, StorageConfig]
@@ -144,6 +149,7 @@ def _get_default_config_dict(config_path=None, data_path=None) -> Config:
         config_path=config_path.as_posix(),
         default_storage_location = "fake",
         repoyard_data_path = data_path.as_posix(),
+        repo_timestamp_format = RepoTimestampFormat.DATE_ONLY.value,
         user_repos_path = const.DEFAULT_USER_REPOS_PATH.as_posix(),
         user_repo_groups_path = const.DEFAULT_USER_REPO_GROUPS_PATH.as_posix(),
         storage_locations = {
