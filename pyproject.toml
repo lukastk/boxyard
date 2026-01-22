@@ -30,6 +30,7 @@ dev = [
     "nblite>=0.6.8",
     "pytest>=9.0.0",
     "python-dotenv>=1.2.1",
+    "ruff>=0.14.13",
     "twine>=6.2.0",
 ]
 
@@ -39,3 +40,6 @@ repoyard = "repoyard._cli.app:app"
 [tool.pytest.ini_options]
 testpaths = ["src/tests"]
 python_files = ["test_*.py"]
+markers = [
+    "integration: marks tests as integration tests (require external resources like rclone)",
+]

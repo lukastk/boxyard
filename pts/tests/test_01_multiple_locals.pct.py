@@ -36,6 +36,7 @@ from tests.utils import *
 
 # %%
 #|top_export
+@pytest.mark.integration
 def test_01_multiple_locals():
     asyncio.run(_test_01_multiple_locals())
 

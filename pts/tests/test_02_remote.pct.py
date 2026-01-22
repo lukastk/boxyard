@@ -38,6 +38,7 @@ from dotenv import load_dotenv
 
 # %%
 #|top_export
+@pytest.mark.integration
 def test_02_remote():
     asyncio.run(_test_02_remote())
 

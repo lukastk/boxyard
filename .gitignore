@@ -1,6 +1,6 @@
 tmp_tests/
 
-tests/*
+src/tests/*
 !tests/__init__.py
 
 envname
@@ -14,7 +14,6 @@ index_files/
 .gitattributes
 .last_checked
 .gitconfig
-.github
 *.bak
 *.log
 *~

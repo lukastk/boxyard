@@ -25,6 +25,7 @@ from pathlib import Path
 import shutil
 import toml
 import asyncio
+import pytest
 
 from repoyard import const
 from repoyard.cmds import *
@@ -34,6 +35,7 @@ from tests.utils import *
 
 # %%
 #|top_export
+@pytest.mark.integration
 def test_00_sync():
     asyncio.run(_test_00_sync())
 
