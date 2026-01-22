@@ -218,6 +218,11 @@ def cli_new(
         "-c",
         help="Copy the contents of the from_path into the new repository.",
     ),
+    git_clone_url: str | None = Option(
+        None,
+        "--git-clone",
+        help="Git URL (SSH or HTTPS) to clone as the new repository.",
+    ),
     creator_hostname: str | None = Option(
         None,
         "--creator-hostname",
@@ -240,9 +245,13 @@ def cli_new(
     Create a new repository.
     """
     from ..cmds import new_repo
+    from ..cmds._new_repo import _extract_repo_name_from_git_url
 
     if repo_name is None and from_path is not None:
         repo_name = Path(from_path).name
+
+    if repo_name is None and git_clone_url is not None:
+        repo_name = _extract_repo_name_from_git_url(git_clone_url)
 
     if repo_name is None:
         typer.echo("No repository name provided.")
@@ -274,6 +283,7 @@ def cli_new(
         initialise_git=initialise_git,
         creation_timestamp_utc=creation_timestamp_utc,
         verbose=False,
+        git_clone_url=git_clone_url,
     )
     typer.echo(repo_index_name)
 
