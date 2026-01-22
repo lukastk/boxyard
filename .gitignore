@@ -1,7 +1,7 @@
-tmp_tests/
+# Ignore nbs
+nbs/
 
-src/tests/*
-!tests/__init__.py
+tmp_tests/
 
 envname
 _proc/
