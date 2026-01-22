@@ -377,7 +377,7 @@ def create_user_repo_group_symlinks(
     # Create the symlinks
     for dest_path, symlink_path in _symlinks:
         symlink_path.parent.mkdir(parents=True, exist_ok=True)
-        if symlink_path.exists():
+        if symlink_path.exists() or symlink_path.is_symlink():  # is_symlink() catches broken symlinks
             if symlink_path.is_symlink():
                 if symlink_path.resolve() != dest_path.resolve():
                     symlink_path.unlink()

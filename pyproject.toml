@@ -35,3 +35,7 @@ dev = [
 
 [project.scripts]
 repoyard = "repoyard._cli.app:app"
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]
+python_files = ["test_*.py"]
