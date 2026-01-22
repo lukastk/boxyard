@@ -10,32 +10,32 @@
 # # _new_repo
 
 # %%
-#|default_exp cmds._new_repo
-#|export_as_func true
+# |default_exp cmds._new_repo
+# |export_as_func true
 
 # %%
-#|hide
-import nblite; from nblite import show_doc; nblite.nbl_export()
+# |hide
+import nblite
+
+nblite.nbl_export()
 
 # %%
-#|top_export
+# |top_export
 from pathlib import Path
 import subprocess
 from datetime import datetime
 
-from repoyard import const
-from repoyard.config import StorageType
 
 # %%
-#|set_func_signature
+# |set_func_signature
 def new_repo(
     config_path: Path,
-    storage_location: str|None = None,
-    repo_name: str|None = None,
-    from_path: Path|None = None,
+    storage_location: str | None = None,
+    repo_name: str | None = None,
+    from_path: Path | None = None,
     copy_from_path: bool = False,
-    creator_hostname: str|None = None,
-    creation_timestamp_utc: datetime|None = None,
+    creator_hostname: str | None = None,
+    creation_timestamp_utc: datetime | None = None,
     initialise_git: bool = True,
     verbose: bool = False,
 ):
@@ -58,11 +58,13 @@ def new_repo(
     """
     ...
 
+
 # %% [markdown]
 # Set up testing args
 
 # %%
 from tests.utils import *
+
 remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
 
 # %%
@@ -85,29 +87,33 @@ verbose = True
 # Process args
 
 # %%
-#|export
+# |export
 from repoyard.config import get_config
+
 config = get_config(config_path)
-    
+
 if storage_location is None:
     storage_location = config.default_storage_location
-    
+
 if storage_location not in config.storage_locations:
-    raise ValueError(f"Invalid storage location: {storage_location}. Must be one of: {', '.join(config.storage_locations)}.")
-    
+    raise ValueError(
+        f"Invalid storage location: {storage_location}. Must be one of: {', '.join(config.storage_locations)}."
+    )
+
 if repo_name is None and from_path is None:
     raise ValueError("Either `repo_name` or `from_path` must be provided.")
 
 if from_path is not None:
     from_path = Path(from_path).expanduser().resolve()
-    
+
 if from_path is not None and repo_name is None:
     repo_name = from_path.name
-    
+
 if from_path is None and copy_from_path:
     raise ValueError("`from_path` must be provided if `copy_from_path` is True.")
 
 from repoyard._utils import get_hostname
+
 if creator_hostname is None:
     creator_hostname = get_hostname()
 
@@ -115,23 +121,30 @@ if creator_hostname is None:
 # Check if the `from_path` is a repo within the repoyard
 
 # %%
-#|export
+# |export
 from repoyard._models import get_repoyard_meta, RepoPart
+
 repoyard_meta = get_repoyard_meta(config)
 
 if from_path is not None:
     from_path = Path(from_path).expanduser().resolve()
-    repo_paths = [repo_meta.get_local_part_path(config, RepoPart.DATA) for repo_meta in repoyard_meta.repo_metas]
+    repo_paths = [
+        repo_meta.get_local_part_path(config, RepoPart.DATA)
+        for repo_meta in repoyard_meta.repo_metas
+    ]
 
     if from_path in repo_paths and not copy_from_path:
-        raise ValueError(f"'{from_path}' is already a repoyard repository. Use `copy_from_path=True` to copy the contents of this repo into a new repo.")
+        raise ValueError(
+            f"'{from_path}' is already a repoyard repository. Use `copy_from_path=True` to copy the contents of this repo into a new repo."
+        )
 
 # %% [markdown]
 # Create meta file
 
 # %%
-#|export
+# |export
 from repoyard._models import RepoMeta
+
 repo_meta = RepoMeta.create(
     config,
     name=repo_name,
@@ -147,8 +160,9 @@ repo_meta.save(config)
 # Create the repo folder
 
 # %%
-#|export
+# |export
 from repoyard._models import RepoPart
+
 repo_path = repo_meta.get_local_path(config)
 repo_data_path = repo_meta.get_local_part_path(config, RepoPart.DATA)
 repo_conf_path = repo_meta.get_local_part_path(config, RepoPart.CONF)
@@ -158,7 +172,10 @@ repo_conf_path.mkdir(parents=True, exist_ok=True)
 if from_path is not None:
     if copy_from_path:
         import shutil
-        shutil.copytree(from_path, repo_data_path) #TESTREF: test_new_repo_copy_from_path
+
+        shutil.copytree(
+            from_path, repo_data_path
+        )  # TESTREF: test_new_repo_copy_from_path
     else:
         from_path.rename(repo_data_path)
 else:
@@ -168,30 +185,33 @@ else:
 # Run `git init`
 
 # %%
-#|export
-if initialise_git and not (repo_data_path / '.git').exists():
-    if verbose: print("Initialising git repository")
+# |export
+if initialise_git and not (repo_data_path / ".git").exists():
+    if verbose:
+        print("Initialising git repository")
     res = subprocess.run(
-        ["git", "init"], 
-        check=True, 
+        ["git", "init"],
+        check=True,
         cwd=repo_data_path,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stderr=subprocess.DEVNULL,
     )
     if res.returncode != 0:
-        if verbose: print("Warning: Failed to initialise git repository")
+        if verbose:
+            print("Warning: Failed to initialise git repository")
 
 # %% [markdown]
 # Refresh the repoyard meta file
 
 # %%
-#|export
+# |export
 from repoyard._models import refresh_repoyard_meta
+
 refresh_repoyard_meta(config)
 
 # %% [markdown]
 # Return repo index name
 
 # %%
-#|func_return
-repo_meta.index_name;
+# |func_return
+repo_meta.index_name

@@ -10,57 +10,76 @@
 # # multi_sync
 
 # %%
-#|default_exp _cli.multi_sync
-#|export_as_func true
+# |default_exp _cli.multi_sync
+# |export_as_func true
 
 # %%
-#|hide
-from nblite import nbl_export, show_doc; nbl_export();
+# |hide
+from nblite import nbl_export
+
+nbl_export()
 
 # %%
-#|top_export
-import os
+# |top_export
 import typer
-from typer import Argument, Option
-from typing_extensions import Annotated
-from types import FunctionType
-from typing import Callable, Union, List, Literal
-from pathlib import Path
-from enum import Enum
+from typer import Option
 import asyncio
 
-import repoyard as proj
-from repoyard import const
 from repoyard.config import get_config
-from repoyard._utils import async_throttler, check_interrupted, enable_soft_interruption, SoftInterruption
+from repoyard._utils import async_throttler, enable_soft_interruption, SoftInterruption
 from repoyard._utils.sync_helper import SyncSetting, SyncDirection
 from repoyard._models import RepoPart
 from repoyard._cli.app import app, app_state
 
 # %%
-#|export
+# |export
 from repoyard._models import get_repoyard_meta
 from repoyard.cmds import sync_repo
 from rich.live import Live
 from rich.text import Text
 from rich.console import Console
-from datetime import datetime, timedelta
+from datetime import datetime
 import shutil
 
+
 # %%
-#|set_func_signature
-@app.command(name='multi-sync')
+# |set_func_signature
+@app.command(name="multi-sync")
 def cli_multi_sync(
-    repo_index_names: list[str]|None = Option(None, "--repo", "-r", help="The index names of the repository, in the form."),
-    storage_locations: list[str]|None = Option(None, "--storage-location", "-s", help="The storage locations to sync."),
-    max_concurrent_rclone_ops: int|None = Option(None, "--max-concurrent", "-m", help="The maximum number of concurrent rclone operations. If not provided, the default specified in the config will be used."),
-    sync_direction: SyncDirection|None = Option(None, "--sync-direction", help="The direction of the sync. If not provided, the appropriate direction will be automatically determined based on the sync status. This mode is only available for the 'CAREFUL' sync setting."),
-    sync_setting: SyncSetting = Option(SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."),
-    sync_choices: list[RepoPart]|None = Option(None, "--sync-choices", "-c", help="The parts of the repository to sync. If not provided, all parts will be synced. By default, all parts are synced."),
-    sync_recently_modified_first: bool = Option(False, help="Sync repositories that have been recently modified first."),
+    repo_index_names: list[str] | None = Option(
+        None, "--repo", "-r", help="The index names of the repository, in the form."
+    ),
+    storage_locations: list[str] | None = Option(
+        None, "--storage-location", "-s", help="The storage locations to sync."
+    ),
+    max_concurrent_rclone_ops: int | None = Option(
+        None,
+        "--max-concurrent",
+        "-m",
+        help="The maximum number of concurrent rclone operations. If not provided, the default specified in the config will be used.",
+    ),
+    sync_direction: SyncDirection | None = Option(
+        None,
+        "--sync-direction",
+        help="The direction of the sync. If not provided, the appropriate direction will be automatically determined based on the sync status. This mode is only available for the 'CAREFUL' sync setting.",
+    ),
+    sync_setting: SyncSetting = Option(
+        SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."
+    ),
+    sync_choices: list[RepoPart] | None = Option(
+        None,
+        "--sync-choices",
+        "-c",
+        help="The parts of the repository to sync. If not provided, all parts will be synced. By default, all parts are synced.",
+    ),
+    sync_recently_modified_first: bool = Option(
+        False, help="Sync repositories that have been recently modified first."
+    ),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
     show_progress: bool = Option(True, help="Show the progress of the sync."),
-    no_print_skipped: bool = Option(True, help="Do not print repositories for which no syncs happened."),
+    no_print_skipped: bool = Option(
+        True, help="Do not print repositories for which no syncs happened."
+    ),
     soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
@@ -68,22 +87,29 @@ def cli_multi_sync(
     """
     ...
 
+
 # %% [markdown]
 # Set up testing args
 
 # %%
 # Set up test environment
 from tests.utils import create_repoyards
+
 remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
 
 # Create some repos
 from repoyard.cmds import new_repo
+
 for i in range(3):
-    new_repo(config_path=config_path, repo_name=f"test_repo_{i}", storage_location=remote_name)
+    new_repo(
+        config_path=config_path,
+        repo_name=f"test_repo_{i}",
+        storage_location=remote_name,
+    )
 
 # %%
 # Args
-app_state = {'config_path': config_path}
+app_state = {"config_path": config_path}
 
 repo_index_names = None
 storage_locations = None
@@ -104,7 +130,7 @@ soft_interruption_enabled = True
 # Process args
 
 # %%
-#|export
+# |export
 if soft_interruption_enabled:
     enable_soft_interruption()
 
@@ -112,11 +138,13 @@ if repo_index_names is not None and storage_locations is not None:
     typer.echo("Cannot provide both `--repo` and `--storage-location`.", err=True)
     raise typer.Exit(code=1)
 
-config = get_config(app_state['config_path'])
+config = get_config(app_state["config_path"])
 
 if storage_locations is None and repo_index_names is None:
     storage_locations = list(config.storage_locations.keys())
-if storage_locations is not None and any(sl not in config.storage_locations for sl in storage_locations):
+if storage_locations is not None and any(
+    sl not in config.storage_locations for sl in storage_locations
+):
     typer.echo(f"Invalid storage location: {storage_locations}")
     raise typer.Exit(code=1)
 
@@ -128,47 +156,72 @@ if sync_choices is None:
 
 repoyard_meta = get_repoyard_meta(config)
 if repo_index_names is None:
-    repo_metas = [repo_meta for repo_meta in repoyard_meta.repo_metas if repo_meta.storage_location in storage_locations]
+    repo_metas = [
+        repo_meta
+        for repo_meta in repoyard_meta.repo_metas
+        if repo_meta.storage_location in storage_locations
+    ]
 else:
-    if any(repo_index_name not in repoyard_meta.by_index_name for repo_index_name in repo_index_names):
+    if any(
+        repo_index_name not in repoyard_meta.by_index_name
+        for repo_index_name in repo_index_names
+    ):
         typer.echo(f"Non-existent repository: {repo_index_names}")
         raise typer.Exit(code=1)
-    repo_metas = [repoyard_meta.by_index_name[repo_index_name] for repo_index_name in repo_index_names]
+    repo_metas = [
+        repoyard_meta.by_index_name[repo_index_name]
+        for repo_index_name in repo_index_names
+    ]
 
 # %% [markdown]
 # Define syncing task
 
+
 # %%
-#|export
+# |export
 async def _task(num, repo_meta):
     sync_stats[repo_meta.index_name] = (num, "Syncing...", None, datetime.now(), None)
     try:
         sync_results = await sync_repo(
-            config_path=app_state['config_path'],
+            config_path=app_state["config_path"],
             repo_index_name=repo_meta.index_name,
             sync_direction=sync_direction,
             sync_setting=sync_setting,
             sync_choices=sync_choices,
             verbose=False,
         )
-        sync_stats[repo_meta.index_name] = (num, "Success", None, datetime.now(), sync_results)
+        sync_stats[repo_meta.index_name] = (
+            num,
+            "Success",
+            None,
+            datetime.now(),
+            sync_results,
+        )
     except SoftInterruption:
-        sync_stats[repo_meta.index_name] = (num, "Interrupted", None, datetime.now(), None)
+        sync_stats[repo_meta.index_name] = (
+            num,
+            "Interrupted",
+            None,
+            datetime.now(),
+            None,
+        )
     except Exception as e:
         sync_stats[repo_meta.index_name] = (num, "Error", str(e), datetime.now(), None)
 
     if show_progress:
         print_finished(repo_meta.index_name)
 
+
 # %% [markdown]
 # Set up the progress printing (shown if `show_progress == True`)
 
 # %%
 
-#|export
+# |export
 sync_stats = {}
 
 finish_monitoring_event = asyncio.Event()
+
 
 def get_status_lines(repo_index_name):
     num, sync_stat, e, timestamp, sync_results = sync_stats[repo_index_name]
@@ -189,7 +242,7 @@ def get_status_lines(repo_index_name):
         "Error": "red",
     }.get(sync_stat, "")
 
-    left = f"({num+1}/{len(repo_metas)}) [bold {name_color}]{repo_index_name}[/bold {name_color}]"
+    left = f"({num + 1}/{len(repo_metas)}) [bold {name_color}]{repo_index_name}[/bold {name_color}]"
     right = f"[bold {status_color}]{sync_stat}[/bold {status_color}]"
 
     # Strip markup to compute the real visible lengths
@@ -197,12 +250,17 @@ def get_status_lines(repo_index_name):
     right_len = len(Text.from_markup(right).plain)
 
     # compute how many dots are needed
-    dots = console_width - left_len - right_len - 1 - 2 # -2 for the space between dots and the left and right text
+    dots = (
+        console_width - left_len - right_len - 1 - 2
+    )  # -2 for the space between dots and the left and right text
     if dots < 1:
         dots = 1
 
     line = f"{left} {'.' * dots} {right}"
-    syncs_happened = [False if sync_results is None else sync_results[repo_part][1] for repo_part in sync_choices]
+    syncs_happened = [
+        False if sync_results is None else sync_results[repo_part][1]
+        for repo_part in sync_choices
+    ]
     lines.append(line)
 
     indent = "    "
@@ -211,58 +269,80 @@ def get_status_lines(repo_index_name):
     elif sync_stat == "Success":
         line = []
         for repo_part, synced in zip(sync_choices, syncs_happened):
-            line.append(f"[bold]{repo_part.value}:[/bold] {'[green]Synced[/green]' if synced else '[blue]Skipped[/blue]'}")
+            line.append(
+                f"[bold]{repo_part.value}:[/bold] {'[green]Synced[/green]' if synced else '[blue]Skipped[/blue]'}"
+            )
         lines.append(indent + f",{indent}".join(line))
     else:
         lines.append(f"{indent}[yellow]Results pending...[/yellow]")
 
     return lines
 
+
 def get_sync_stat_board(finished: bool):
     console_width = shutil.get_terminal_size((80, 20)).columns
     lines = []
-    for repo_index_name, (num, sync_stat, e, timestamp, sync_results) in sync_stats.items():
-        if sync_stat != "Syncing...": continue
+    for repo_index_name, (
+        num,
+        sync_stat,
+        e,
+        timestamp,
+        sync_results,
+    ) in sync_stats.items():
+        if sync_stat != "Syncing...":
+            continue
         lines.extend(get_status_lines(repo_index_name))
     return "\n".join(lines).strip()
 
+
 def print_finished(repo_index_name: str):
     num, sync_stat, e, timestamp, sync_results = sync_stats[repo_index_name]
-    syncs_happened = [False if sync_results is None else sync_results[repo_part][1] for repo_part in sync_choices]
+    syncs_happened = [
+        False if sync_results is None else sync_results[repo_part][1]
+        for repo_part in sync_choices
+    ]
     if no_print_skipped and sync_stat == "Success" and not any(syncs_happened):
         return
     lines = get_status_lines(repo_index_name)
     console.print(Text.from_markup("\n".join(lines).strip()))
 
+
 console = Console()
+
 
 async def _progress_monitor_task():
     with Live(console=console, refresh_per_second=4) as live:
+
         def _update_live(finished: bool):
             rendered = Text.from_markup(get_sync_stat_board(finished=finished))
             live.update(rendered)
+
         while not finish_monitoring_event.is_set():
             _update_live(False)
             await asyncio.sleep(0.2)
         live.update(Text.from_markup("Finished. Final results:\n\n"))
 
+
 # %% [markdown]
 # Run multi-sync
 
 # %%
-#|export
+# |export
 _repo_metas = repo_metas
 if sync_recently_modified_first:
     from repoyard._utils import check_last_time_modified
+
     def get_last_modified(repo_meta):
         last_modified = check_last_time_modified(repo_meta.get_local_path(config))
         return last_modified.timestamp() if last_modified else 0
+
     _repo_metas = sorted(_repo_metas, key=get_last_modified, reverse=True)
 
 sync_task = async_throttler(
     [_task(num, repo_meta) for num, repo_meta in enumerate(_repo_metas)],
     max_concurrency=max_concurrent_rclone_ops,
 )
+
 
 async def _runner():
     if show_progress:
@@ -273,12 +353,14 @@ async def _runner():
     else:
         await sync_task
 
+
 # %%
 await _runner()
 
 # %%
-#|export
+# |export
 from repoyard._utils import is_in_event_loop
+
 if not is_in_event_loop():
     asyncio.run(_runner())
 
@@ -288,4 +370,5 @@ console.print(final_sync_stat_board, markup=True)
 
 if refresh_user_symlinks:
     from repoyard.cmds import create_user_symlinks
-    create_user_symlinks(config_path=app_state['config_path'])
+
+    create_user_symlinks(config_path=app_state["config_path"])

@@ -3,37 +3,41 @@
 from pathlib import Path
 
 from ..config import get_config
-from .. import const
 from .._utils import enable_soft_interruption
+
 
 async def delete_repo(
     config_path: Path,
     repo_index_name: str,
     soft_interruption_enabled: bool = True,
 ):
-    """
-    """
+    """ """
     config = get_config(config_path)
-    
+
     if soft_interruption_enabled:
         enable_soft_interruption()
     from repoyard._models import get_repoyard_meta
+
     repoyard_meta = get_repoyard_meta(config)
-    
+
     if repo_index_name not in repoyard_meta.by_index_name:
         raise ValueError(f"Repo '{repo_index_name}' does not exist.")
-    
+
     repo_meta = repoyard_meta.by_index_name[repo_index_name]
-    
+
     # Delete local repo
     import shutil
     from repoyard._models import RepoPart
-    shutil.rmtree(repo_meta.get_local_part_path(config, RepoPart.DATA)) # Deleting separately as the data part is in a separate directory
+
+    shutil.rmtree(
+        repo_meta.get_local_part_path(config, RepoPart.DATA)
+    )  # Deleting separately as the data part is in a separate directory
     shutil.rmtree(repo_meta.get_local_path(config))
-    
+
     # Delete remote repo
     from repoyard._utils import rclone_purge
     from repoyard.config import StorageType
+
     if repo_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL:
         await rclone_purge(
             config.rclone_config_path,
@@ -41,4 +45,5 @@ async def delete_repo(
             source_path=repo_meta.get_remote_path(config),
         )
     from repoyard._models import refresh_repoyard_meta
+
     refresh_repoyard_meta(config)

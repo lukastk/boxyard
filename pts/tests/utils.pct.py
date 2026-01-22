@@ -10,29 +10,28 @@
 # # utils
 
 # %%
-#|default_exp utils
+# |default_exp utils
 
 # %%
-#|hide
-import nblite; from nblite import show_doc; nblite.nbl_export()
-import tests as this_module
+# |hide
+import nblite
+
+nblite.nbl_export()
 
 # %%
-#|export
+# |export
 import subprocess
 from pathlib import Path
-import shutil
 import tempfile
 import toml
 import inspect
 
-from repoyard import const
 from repoyard.cmds import *
-from repoyard._models import get_repoyard_meta
 from repoyard.config import get_config
 
+
 # %%
-#|export
+# |export
 def create_repoyards(remote_name="my_remote", num_repoyards=1):
     remote_rclone_path = Path(tempfile.mkdtemp(prefix=f"{remote_name}_", dir="/tmp"))
 
@@ -49,19 +48,25 @@ def create_repoyards(remote_name="my_remote", num_repoyards=1):
 
         # Add a storage location
         config_dump = toml.load(config_path)
-        config_dump['user_repos_path'] = (test_folder_path / "user_repos").as_posix()
-        config_dump['user_repo_groups_path'] = (test_folder_path / "user_repo_groups").as_posix()
-        config_dump['storage_locations'][remote_name] = {
-            'storage_type' : "rclone",
-            'store_path' : "repoyard",
+        config_dump["user_repos_path"] = (test_folder_path / "user_repos").as_posix()
+        config_dump["user_repo_groups_path"] = (
+            test_folder_path / "user_repo_groups"
+        ).as_posix()
+        config_dump["storage_locations"][remote_name] = {
+            "storage_type": "rclone",
+            "store_path": "repoyard",
         }
 
         # Set up a rclone remote path
-        config.rclone_config_path.write_text(config.rclone_config_path.read_text() + "\n" + inspect.cleandoc(f"""
+        config.rclone_config_path.write_text(
+            config.rclone_config_path.read_text()
+            + "\n"
+            + inspect.cleandoc(f"""
         [{remote_name}]
         type = alias
         remote = {remote_rclone_path}
-        """));
+        """)
+        )
 
         config_path.write_text(toml.dumps(config_dump))
 
@@ -76,9 +81,12 @@ def create_repoyards(remote_name="my_remote", num_repoyards=1):
     else:
         return remote_name, remote_rclone_path, repoyards
 
+
 # %%
-#|export
-class CmdFailed(Exception): pass
+# |export
+class CmdFailed(Exception):
+    pass
+
 
 def run_cmd(cmd: str, capture_output: bool = True):
     if not capture_output:
@@ -86,14 +94,19 @@ def run_cmd(cmd: str, capture_output: bool = True):
     else:
         res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if res.returncode != 0:
-        raise CmdFailed(f"Command '{cmd}' failed with return code {res.returncode}. Stdout:\n{res.stdout}\n\nStderr:\n{res.stderr}")
+        raise CmdFailed(
+            f"Command '{cmd}' failed with return code {res.returncode}. Stdout:\n{res.stdout}\n\nStderr:\n{res.stderr}"
+        )
     if capture_output:
         return res.stdout
 
+
 # %%
-#|export
+# |export
 def run_cmd_in_background(cmd: str, print_output: bool = False):
     if print_output:
         return subprocess.Popen(cmd, shell=True)
     else:
-        return subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return subprocess.Popen(
+            cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )

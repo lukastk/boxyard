@@ -10,12 +10,13 @@
 # # repoyard
 
 # %%
-#|hide
-from nblite import nbl_export, show_doc; nbl_export();
+# |hide
+from nblite import nbl_export
+
+nbl_export()
 
 # %%
-#|hide
-import repoyard as proj
+# |hide
 
 # %% [markdown]
 # # Usage

@@ -10,14 +10,16 @@
 # # const
 
 # %%
-#|default_exp const
+# |default_exp const
 
 # %%
-#|hide
-from nblite import nbl_export, show_doc; nbl_export();
+# |hide
+from nblite import nbl_export
+
+nbl_export()
 
 # %%
-#|export
+# |export
 from pathlib import Path
 import inspect
 import string
@@ -25,14 +27,14 @@ from pydantic import BaseModel, ConfigDict
 import repoyard as proj
 
 # %%
-#|export
+# |export
 pkg_path = Path(proj.__file__).parent
 
 # %% [markdown]
 # Default paths
 
 # %%
-#|export
+# |export
 DEFAULT_CONFIG_PATH = Path("~") / ".config" / "repoyard" / "config.toml"
 DEFAULT_DATA_PATH = Path("~") / ".repoyard"
 DEFAULT_USER_REPOS_PATH = Path("~") / "repos"
@@ -54,7 +56,7 @@ DEFAULT_FAKE_STORE_REL_PATH = "fake_store"
 # Other constants
 
 # %%
-#|export
+# |export
 DEFAULT_RCLONE_EXCLUDE = inspect.cleandoc("""
 .venv/
 .pixi/
@@ -74,25 +76,28 @@ DEFAULT_MAX_CONCURRENT_RCLONE_OPS = 3
 
 # %%
 subid_num = len(DEFAULT_REPO_SUBID_CHARACTER_SET) ** DEFAULT_REPO_SUBID_LENGTH
-print(f"Number of possible subids: {subid_num/1e6} million.\n")
+print(f"Number of possible subids: {subid_num / 1e6} million.\n")
 
-p_no_collide = 1-(1/subid_num)
+p_no_collide = 1 - (1 / subid_num)
 for i in range(2, 7):
-    print(f"Likelihood of collision if creating 1e{i} repos with the same name per day:")
-    num = 10 ** i
+    print(
+        f"Likelihood of collision if creating 1e{i} repos with the same name per day:"
+    )
+    num = 10**i
     print(f"  {1 - p_no_collide**num:.2e}")
 
 # %% [markdown]
 # Environment variables
 
 # %%
-#|export
+# |export
 ENV_VAR_REPOYARD_CONFIG_PATH = "REPOYARD_CONFIG_PATH"
 
 # %% [markdown]
 # Misc
 
+
 # %%
-#|export
+# |export
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")

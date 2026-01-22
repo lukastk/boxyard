@@ -10,49 +10,56 @@
 # # _delete_repo
 
 # %%
-#|default_exp cmds._delete_repo
-#|export_as_func true
+# |default_exp cmds._delete_repo
+# |export_as_func true
 
 # %%
-#|hide
-import nblite; from nblite import show_doc; nblite.nbl_export()
+# |hide
+import nblite
+
+nblite.nbl_export()
 
 # %%
-#|top_export
+# |top_export
 from pathlib import Path
 
 from repoyard.config import get_config
-from repoyard import const
 from repoyard._utils import enable_soft_interruption
 
+
 # %%
-#|set_func_signature
+# |set_func_signature
 async def delete_repo(
     config_path: Path,
     repo_index_name: str,
     soft_interruption_enabled: bool = True,
 ):
-    """
-    """
+    """ """
     ...
+
 
 # %% [markdown]
 # Set up testing args
 
 # %%
 from tests.utils import *
+
 remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
 
 # %%
 # Args
 from repoyard.cmds import new_repo
+
 config_path = config_path
-repo_index_name = new_repo(config_path=config_path, repo_name="test_repo", storage_location="my_remote")
+repo_index_name = new_repo(
+    config_path=config_path, repo_name="test_repo", storage_location="my_remote"
+)
 soft_interruption_enabled = True
 
 # %%
 from repoyard.cmds import sync_repo
-await sync_repo(config_path=config_path, repo_index_name=repo_index_name);
+
+await sync_repo(config_path=config_path, repo_index_name=repo_index_name)
 
 # %% [markdown]
 # # Function body
@@ -61,7 +68,7 @@ await sync_repo(config_path=config_path, repo_index_name=repo_index_name);
 # Process args
 
 # %%
-#|export
+# |export
 config = get_config(config_path)
 
 if soft_interruption_enabled:
@@ -71,8 +78,9 @@ if soft_interruption_enabled:
 # Ensure that repo exists
 
 # %%
-#|export
+# |export
 from repoyard._models import get_repoyard_meta
+
 repoyard_meta = get_repoyard_meta(config)
 
 if repo_index_name not in repoyard_meta.by_index_name:
@@ -88,17 +96,21 @@ assert (remote_rclone_path / repo_meta.get_remote_path(config)).exists()
 # Delete the repo
 
 # %%
-#|export
+# |export
 
 # Delete local repo
 import shutil
 from repoyard._models import RepoPart
-shutil.rmtree(repo_meta.get_local_part_path(config, RepoPart.DATA)) # Deleting separately as the data part is in a separate directory
+
+shutil.rmtree(
+    repo_meta.get_local_part_path(config, RepoPart.DATA)
+)  # Deleting separately as the data part is in a separate directory
 shutil.rmtree(repo_meta.get_local_path(config))
 
 # Delete remote repo
 from repoyard._utils import rclone_purge
 from repoyard.config import StorageType
+
 if repo_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL:
     await rclone_purge(
         config.rclone_config_path,
@@ -114,11 +126,13 @@ assert not (remote_rclone_path / repo_meta.get_remote_path(config)).exists()
 # Refresh the repoyard meta file
 
 # %%
-#|export
+# |export
 from repoyard._models import refresh_repoyard_meta
+
 refresh_repoyard_meta(config)
 
 # %%
 from repoyard._models import get_repoyard_meta
+
 repoyard_meta = get_repoyard_meta(config)
 assert len(repoyard_meta.by_index_name) == 0

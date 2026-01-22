@@ -10,20 +10,20 @@
 # # _utils.base
 
 # %%
-#|default_exp _utils.base
+# |default_exp _utils.base
 
 # %%
-#|hide
-import nblite; from nblite import show_doc; nblite.nbl_export()
+# |hide
+import nblite
+from nblite import show_doc
+
+nblite.nbl_export()
 import repoyard._utils.base as this_module
 
 # %%
-#|export
+# |export
 import subprocess
-import shlex
-import json
 import asyncio
-from enum import Enum
 from repoyard import const
 from pathlib import Path
 from typing import Any, Coroutine
@@ -31,40 +31,46 @@ from typing import Any, Coroutine
 import repoyard.config
 
 # %%
-#|hide
+# |hide
 show_doc(this_module.get_repo_index_name_from_sub_path)
 
+
 # %%
-#|export
+# |export
 def get_repo_index_name_from_sub_path(
     config: repoyard.config.Config,
     sub_path: str,
-) -> Path|None:
+) -> Path | None:
     """
     Get the index name of a synced repo from a path inside of the repo.
     """
-    sub_path = Path(sub_path).expanduser().resolve() # Need to resolve to replace symlinks
+    sub_path = (
+        Path(sub_path).expanduser().resolve()
+    )  # Need to resolve to replace symlinks
     is_in_local_store_path = sub_path.is_relative_to(config.user_repos_path)
-    
+
     if not is_in_local_store_path:
         return None
-    
+
     rel_path = sub_path.relative_to(config.user_repos_path)
-    
-    if config.user_repos_path.as_posix() == sub_path.as_posix(): # The path is not inside a repo but is in the repo store root
+
+    if (
+        config.user_repos_path.as_posix() == sub_path.as_posix()
+    ):  # The path is not inside a repo but is in the repo store root
         return None
-    
+
     repo_index_name = rel_path.parts[0]
     return repo_index_name
 
+
 # %%
-#|hide
+# |hide
 show_doc(this_module.get_hostname)
 
 # %%
-#|export
+# |export
 import platform
-import subprocess
+
 
 def get_hostname():
     system = platform.system()
@@ -72,7 +78,12 @@ def get_hostname():
     if system == "Darwin":
         # Mac
         try:
-            result = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                ["scutil", "--get", "ComputerName"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
             hostname = result.stdout.strip()
         except Exception:
             hostname = None
@@ -80,13 +91,15 @@ def get_hostname():
         hostname = platform.node()
     return hostname
 
-# %%
-#|hide
-show_doc(this_module.run_fzf)
 
 # %%
-#|export
-def run_fzf(terms: list[str], disp_terms: list[str]|None=None):
+# |hide
+show_doc(this_module.run_fzf)
+
+
+# %%
+# |export
+def run_fzf(terms: list[str], disp_terms: list[str] | None = None):
     """
     Launches the fzf command-line fuzzy finder with a list of terms and returns
     the selected term.
@@ -102,43 +115,45 @@ def run_fzf(terms: list[str], disp_terms: list[str]|None=None):
     RuntimeError: If fzf is not installed or not found in the system PATH.
     """
     import subprocess
-    if disp_terms is None: disp_terms = terms
+
+    if disp_terms is None:
+        disp_terms = terms
     try:
         # Launch fzf with the list of strings
         result = subprocess.run(
-            ['fzf'],
-            input='\n'.join(disp_terms),
-            text=True,
-            capture_output=True
+            ["fzf"], input="\n".join(disp_terms), text=True, capture_output=True
         )
         res_term = result.stdout.strip()
         term_index = [t.strip() for t in disp_terms].index(res_term)
         sel_term = terms[term_index]
         # Return the selected string or None if no selection was made
-        if result.returncode != 0: 
+        if result.returncode != 0:
             return None, None
-        else: 
+        else:
             return term_index, sel_term
     except FileNotFoundError:
         raise RuntimeError("fzf is not installed or not found in PATH.")
 
-# %%
-#|hide
-show_doc(this_module.check_last_time_modified)
 
 # %%
-#|export
+# |hide
+show_doc(this_module.check_last_time_modified)
+
+
+# %%
+# |export
 def check_last_time_modified(path: str | Path) -> float | None:
     import os
     from datetime import datetime, timezone
+
     path = Path(path).expanduser().resolve()
-    
+
     if path.is_file():
         max_mtime = path.stat().st_mtime
     else:
         max_mtime = None
         stack = [str(path)]
-        
+
         while stack:
             current = stack.pop()
             try:
@@ -156,35 +171,41 @@ def check_last_time_modified(path: str | Path) -> float | None:
                             stack.append(entry.path)
             except (OSError, PermissionError):
                 continue
-    
-    return datetime.fromtimestamp(max_mtime, tz=timezone.utc) if max_mtime is not None else None
+
+    return (
+        datetime.fromtimestamp(max_mtime, tz=timezone.utc)
+        if max_mtime is not None
+        else None
+    )
+
 
 # %%
-#|hide
+# |hide
 show_doc(this_module.run_cmd_async)
 
+
 # %%
-#|export
+# |export
 async def run_cmd_async(cmd: list[str]) -> subprocess.Popen:
     proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     stdout, stderr = await proc.communicate()
-    stdout = stdout.decode('utf-8')
-    stderr = stderr.decode('utf-8')
+    stdout = stdout.decode("utf-8")
+    stderr = stderr.decode("utf-8")
     return proc.returncode, stdout, stderr
 
-# %%
-await run_cmd_async(['echo', 'hello', 'world'])
 
 # %%
-#|hide
+await run_cmd_async(["echo", "hello", "world"])
+
+# %%
+# |hide
 show_doc(this_module.async_throttler)
 
+
 # %%
-#|export
+# |export
 async def async_throttler(
     coros: list[Coroutine],
     max_concurrency: int,
@@ -195,7 +216,7 @@ async def async_throttler(
     """
 
     sem = asyncio.Semaphore(max_concurrency)
-    
+
     async def _task(coro: Coroutine) -> Any:
         async with sem:
             try:
@@ -215,19 +236,22 @@ async def async_throttler(
             raise r
     return res
 
+
 # %%
 async def test_task():
     await asyncio.sleep(0.1)
+
 
 coros = [test_task() for _ in range(10)]
 res = await async_throttler(coros, max_concurrency=2)
 
 # %%
-#|hide
+# |hide
 show_doc(this_module.is_in_event_loop)
 
+
 # %%
-#|export
+# |export
 def is_in_event_loop():
     try:
         asyncio.get_running_loop()
@@ -235,20 +259,23 @@ def is_in_event_loop():
     except RuntimeError:
         return False
 
+
 # %%
-#|hide
+# |hide
 show_doc(this_module.enable_soft_interruption)
 
 # %%
-#|export
+# |export
 import signal
 import sys
 
 _interrupted = False
 _interrupt_count = 0
 
+
 class SoftInterruption(Exception):
     pass
+
 
 def _soft_interruption_handler(signum, frame):
     global _interrupted, _interrupt_count
@@ -256,21 +283,26 @@ def _soft_interruption_handler(signum, frame):
     sig_name = signal.Signals(signum).name
 
     if _interrupt_count < const.SOFT_INTERRUPT_COUNT:
-        print(f"\nWARNING: {sig_name} received ({_interrupt_count}/3) — "
-              f"will stop after the current operation.")
+        print(
+            f"\nWARNING: {sig_name} received ({_interrupt_count}/3) — "
+            f"will stop after the current operation."
+        )
         _interrupted = True
     else:
         print(f"\n{sig_name} received 3 times — exiting immediately.")
-        sys.exit(1)   # or: raise KeyboardInterrupt
+        sys.exit(1)  # or: raise KeyboardInterrupt
+
 
 def enable_soft_interruption():
     signal.signal(signal.SIGINT, _soft_interruption_handler)  # Ctrl-C
     signal.signal(signal.SIGTERM, _soft_interruption_handler)  # shutdown
     signal.signal(signal.SIGHUP, _soft_interruption_handler)  # logout / terminal closed
 
+
 def check_interrupted():
     global _interrupted
     return _interrupted
+
 
 # %%
 p = Path("/Users/lukastk/dev/20251109_000000_7GfJI__repoyard")
@@ -285,11 +317,12 @@ for path, dirs, filenames in os.walk(p):
 print(len(files))
 
 # %%
-#|hide
+# |hide
 show_doc(this_module.count_files_in_dir)
 
+
 # %%
-#|export
+# |export
 def count_files_in_dir(path: Path) -> int:
     num_files = 0
     for path, dirs, filenames in os.walk(path):

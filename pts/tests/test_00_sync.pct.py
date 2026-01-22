@@ -10,63 +10,66 @@
 # # test_00_sync
 
 # %%
-#|default_exp test_00_sync
-#|export_as_func true
+# |default_exp test_00_sync
+# |export_as_func true
 
 # %%
-#|hide
-import nblite; from nblite import show_doc; nblite.nbl_export()
-import tests as this_module
+# |hide
+import nblite
+
+nblite.nbl_export()
 
 # %%
-#|top_export
-import subprocess
-from pathlib import Path
-import shutil
-import toml
+# |top_export
 import asyncio
 import pytest
 
-from repoyard import const
 from repoyard.cmds import *
 from repoyard._models import get_repoyard_meta
 
 from tests.utils import *
 
+
 # %%
-#|top_export
+# |top_export
 @pytest.mark.integration
 def test_00_sync():
     asyncio.run(_test_00_sync())
 
+
 # %%
-#|set_func_signature
+# |set_func_signature
 async def _test_00_sync(): ...
+
 
 # %% [markdown]
 # Parameters
 
 # %%
-#|export
+# |export
 num_test_repos = 5
 
 # %% [markdown]
 # # Initialise using `init_repoyard`
 
 # %%
-#|export
+# |export
 remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
 
 # %% [markdown]
 # # Create some repos using `new_repo` and sync them using `sync_repo`
 
 # %%
-#|export
+# |export
 repo_index_names = []
 for i in range(num_test_repos):
-    repo_index_name = new_repo(config_path=config_path, repo_name=f"test_repo_{i}", storage_location=remote_name)
+    repo_index_name = new_repo(
+        config_path=config_path,
+        repo_name=f"test_repo_{i}",
+        storage_location=remote_name,
+    )
     repo_index_names.append(repo_index_name)
-    
+
 # Verify that the repos are included
 repoyard_meta = get_repoyard_meta(config, force_create=True)
 for repo_index_name in repo_index_names:
@@ -76,12 +79,14 @@ for repo_index_name in repo_index_names:
 # # Exclude all repos using `exclude_repo`
 
 # %%
-#|export
-await asyncio.gather(*[
-    exclude_repo(config_path=config_path, repo_index_name=repo_index_name)
-    for repo_index_name in repo_index_names
-])
-    
+# |export
+await asyncio.gather(
+    *[
+        exclude_repo(config_path=config_path, repo_index_name=repo_index_name)
+        for repo_index_name in repo_index_names
+    ]
+)
+
 # Verify that the repos have been excluded
 repoyard_meta = get_repoyard_meta(config, force_create=True)
 for repo_index_name in repo_index_names:
@@ -91,12 +96,14 @@ for repo_index_name in repo_index_names:
 # # Include all repos using `include_repo`
 
 # %%
-#|export
-await asyncio.gather(*[
-    include_repo(config_path=config_path, repo_index_name=repo_index_name)
-    for repo_index_name in repo_index_names
-])
-    
+# |export
+await asyncio.gather(
+    *[
+        include_repo(config_path=config_path, repo_index_name=repo_index_name)
+        for repo_index_name in repo_index_names
+    ]
+)
+
 # Verify that the repos are included
 repoyard_meta = get_repoyard_meta(config, force_create=True)
 for repo_index_name in repo_index_names:
@@ -106,11 +113,13 @@ for repo_index_name in repo_index_names:
 # # Delete all repos using `delete_repo`
 
 # %%
-#|export
-await asyncio.gather(*[
-    delete_repo(config_path=config_path, repo_index_name=repo_index_name)
-    for repo_index_name in repo_index_names
-])
+# |export
+await asyncio.gather(
+    *[
+        delete_repo(config_path=config_path, repo_index_name=repo_index_name)
+        for repo_index_name in repo_index_names
+    ]
+)
 
 # Verify that the repos have been deleted
 for repo_meta in repoyard_meta.by_index_name.values():

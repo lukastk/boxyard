@@ -20,48 +20,59 @@
 #    - ...sync is interrupted. Do nothing.
 
 # %%
-#|default_exp _utils.sync_helper
-#|export_as_func true
+# |default_exp _utils.sync_helper
+# |export_as_func true
 
 # %%
-#|hide
-import nblite; from nblite import show_doc; nblite.nbl_export()
+# |hide
+import nblite
+
+nblite.nbl_export()
 
 # %%
-#|top_export
+# |top_export
 from pathlib import Path
-import subprocess
-from typing import Literal
 from enum import Enum
 import inspect
-from repoyard._utils import check_interrupted, enable_soft_interruption, SoftInterruption
+from repoyard._utils import check_interrupted, SoftInterruption
 
 from repoyard import const
 
 # %%
-#|top_export
+# |top_export
 from repoyard._models import SyncStatus
+
 
 class SyncSetting(Enum):
     CAREFUL = "careful"
     REPLACE = "replace"
     FORCE = "force"
 
+
 class SyncDirection(Enum):
-    PUSH = "push" # local -> remote
-    PULL = "pull" # remote -> local
+    PUSH = "push"  # local -> remote
+    PULL = "pull"  # remote -> local
+
 
 # %%
-#|top_export
-class SyncFailed(Exception): pass
-class SyncUnsafe(Exception): pass
-class InvalidRemotePath(Exception): pass
+# |top_export
+class SyncFailed(Exception):
+    pass
+
+
+class SyncUnsafe(Exception):
+    pass
+
+
+class InvalidRemotePath(Exception):
+    pass
+
 
 # %%
-#|set_func_signature
+# |set_func_signature
 async def sync_helper(
     rclone_config_path: str,
-    sync_direction: SyncDirection|None, # None = auto
+    sync_direction: SyncDirection | None,  # None = auto
     sync_setting: SyncSetting,
     local_path: str,
     local_sync_record_path: str,
@@ -70,14 +81,14 @@ async def sync_helper(
     remote_sync_record_path: str,
     local_sync_backups_path: str,
     remote_sync_backups_path: str,
-    include_path: Path|None = None,
-    exclude_path: Path|None = None,
-    filters_path: Path|None = None,
-    include: list[str]|None = None,
-    exclude: list[str]|None = None,
-    filter: list[str]|None = None,
+    include_path: Path | None = None,
+    exclude_path: Path | None = None,
+    filters_path: Path | None = None,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+    filter: list[str] | None = None,
     delete_backup: bool = True,
-    syncer_hostname: str|None = None,
+    syncer_hostname: str | None = None,
     verbose: bool = False,
     show_rclone_progress: bool = False,
 ) -> tuple[SyncStatus, bool]:
@@ -88,12 +99,14 @@ async def sync_helper(
     """
     ...
 
+
 # %% [markdown]
 # Set up testing args
 
 # %%
 # Set up test environment
 import tempfile
+
 tests_working_dir = const.pkg_path.parent / "tmp_tests"
 test_folder_path = Path(tempfile.mkdtemp(prefix="sync_helper", dir="/tmp"))
 test_folder_path.mkdir(parents=True, exist_ok=True)
@@ -105,17 +118,17 @@ my_remote_path = test_folder_path / "my_remote"
 my_local_path.mkdir(parents=True, exist_ok=True)
 
 (my_local_path / "file1.txt").write_text("Hello, world!")
-(my_local_path / "file2.txt").write_text("Goodbye, world!");
+(my_local_path / "file2.txt").write_text("Goodbye, world!")
 (my_local_path / "a_folder").mkdir(parents=True, exist_ok=True)
-(my_local_path / "a_folder" / "file3.txt").write_text("Hello, world!");
-(my_local_path / "a_folder" / "file4.txt").write_text("Goodbye, world!");
+(my_local_path / "a_folder" / "file3.txt").write_text("Hello, world!")
+(my_local_path / "a_folder" / "file4.txt").write_text("Goodbye, world!")
 
 # %%
 (test_folder_path / "rclone.conf").write_text(f"""
 [my_remote]
 type = alias
 remote = {test_folder_path / "my_remote"}
-""");
+""")
 
 # %%
 # Args
@@ -127,7 +140,7 @@ local_sync_record_path = test_folder_path / "local_syncrecord.rec"
 remote = "my_remote"
 remote_path = "data"
 remote_sync_record_path = "remote_syncrecord.rec"
-local_sync_backups_path = None # Should not be needed here
+local_sync_backups_path = None  # Should not be needed here
 remote_sync_backups_path = "backup"
 include_path = None
 exclude_path = None
@@ -144,12 +157,14 @@ show_rclone_progress = False
 # # Function body
 
 # %%
-#|export
+# |export
 if not remote_path:
-    raise InvalidRemotePath("Remote path cannot be empty.") # Disqualifying empty remote paths as it can cause issues with the safety mechanisms
+    raise InvalidRemotePath(
+        "Remote path cannot be empty."
+    )  # Disqualifying empty remote paths as it can cause issues with the safety mechanisms
 
 # %%
-#|export
+# |export
 if sync_direction is None and sync_setting != SyncSetting.CAREFUL:
     raise ValueError("Auto sync direction can only be used with careful sync setting.")
 
@@ -157,7 +172,7 @@ if sync_direction is None and sync_setting != SyncSetting.CAREFUL:
 # Check sync status
 
 # %%
-#|export
+# |export
 from repoyard._models import get_sync_status, SyncCondition
 
 sync_status = await get_sync_status(
@@ -168,7 +183,15 @@ sync_status = await get_sync_status(
     remote_path=remote_path,
     remote_sync_record_path=remote_sync_record_path,
 )
-sync_condition, local_path_exists, remote_path_exists, local_sync_record, remote_sync_record, sync_path_is_dir, error_message = sync_status
+(
+    sync_condition,
+    local_path_exists,
+    remote_path_exists,
+    local_sync_record,
+    remote_sync_record,
+    sync_path_is_dir,
+    error_message,
+) = sync_status
 
 if sync_condition == SyncCondition.ERROR and sync_setting != SyncSetting.FORCE:
     raise Exception(error_message)
@@ -180,48 +203,61 @@ assert not remote_path_exists
 assert local_sync_record is None
 assert remote_sync_record is None
 
+
 # %%
-#|export
+# |export
 def _raise_unsafe():
-    raise SyncUnsafe(inspect.cleandoc(f"""
+    raise SyncUnsafe(
+        inspect.cleandoc(f"""
         Sync is unsafe. Info:
             Local exists: {local_path_exists}
             Remote exists: {remote_path_exists}
             Local sync record: {local_sync_record}
             Remote sync record: {remote_sync_record}
             Sync condition: {sync_condition.value}
-    """))
+    """)
+    )
+
 
 if sync_setting != SyncSetting.FORCE and sync_condition == SyncCondition.SYNCED:
-    if verbose: print("Sync not needed.")
-    sync_status, False #|func_return_line
+    if verbose:
+        print("Sync not needed.")
+    sync_status, False  # |func_return_line
 
-if sync_direction is None: # auto
+if sync_direction is None:  # auto
     if sync_condition == SyncCondition.NEEDS_PUSH:
         sync_direction = SyncDirection.PUSH
     elif sync_condition == SyncCondition.NEEDS_PULL:
         sync_direction = SyncDirection.PULL
     elif sync_condition == SyncCondition.EXCLUDED:
-        if verbose: print("Sync not needed as the repo is excluded.")
-        sync_status, False #|func_return_line
+        if verbose:
+            print("Sync not needed as the repo is excluded.")
+        sync_status, False  # |func_return_line
     elif sync_condition == SyncCondition.SYNC_INCOMPLETE:
         _raise_unsafe()
     else:
-        _raise_unsafe() # In the case where the sync status is SYNCED, 'auto'-mode should not reach this, as it should have already returned (as auto can only be used in CAREFUL mode)
+        _raise_unsafe()  # In the case where the sync status is SYNCED, 'auto'-mode should not reach this, as it should have already returned (as auto can only be used in CAREFUL mode)
 
 if sync_setting == SyncSetting.CAREFUL:
-    if sync_direction == SyncDirection.PUSH and sync_condition not in [SyncCondition.NEEDS_PUSH, SyncCondition.SYNCED]:
+    if sync_direction == SyncDirection.PUSH and sync_condition not in [
+        SyncCondition.NEEDS_PUSH,
+        SyncCondition.SYNCED,
+    ]:
         _raise_unsafe()
-    elif sync_direction == SyncDirection.PULL and sync_condition not in [SyncCondition.NEEDS_PULL, SyncCondition.SYNCED]:
+    elif sync_direction == SyncDirection.PULL and sync_condition not in [
+        SyncCondition.NEEDS_PULL,
+        SyncCondition.SYNCED,
+    ]:
         _raise_unsafe()
 
 # %% [markdown]
 # Sync
 
 # %%
-#|export
-from repoyard._utils import rclone_sync, BisyncResult, rclone_mkdir, rclone_path_exists, rclone_purge
-    
+# |export
+from repoyard._utils import rclone_sync, BisyncResult, rclone_mkdir, rclone_purge
+
+
 async def _sync(
     dry_run: bool,
     source: str,
@@ -230,17 +266,21 @@ async def _sync(
     dest_path: str,
     backup_remote: str,
     backup_path: str,
-    return_command: bool=False,
+    return_command: bool = False,
 ) -> BisyncResult:
     if not sync_path_is_dir:
-        dest_path = Path(dest_path).parent.as_posix() # needed because rlcone sync doesn't seem to accept files on the dest path
-        if dest_path == '.': dest_path = ''
-    
+        dest_path = (
+            Path(dest_path).parent.as_posix()
+        )  # needed because rlcone sync doesn't seem to accept files on the dest path
+        if dest_path == ".":
+            dest_path = ""
+
     if verbose:
-        print(f"Syncing {source}:{source_path} to {dest}:{dest_path}.  Backup path: {backup_remote}:{backup_path}")
+        print(
+            f"Syncing {source}:{source_path} to {dest}:{dest_path}.  Backup path: {backup_remote}:{backup_path}"
+        )
 
     # Create backup store directory if it doesn't already exist
-    from repoyard._utils import rclone_mkdir
     await rclone_mkdir(
         rclone_config_path=rclone_config_path,
         source=backup_remote,
@@ -266,11 +306,13 @@ async def _sync(
         progress=show_rclone_progress,
     )
 
+
 # %%
-#|export
+# |export
 from repoyard._models import SyncRecord
 
-if check_interrupted(): raise SoftInterruption()
+if check_interrupted():
+    raise SoftInterruption()
 
 rec = SyncRecord.create(syncer_hostname=syncer_hostname, sync_complete=False)
 backup_name = str(rec.ulid)
@@ -291,10 +333,12 @@ if sync_direction == SyncDirection.PULL:
         backup_remote=backup_remote,
         backup_path=backup_path,
     )
-    
+
     if res:
         # Retrieve the remote sync record and save it locally
-        rec = await SyncRecord.rclone_read(rclone_config_path, remote, remote_sync_record_path)
+        rec = await SyncRecord.rclone_read(
+            rclone_config_path, remote, remote_sync_record_path
+        )
         await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
 
 elif sync_direction == SyncDirection.PUSH:
@@ -351,9 +395,16 @@ assert "file1.txt" in _names
 assert "file2.txt" in _names
 
 # %%
-assert SyncRecord.model_validate_json(local_sync_record_path.read_text()).ulid == rec.ulid
-assert SyncRecord.model_validate_json((test_folder_path / "my_remote" / remote_sync_record_path).read_text()).ulid == rec.ulid
+assert (
+    SyncRecord.model_validate_json(local_sync_record_path.read_text()).ulid == rec.ulid
+)
+assert (
+    SyncRecord.model_validate_json(
+        (test_folder_path / "my_remote" / remote_sync_record_path).read_text()
+    ).ulid
+    == rec.ulid
+)
 
 # %%
-#|func_return
+# |func_return
 sync_status, True
