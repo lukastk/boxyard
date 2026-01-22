@@ -8,35 +8,33 @@ from repoyard.cmds import *
 from repoyard._models import get_repoyard_meta, RepoPart
 from repoyard.config import get_config
 
-from .utils import *
+from ...integration.conftest import run_cmd, run_cmd_in_background, CmdFailed
 
 from dotenv import load_dotenv
 
-
 @pytest.mark.integration
-def test_02_remote():
-    asyncio.run(_test_02_remote())
+def test_cli_remote():
+    """Test CLI commands with a real remote storage backend."""
+    asyncio.run(_test_cli_remote())
 
-
-async def _test_02_remote():
+async def _test_cli_remote():
     load_dotenv()
     import os
-
+    
     if (
         "TEST_CONF_PATH" not in os.environ
         or "TEST_STORAGE_LOCATION_NAME" not in os.environ
         or "TEST_STORAGE_LOCATION_STORE_PATH" not in os.environ
     ):
         pytest.skip(
-            "Environment variable TEST_CONF_PATH or TEST_STORAGE_LOCATION_NAME or TEST_STORAGE_LOCATION_STORE_PATH not set."
+            "Environment variable TEST_CONF_PATH or TEST_STORAGE_LOCATION_NAME or "
+            "TEST_STORAGE_LOCATION_STORE_PATH not set."
         )
     else:
         config_path = Path(os.environ["TEST_CONF_PATH"]).expanduser().resolve()
         config = get_config(config_path)
         sl_name = os.environ["TEST_STORAGE_LOCATION_NAME"]
         sl_store_path = os.environ["TEST_STORAGE_LOCATION_STORE_PATH"]
-    from tests.utils import run_cmd, run_cmd_in_background, CmdFailed
-
     try:
         run_cmd("repoyard")
     except CmdFailed:
@@ -51,23 +49,19 @@ async def _test_02_remote():
     repo_index_name3 = run_cmd(
         f"repoyard new -n test-repo-3 -g repoyard-unit-tests -s {sl_name}"
     ).strip()
-
-    p1 = run_cmd_in_background(
-        f"repoyard sync -r {repo_index_name2}", print_output=False
-    )
-    p2 = run_cmd_in_background(
-        f"repoyard sync -r {repo_index_name3}", print_output=False
-    )
-
+    
+    p1 = run_cmd_in_background(f"repoyard sync -r {repo_index_name2}", print_output=False)
+    p2 = run_cmd_in_background(f"repoyard sync -r {repo_index_name3}", print_output=False)
+    
     p1.wait()
     p2.wait()
     repoyard_meta = get_repoyard_meta(config, force_create=True)
     repo_meta1 = repoyard_meta.by_index_name[repo_index_name1]
     repo_meta2 = repoyard_meta.by_index_name[repo_index_name2]
     repo_meta3 = repoyard_meta.by_index_name[repo_index_name3]
-
+    
     from repoyard._utils import rclone_lsjson
-
+    
     for repo_meta in [repo_meta1, repo_meta2, repo_meta3]:
         assert (
             await rclone_lsjson(
@@ -79,7 +73,6 @@ async def _test_02_remote():
         )
     for repo_meta in [repo_meta1, repo_meta2, repo_meta3]:
         run_cmd(f"repoyard exclude -r {repo_meta.index_name}")
-
     async def _task(repo_meta):
         assert (
             await rclone_lsjson(
@@ -89,13 +82,13 @@ async def _test_02_remote():
             )
             is None
         )
-
+    
+    
     await asyncio.gather(
         *[_task(repo_meta) for repo_meta in [repo_meta1, repo_meta2, repo_meta3]]
     )
     for repo_meta in [repo_meta1, repo_meta2, repo_meta3]:
         run_cmd(f"repoyard include -r {repo_meta.index_name}")
-
     async def _task(repo_meta):
         assert (
             await rclone_lsjson(
@@ -105,13 +98,13 @@ async def _test_02_remote():
             )
             is not None
         )
-
+    
+    
     await asyncio.gather(
         *[_task(repo_meta) for repo_meta in [repo_meta1, repo_meta2, repo_meta3]]
     )
     for repo_meta in [repo_meta1, repo_meta2, repo_meta3]:
         run_cmd(f"repoyard delete -r {repo_meta.index_name}")
-
     async def _task(repo_meta):
         assert (
             await rclone_lsjson(
@@ -121,7 +114,8 @@ async def _test_02_remote():
             )
             is None
         )
-
+    
+    
     await asyncio.gather(
         *[_task(repo_meta) for repo_meta in [repo_meta1, repo_meta2, repo_meta3]]
     )

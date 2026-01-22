@@ -3,19 +3,23 @@
 import pytest
 import asyncio
 
-from repoyard.cmds import *
+from repoyard.cmds import (
+    new_repo,
+    sync_repo,
+    sync_missing_repometas,
+    include_repo,
+)
 from repoyard._models import get_repoyard_meta, RepoPart
 from repoyard._utils.sync_helper import SyncUnsafe
 
-from .utils import *
-
+from ...integration.conftest import create_repoyards
 
 @pytest.mark.integration
-def test_01_multiple_locals():
-    asyncio.run(_test_01_multiple_locals())
+def test_multi_machine_sync():
+    """Test syncing between multiple machines with conflict detection."""
+    asyncio.run(_test_multi_machine_sync())
 
-
-async def _test_01_multiple_locals():
+async def _test_multi_machine_sync():
     num_repos = 5
     (
         sl_name,
@@ -23,42 +27,42 @@ async def _test_01_multiple_locals():
         [(config1, config_path1, data_path1), (config2, config_path2, data_path2)],
     ) = create_repoyards(num_repoyards=2)
     repo_index_names = []
-
+    
+    
     async def _task(i):
         repo_index_name = new_repo(
-            config_path=config_path1,
-            repo_name=f"test_repo_{i}",
-            storage_location=sl_name,
+            config_path=config_path1, repo_name=f"test_repo_{i}", storage_location=sl_name
         )
         await sync_repo(config_path=config_path1, repo_index_name=repo_index_name)
         repo_index_names.append(repo_index_name)
-
+    
+    
     await asyncio.gather(*[_task(i) for i in range(num_repos)])
     await sync_missing_repometas(config_path=config_path2)
-
+    
     repoyard_meta2 = get_repoyard_meta(config2)
     assert len(repoyard_meta2.repo_metas) == num_repos
-
     async def _task(repo_meta):
         await include_repo(
             config_path=config_path2,
             repo_index_name=repo_meta.index_name,
         )
-
+    
+    
     await asyncio.gather(*[_task(repo_meta) for repo_meta in repoyard_meta2.repo_metas])
-
     async def _task(repo_meta):
-        (
-            repo_meta.get_local_part_path(config2, RepoPart.DATA) / "hello.txt"
-        ).write_text("Hello, world!")
+        (repo_meta.get_local_part_path(config2, RepoPart.DATA) / "hello.txt").write_text(
+            "Hello, world!"
+        )
         await sync_repo(
             config_path=config_path2,
             repo_index_name=repo_meta.index_name,
         )
-
+    
+    
     await asyncio.gather(*[_task(repo_meta) for repo_meta in repoyard_meta2.repo_metas])
     repoyard_meta1 = get_repoyard_meta(config1)
-
+    
     await asyncio.gather(
         *[
             sync_repo(
@@ -68,16 +72,17 @@ async def _test_01_multiple_locals():
             for repo_meta in repoyard_meta1.repo_metas
         ]
     )
-
     async def _task(repo_meta):
-        (
-            repo_meta.get_local_part_path(config1, RepoPart.DATA) / "goodbye.txt"
-        ).write_text("Goodbye, world!")
+        # Create a change on machine 1 and sync
+        (repo_meta.get_local_part_path(config1, RepoPart.DATA) / "goodbye.txt").write_text(
+            "Goodbye, world!"
+        )
         await sync_repo(
             config_path=config_path1,
             repo_index_name=repo_meta.index_name,
         )
-
+    
+        # Try to create a conflicting change on machine 2 and sync - should raise
         with pytest.raises(SyncUnsafe):
             (
                 repo_meta.get_local_part_path(config2, RepoPart.DATA) / "goodbye.txt"
@@ -86,5 +91,6 @@ async def _test_01_multiple_locals():
                 config_path=config_path2,
                 repo_index_name=repo_meta.index_name,
             )
-
+    
+    
     await asyncio.gather(*[_task(repo_meta) for repo_meta in repoyard_meta1.repo_metas])

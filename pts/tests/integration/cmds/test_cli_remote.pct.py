@@ -7,20 +7,33 @@
 # ---
 
 # %% [markdown]
-# # test_02_remote
+# # CLI Remote Integration Tests
+#
+# Tests for the repoyard CLI with a real remote storage backend.
+#
+# These tests require environment variables:
+# - TEST_CONF_PATH: Path to the repoyard config file
+# - TEST_STORAGE_LOCATION_NAME: Name of the storage location to use
+# - TEST_STORAGE_LOCATION_STORE_PATH: Store path for the storage location
+#
+# Tests:
+# - Creating and syncing repos via CLI
+# - Concurrent sync operations
+# - Exclude/include via CLI
+# - Delete via CLI
 
 # %%
-# |default_exp test_02_remote
-# |export_as_func true
+#|default_exp integration.cmds.test_cli_remote
+#|export_as_func true
 
 # %%
-# |hide
+#|hide
 import nblite
 
 nblite.nbl_export()
 
 # %%
-# |top_export
+#|top_export
 from pathlib import Path
 import pytest
 import asyncio
@@ -29,28 +42,26 @@ from repoyard.cmds import *
 from repoyard._models import get_repoyard_meta, RepoPart
 from repoyard.config import get_config
 
-from tests.utils import *
+from tests.integration.conftest import run_cmd, run_cmd_in_background, CmdFailed
 
 from dotenv import load_dotenv
 
-
 # %%
-# |top_export
+#|top_export
 @pytest.mark.integration
-def test_02_remote():
-    asyncio.run(_test_02_remote())
-
+def test_cli_remote():
+    """Test CLI commands with a real remote storage backend."""
+    asyncio.run(_test_cli_remote())
 
 # %%
-# |set_func_signature
-async def _test_02_remote(): ...
-
+#|set_func_signature
+async def _test_cli_remote(): ...
 
 # %% [markdown]
-# Load config from env var. If it doesn't exist then skip test.
+# ## Load config from environment variables
 
 # %%
-# |export
+#|export
 load_dotenv()
 import os
 
@@ -60,7 +71,8 @@ if (
     or "TEST_STORAGE_LOCATION_STORE_PATH" not in os.environ
 ):
     pytest.skip(
-        "Environment variable TEST_CONF_PATH or TEST_STORAGE_LOCATION_NAME or TEST_STORAGE_LOCATION_STORE_PATH not set."
+        "Environment variable TEST_CONF_PATH or TEST_STORAGE_LOCATION_NAME or "
+        "TEST_STORAGE_LOCATION_STORE_PATH not set."
     )
 else:
     config_path = Path(os.environ["TEST_CONF_PATH"]).expanduser().resolve()
@@ -69,32 +81,30 @@ else:
     sl_store_path = os.environ["TEST_STORAGE_LOCATION_STORE_PATH"]
 
 # %% [markdown]
-# Ensure `repoyard` is installed
+# ## Ensure repoyard CLI is installed
 
 # %%
-# |export
-from tests.utils import run_cmd, run_cmd_in_background, CmdFailed
-
+#|export
 try:
     run_cmd("repoyard")
 except CmdFailed:
     pytest.skip("repoyard not installed")
 
 # %% [markdown]
-# Create repo and sync it
+# ## Create repo and sync it
 
 # %%
-# |export
+#|export
 repo_index_name1 = run_cmd(
     f"repoyard new -n test-repo-1 -g repoyard-unit-tests -s {sl_name}"
 ).strip()
 run_cmd(f"repoyard sync -r {repo_index_name1}", capture_output=True)
 
 # %% [markdown]
-# Create two other repos and see they can both sync at the same time (i.e. test if simultaneous rclone commands can be run)
+# ## Test concurrent sync operations
 
 # %%
-# |export
+#|export
 repo_index_name2 = run_cmd(
     f"repoyard new -n test-repo-2 -g repoyard-unit-tests -s {sl_name}"
 ).strip()
@@ -109,10 +119,10 @@ p1.wait()
 p2.wait()
 
 # %% [markdown]
-# Verify that the repos are there on remote
+# ## Verify repos exist on remote
 
 # %%
-# |export
+#|export
 repoyard_meta = get_repoyard_meta(config, force_create=True)
 repo_meta1 = repoyard_meta.by_index_name[repo_index_name1]
 repo_meta2 = repoyard_meta.by_index_name[repo_index_name2]
@@ -131,16 +141,15 @@ for repo_meta in [repo_meta1, repo_meta2, repo_meta3]:
     )
 
 # %% [markdown]
-# Exclude repos
+# ## Exclude repos
 
 # %%
-# |export
+#|export
 for repo_meta in [repo_meta1, repo_meta2, repo_meta3]:
     run_cmd(f"repoyard exclude -r {repo_meta.index_name}")
 
-
 # %%
-# |export
+#|export
 async def _task(repo_meta):
     assert (
         await rclone_lsjson(
@@ -157,16 +166,15 @@ await asyncio.gather(
 )
 
 # %% [markdown]
-# Re-include repos
+# ## Re-include repos
 
 # %%
-# |export
+#|export
 for repo_meta in [repo_meta1, repo_meta2, repo_meta3]:
     run_cmd(f"repoyard include -r {repo_meta.index_name}")
 
-
 # %%
-# |export
+#|export
 async def _task(repo_meta):
     assert (
         await rclone_lsjson(
@@ -183,16 +191,15 @@ await asyncio.gather(
 )
 
 # %% [markdown]
-# Delete repos
+# ## Delete repos
 
 # %%
-# |export
+#|export
 for repo_meta in [repo_meta1, repo_meta2, repo_meta3]:
     run_cmd(f"repoyard delete -r {repo_meta.index_name}")
 
-
 # %%
-# |export
+#|export
 async def _task(repo_meta):
     assert (
         await rclone_lsjson(

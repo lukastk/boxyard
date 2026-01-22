@@ -7,54 +7,64 @@
 # ---
 
 # %% [markdown]
-# # test_01_multiple_locals
+# # Multi-Machine Sync Integration Tests
+#
+# Tests for syncing repositories across multiple machines (simulated with
+# multiple local repoyards sharing the same remote storage).
+#
+# Tests:
+# - Syncing repos between two repoyards
+# - Conflict detection when both machines have changes
 
 # %%
-# |default_exp test_01_multiple_locals
-# |export_as_func true
+#|default_exp integration.sync.test_multi_machine
+#|export_as_func true
 
 # %%
-# |hide
+#|hide
 import nblite
 
 nblite.nbl_export()
 
 # %%
-# |top_export
+#|top_export
 import pytest
 import asyncio
 
-from repoyard.cmds import *
+from repoyard.cmds import (
+    new_repo,
+    sync_repo,
+    sync_missing_repometas,
+    include_repo,
+)
 from repoyard._models import get_repoyard_meta, RepoPart
 from repoyard._utils.sync_helper import SyncUnsafe
 
-from tests.utils import *
-
+from tests.integration.conftest import create_repoyards
 
 # %%
-# |top_export
+#|top_export
 @pytest.mark.integration
-def test_01_multiple_locals():
-    asyncio.run(_test_01_multiple_locals())
-
+def test_multi_machine_sync():
+    """Test syncing between multiple machines with conflict detection."""
+    asyncio.run(_test_multi_machine_sync())
 
 # %%
-# |set_func_signature
-async def _test_01_multiple_locals(): ...
-
+#|set_func_signature
+async def _test_multi_machine_sync(): ...
 
 # %% [markdown]
-# Parameters
+# ## Parameters
 
 # %%
-# |export
+#|export
 num_repos = 5
 
 # %% [markdown]
-# Initialise two repoyards to simulate syncing conflicts
+# ## Initialize two repoyards to simulate syncing between machines
 
 # %%
-# |export
+#|export
 (
     sl_name,
     sl_rclone_path,
@@ -62,10 +72,10 @@ num_repos = 5
 ) = create_repoyards(num_repoyards=2)
 
 # %% [markdown]
-# Create some repos on repoyard 1 and sync them
+# ## Create repos on repoyard 1 and sync them
 
 # %%
-# |export
+#|export
 repo_index_names = []
 
 
@@ -80,18 +90,17 @@ async def _task(i):
 await asyncio.gather(*[_task(i) for i in range(num_repos)])
 
 # %% [markdown]
-# Sync repometas into repoyard 2
+# ## Sync repometas into repoyard 2
 
 # %%
-# |export
+#|export
 await sync_missing_repometas(config_path=config_path2)
 
 repoyard_meta2 = get_repoyard_meta(config2)
 assert len(repoyard_meta2.repo_metas) == num_repos
 
 # %% [markdown]
-# Ensure that the repometa sync only synced the repometas, and that sync records exists
-
+# ## Verify that repometa sync only synced metadata (not data)
 
 # %%
 async def _task(repo_meta):
@@ -102,11 +111,10 @@ async def _task(repo_meta):
 await asyncio.gather(*[_task(repo_meta) for repo_meta in repoyard_meta2.repo_metas])
 
 # %% [markdown]
-# Include them into repoyard 2
-
+# ## Include repos into repoyard 2
 
 # %%
-# |export
+#|export
 async def _task(repo_meta):
     await include_repo(
         config_path=config_path2,
@@ -117,11 +125,10 @@ async def _task(repo_meta):
 await asyncio.gather(*[_task(repo_meta) for repo_meta in repoyard_meta2.repo_metas])
 
 # %% [markdown]
-# Modify repos in repoyard 2 and sync
-
+# ## Modify repos in repoyard 2 and sync
 
 # %%
-# |export
+#|export
 async def _task(repo_meta):
     (repo_meta.get_local_part_path(config2, RepoPart.DATA) / "hello.txt").write_text(
         "Hello, world!"
@@ -135,10 +142,10 @@ async def _task(repo_meta):
 await asyncio.gather(*[_task(repo_meta) for repo_meta in repoyard_meta2.repo_metas])
 
 # %% [markdown]
-# Sync into repoyard 1
+# ## Sync changes into repoyard 1
 
 # %%
-# |export
+#|export
 repoyard_meta1 = get_repoyard_meta(config1)
 
 await asyncio.gather(
@@ -152,7 +159,7 @@ await asyncio.gather(
 )
 
 # %% [markdown]
-# Verify that the sync worked
+# ## Verify that the sync worked
 
 # %%
 for repo_meta in repoyard_meta1.repo_metas:
@@ -161,12 +168,12 @@ for repo_meta in repoyard_meta1.repo_metas:
     ).exists()
 
 # %% [markdown]
-# Create a conflict and test that it raises an exception
-
+# ## Create a conflict and test that it raises an exception
 
 # %%
-# |export
+#|export
 async def _task(repo_meta):
+    # Create a change on machine 1 and sync
     (repo_meta.get_local_part_path(config1, RepoPart.DATA) / "goodbye.txt").write_text(
         "Goodbye, world!"
     )
@@ -175,6 +182,7 @@ async def _task(repo_meta):
         repo_index_name=repo_meta.index_name,
     )
 
+    # Try to create a conflicting change on machine 2 and sync - should raise
     with pytest.raises(SyncUnsafe):
         (
             repo_meta.get_local_part_path(config2, RepoPart.DATA) / "goodbye.txt"

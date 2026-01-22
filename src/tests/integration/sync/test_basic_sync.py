@@ -3,18 +3,22 @@
 import asyncio
 import pytest
 
-from repoyard.cmds import *
+from repoyard.cmds import (
+    new_repo,
+    exclude_repo,
+    include_repo,
+    delete_repo,
+)
 from repoyard._models import get_repoyard_meta
 
-from .utils import *
-
+from ...integration.conftest import create_repoyards
 
 @pytest.mark.integration
-def test_00_sync():
-    asyncio.run(_test_00_sync())
+def test_basic_sync():
+    """Test basic sync operations: create, exclude, include, delete."""
+    asyncio.run(_test_basic_sync())
 
-
-async def _test_00_sync():
+async def _test_basic_sync():
     num_test_repos = 5
     remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
     repo_index_names = []
@@ -25,7 +29,7 @@ async def _test_00_sync():
             storage_location=remote_name,
         )
         repo_index_names.append(repo_index_name)
-
+    
     # Verify that the repos are included
     repoyard_meta = get_repoyard_meta(config, force_create=True)
     for repo_index_name in repo_index_names:
@@ -36,7 +40,7 @@ async def _test_00_sync():
             for repo_index_name in repo_index_names
         ]
     )
-
+    
     # Verify that the repos have been excluded
     repoyard_meta = get_repoyard_meta(config, force_create=True)
     for repo_index_name in repo_index_names:
@@ -47,7 +51,7 @@ async def _test_00_sync():
             for repo_index_name in repo_index_names
         ]
     )
-
+    
     # Verify that the repos are included
     repoyard_meta = get_repoyard_meta(config, force_create=True)
     for repo_index_name in repo_index_names:
@@ -58,7 +62,7 @@ async def _test_00_sync():
             for repo_index_name in repo_index_names
         ]
     )
-
+    
     # Verify that the repos have been deleted
     for repo_meta in repoyard_meta.by_index_name.values():
         assert not repo_meta.get_local_path(config).exists()
