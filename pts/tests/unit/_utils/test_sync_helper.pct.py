@@ -1,0 +1,998 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # Unit Tests for Sync Helper
+
+# %%
+#|default_exp unit._utils.test_sync_helper
+
+# %%
+#|export
+import pytest
+import asyncio
+from pathlib import Path
+from unittest.mock import MagicMock, patch, AsyncMock
+from datetime import datetime, timezone
+
+from repoyard._utils.sync_helper import (
+    SyncSetting,
+    SyncDirection,
+    SyncFailed,
+    SyncUnsafe,
+    InvalidRemotePath,
+    sync_helper,
+)
+from repoyard._models import SyncCondition, SyncStatus, SyncRecord
+
+
+# ============================================================================
+# Tests for SyncSetting enum
+# ============================================================================
+
+# %%
+#|export
+class TestSyncSetting:
+    """Tests for the SyncSetting enum."""
+
+    def test_sync_setting_values(self):
+        """SyncSetting has correct values."""
+        assert SyncSetting.CAREFUL.value == "careful"
+        assert SyncSetting.REPLACE.value == "replace"
+        assert SyncSetting.FORCE.value == "force"
+
+    def test_sync_setting_count(self):
+        """There are exactly 3 sync settings."""
+        assert len(SyncSetting) == 3
+
+    def test_sync_settings_are_unique(self):
+        """All sync setting values are unique."""
+        values = [s.value for s in SyncSetting]
+        assert len(values) == len(set(values))
+
+    def test_sync_settings_are_iterable(self):
+        """SyncSetting can be iterated."""
+        settings = list(SyncSetting)
+        assert SyncSetting.CAREFUL in settings
+        assert SyncSetting.REPLACE in settings
+        assert SyncSetting.FORCE in settings
+
+
+# ============================================================================
+# Tests for SyncDirection enum
+# ============================================================================
+
+# %%
+#|export
+class TestSyncDirection:
+    """Tests for the SyncDirection enum."""
+
+    def test_sync_direction_values(self):
+        """SyncDirection has correct values."""
+        assert SyncDirection.PUSH.value == "push"
+        assert SyncDirection.PULL.value == "pull"
+
+    def test_sync_direction_count(self):
+        """There are exactly 2 sync directions."""
+        assert len(SyncDirection) == 2
+
+    def test_sync_directions_are_unique(self):
+        """All sync direction values are unique."""
+        values = [d.value for d in SyncDirection]
+        assert len(values) == len(set(values))
+
+    def test_push_means_local_to_remote(self):
+        """PUSH means local -> remote."""
+        # This is documented in the enum
+        assert SyncDirection.PUSH.value == "push"
+
+    def test_pull_means_remote_to_local(self):
+        """PULL means remote -> local."""
+        # This is documented in the enum
+        assert SyncDirection.PULL.value == "pull"
+
+
+# ============================================================================
+# Tests for Exception classes
+# ============================================================================
+
+# %%
+#|export
+class TestSyncFailed:
+    """Tests for SyncFailed exception."""
+
+    def test_is_exception(self):
+        """SyncFailed is an Exception."""
+        assert issubclass(SyncFailed, Exception)
+
+    def test_can_be_raised(self):
+        """SyncFailed can be raised and caught."""
+        with pytest.raises(SyncFailed):
+            raise SyncFailed()
+
+    def test_with_message(self):
+        """SyncFailed can have a message."""
+        with pytest.raises(SyncFailed, match="sync failed"):
+            raise SyncFailed("sync failed")
+
+# %%
+#|export
+class TestSyncUnsafe:
+    """Tests for SyncUnsafe exception."""
+
+    def test_is_exception(self):
+        """SyncUnsafe is an Exception."""
+        assert issubclass(SyncUnsafe, Exception)
+
+    def test_can_be_raised(self):
+        """SyncUnsafe can be raised and caught."""
+        with pytest.raises(SyncUnsafe):
+            raise SyncUnsafe()
+
+    def test_with_message(self):
+        """SyncUnsafe can have a message."""
+        with pytest.raises(SyncUnsafe, match="unsafe operation"):
+            raise SyncUnsafe("unsafe operation")
+
+# %%
+#|export
+class TestInvalidRemotePath:
+    """Tests for InvalidRemotePath exception."""
+
+    def test_is_exception(self):
+        """InvalidRemotePath is an Exception."""
+        assert issubclass(InvalidRemotePath, Exception)
+
+    def test_can_be_raised(self):
+        """InvalidRemotePath can be raised and caught."""
+        with pytest.raises(InvalidRemotePath):
+            raise InvalidRemotePath()
+
+    def test_with_message(self):
+        """InvalidRemotePath can have a message."""
+        with pytest.raises(InvalidRemotePath, match="invalid path"):
+            raise InvalidRemotePath("invalid path")
+
+
+# ============================================================================
+# Tests for sync_helper validation
+# ============================================================================
+
+# %%
+#|export
+class TestSyncHelperValidation:
+    """Tests for sync_helper input validation."""
+
+    def test_empty_remote_path_raises_error(self):
+        """Empty remote path raises InvalidRemotePath."""
+        async def _test():
+            with pytest.raises(InvalidRemotePath, match="cannot be empty"):
+                await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=SyncDirection.PUSH,
+                    sync_setting=SyncSetting.CAREFUL,
+                    local_path="/local",
+                    local_sync_record_path="/local/.sync",
+                    remote="myremote",
+                    remote_path="",  # Empty path
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                )
+
+        asyncio.run(_test())
+
+    def test_auto_direction_requires_careful_setting(self):
+        """Auto sync direction requires CAREFUL setting."""
+        async def _test():
+            with pytest.raises(ValueError, match="Auto sync direction"):
+                await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=None,  # Auto
+                    sync_setting=SyncSetting.REPLACE,  # Not CAREFUL
+                    local_path="/local",
+                    local_sync_record_path="/local/.sync",
+                    remote="myremote",
+                    remote_path="/remote",
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                )
+
+        asyncio.run(_test())
+
+    def test_auto_direction_with_force_raises_error(self):
+        """Auto sync direction with FORCE raises error."""
+        async def _test():
+            with pytest.raises(ValueError, match="Auto sync direction"):
+                await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=None,  # Auto
+                    sync_setting=SyncSetting.FORCE,  # Not CAREFUL
+                    local_path="/local",
+                    local_sync_record_path="/local/.sync",
+                    remote="myremote",
+                    remote_path="/remote",
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                )
+
+        asyncio.run(_test())
+
+
+# ============================================================================
+# Tests for sync_helper with mocked dependencies
+# ============================================================================
+
+# %%
+#|export
+class TestSyncHelperSyncedState:
+    """Tests for sync_helper when already synced."""
+
+    def test_synced_state_returns_no_sync_needed(self):
+        """When already synced with CAREFUL, returns without syncing."""
+        async def _test():
+            mock_record = MagicMock(spec=SyncRecord)
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.SYNCED,
+                local_path_exists=True,
+                remote_path_exists=True,
+                local_sync_record=mock_record,
+                remote_sync_record=mock_record,
+                is_dir=True,
+                error_message=None,
+            )
+
+            with patch(
+                "repoyard._models.get_sync_status",
+                new=AsyncMock(return_value=mock_status),
+            ):
+                status, synced = await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=SyncDirection.PUSH,
+                    sync_setting=SyncSetting.CAREFUL,
+                    local_path="/local",
+                    local_sync_record_path="/local/.sync",
+                    remote="myremote",
+                    remote_path="/remote",
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                )
+
+            assert synced is False
+            assert status.sync_condition == SyncCondition.SYNCED
+
+        asyncio.run(_test())
+
+    def test_synced_state_with_replace_returns_no_sync(self):
+        """When already synced with REPLACE, returns without syncing."""
+        async def _test():
+            mock_record = MagicMock(spec=SyncRecord)
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.SYNCED,
+                local_path_exists=True,
+                remote_path_exists=True,
+                local_sync_record=mock_record,
+                remote_sync_record=mock_record,
+                is_dir=True,
+                error_message=None,
+            )
+
+            with patch(
+                "repoyard._models.get_sync_status",
+                new=AsyncMock(return_value=mock_status),
+            ):
+                status, synced = await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=SyncDirection.PULL,
+                    sync_setting=SyncSetting.REPLACE,
+                    local_path="/local",
+                    local_sync_record_path="/local/.sync",
+                    remote="myremote",
+                    remote_path="/remote",
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                )
+
+            assert synced is False
+
+        asyncio.run(_test())
+
+# %%
+#|export
+class TestSyncHelperAutoDirection:
+    """Tests for sync_helper auto direction detection."""
+
+    def test_auto_direction_detects_needs_push(self):
+        """Auto direction detects NEEDS_PUSH and pushes."""
+        async def _test():
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.NEEDS_PUSH,
+                local_path_exists=True,
+                remote_path_exists=False,
+                local_sync_record=None,
+                remote_sync_record=None,
+                is_dir=True,
+                error_message=None,
+            )
+
+            with (
+                patch(
+                    "repoyard._models.get_sync_status",
+                    new=AsyncMock(return_value=mock_status),
+                ),
+                patch(
+                    "repoyard._utils.sync_helper.check_interrupted",
+                    return_value=False,
+                ),
+                patch(
+                    "repoyard._utils.rclone_sync",
+                    new=AsyncMock(return_value=(True, "", "")),
+                ),
+                patch(
+                    "repoyard._utils.rclone_mkdir",
+                    new=AsyncMock(),
+                ),
+                patch(
+                    "repoyard._utils.rclone_purge",
+                    new=AsyncMock(),
+                ),
+                patch.object(
+                    SyncRecord,
+                    "create",
+                    return_value=MagicMock(
+                        ulid=MagicMock(__str__=lambda x: "test-ulid"),
+                        rclone_save=AsyncMock(),
+                    ),
+                ),
+            ):
+                status, synced = await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=None,  # Auto
+                    sync_setting=SyncSetting.CAREFUL,
+                    local_path="/local",
+                    local_sync_record_path="/local/.sync",
+                    remote="myremote",
+                    remote_path="/remote",
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                )
+
+            assert synced is True
+
+        asyncio.run(_test())
+
+    def test_auto_direction_detects_needs_pull(self):
+        """Auto direction detects NEEDS_PULL and pulls."""
+        async def _test():
+            mock_record = MagicMock(spec=SyncRecord)
+            mock_record.rclone_save = AsyncMock()
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.NEEDS_PULL,
+                local_path_exists=True,
+                remote_path_exists=True,
+                local_sync_record=None,
+                remote_sync_record=mock_record,
+                is_dir=True,
+                error_message=None,
+            )
+
+            with (
+                patch(
+                    "repoyard._models.get_sync_status",
+                    new=AsyncMock(return_value=mock_status),
+                ),
+                patch(
+                    "repoyard._utils.sync_helper.check_interrupted",
+                    return_value=False,
+                ),
+                patch(
+                    "repoyard._utils.rclone_sync",
+                    new=AsyncMock(return_value=(True, "", "")),
+                ),
+                patch(
+                    "repoyard._utils.rclone_mkdir",
+                    new=AsyncMock(),
+                ),
+                patch(
+                    "repoyard._utils.rclone_purge",
+                    new=AsyncMock(),
+                ),
+                patch.object(
+                    SyncRecord,
+                    "create",
+                    return_value=MagicMock(
+                        ulid=MagicMock(__str__=lambda x: "test-ulid"),
+                        rclone_save=AsyncMock(),
+                    ),
+                ),
+                patch.object(
+                    SyncRecord,
+                    "rclone_read",
+                    new=AsyncMock(return_value=mock_record),
+                ),
+            ):
+                status, synced = await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=None,  # Auto
+                    sync_setting=SyncSetting.CAREFUL,
+                    local_path="/local",
+                    local_sync_record_path="/local/.sync",
+                    remote="myremote",
+                    remote_path="/remote",
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                )
+
+            assert synced is True
+
+        asyncio.run(_test())
+
+    def test_auto_direction_excluded_returns_no_sync(self):
+        """Auto direction with EXCLUDED returns without syncing."""
+        async def _test():
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.EXCLUDED,
+                local_path_exists=False,
+                remote_path_exists=True,
+                local_sync_record=None,
+                remote_sync_record=MagicMock(spec=SyncRecord),
+                is_dir=True,
+                error_message=None,
+            )
+
+            with patch(
+                "repoyard._models.get_sync_status",
+                new=AsyncMock(return_value=mock_status),
+            ):
+                status, synced = await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=None,  # Auto
+                    sync_setting=SyncSetting.CAREFUL,
+                    local_path="/local",
+                    local_sync_record_path="/local/.sync",
+                    remote="myremote",
+                    remote_path="/remote",
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                )
+
+            assert synced is False
+            assert status.sync_condition == SyncCondition.EXCLUDED
+
+        asyncio.run(_test())
+
+    def test_auto_direction_sync_incomplete_raises_unsafe(self):
+        """Auto direction with SYNC_INCOMPLETE raises SyncUnsafe."""
+        async def _test():
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.SYNC_INCOMPLETE,
+                local_path_exists=True,
+                remote_path_exists=True,
+                local_sync_record=MagicMock(spec=SyncRecord),
+                remote_sync_record=MagicMock(spec=SyncRecord),
+                is_dir=True,
+                error_message=None,
+            )
+
+            with patch(
+                "repoyard._models.get_sync_status",
+                new=AsyncMock(return_value=mock_status),
+            ):
+                with pytest.raises(SyncUnsafe):
+                    await sync_helper(
+                        rclone_config_path="/config",
+                        sync_direction=None,  # Auto
+                        sync_setting=SyncSetting.CAREFUL,
+                        local_path="/local",
+                        local_sync_record_path="/local/.sync",
+                        remote="myremote",
+                        remote_path="/remote",
+                        remote_sync_record_path="remote/.sync",
+                        local_sync_backups_path="/backups",
+                        remote_sync_backups_path="remote/backups",
+                    )
+
+        asyncio.run(_test())
+
+    def test_auto_direction_conflict_raises_unsafe(self):
+        """Auto direction with CONFLICT raises SyncUnsafe."""
+        async def _test():
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.CONFLICT,
+                local_path_exists=True,
+                remote_path_exists=True,
+                local_sync_record=MagicMock(spec=SyncRecord),
+                remote_sync_record=MagicMock(spec=SyncRecord),
+                is_dir=True,
+                error_message=None,
+            )
+
+            with patch(
+                "repoyard._models.get_sync_status",
+                new=AsyncMock(return_value=mock_status),
+            ):
+                with pytest.raises(SyncUnsafe):
+                    await sync_helper(
+                        rclone_config_path="/config",
+                        sync_direction=None,  # Auto
+                        sync_setting=SyncSetting.CAREFUL,
+                        local_path="/local",
+                        local_sync_record_path="/local/.sync",
+                        remote="myremote",
+                        remote_path="/remote",
+                        remote_sync_record_path="remote/.sync",
+                        local_sync_backups_path="/backups",
+                        remote_sync_backups_path="remote/backups",
+                    )
+
+        asyncio.run(_test())
+
+
+# ============================================================================
+# Tests for sync_helper CAREFUL mode safety
+# ============================================================================
+
+# %%
+#|export
+class TestSyncHelperCarefulMode:
+    """Tests for sync_helper CAREFUL mode safety checks."""
+
+    def test_careful_push_with_conflict_raises_unsafe(self):
+        """CAREFUL mode PUSH with CONFLICT raises SyncUnsafe."""
+        async def _test():
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.CONFLICT,
+                local_path_exists=True,
+                remote_path_exists=True,
+                local_sync_record=MagicMock(spec=SyncRecord),
+                remote_sync_record=MagicMock(spec=SyncRecord),
+                is_dir=True,
+                error_message=None,
+            )
+
+            with patch(
+                "repoyard._models.get_sync_status",
+                new=AsyncMock(return_value=mock_status),
+            ):
+                with pytest.raises(SyncUnsafe):
+                    await sync_helper(
+                        rclone_config_path="/config",
+                        sync_direction=SyncDirection.PUSH,
+                        sync_setting=SyncSetting.CAREFUL,
+                        local_path="/local",
+                        local_sync_record_path="/local/.sync",
+                        remote="myremote",
+                        remote_path="/remote",
+                        remote_sync_record_path="remote/.sync",
+                        local_sync_backups_path="/backups",
+                        remote_sync_backups_path="remote/backups",
+                    )
+
+        asyncio.run(_test())
+
+    def test_careful_pull_with_conflict_raises_unsafe(self):
+        """CAREFUL mode PULL with CONFLICT raises SyncUnsafe."""
+        async def _test():
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.CONFLICT,
+                local_path_exists=True,
+                remote_path_exists=True,
+                local_sync_record=MagicMock(spec=SyncRecord),
+                remote_sync_record=MagicMock(spec=SyncRecord),
+                is_dir=True,
+                error_message=None,
+            )
+
+            with patch(
+                "repoyard._models.get_sync_status",
+                new=AsyncMock(return_value=mock_status),
+            ):
+                with pytest.raises(SyncUnsafe):
+                    await sync_helper(
+                        rclone_config_path="/config",
+                        sync_direction=SyncDirection.PULL,
+                        sync_setting=SyncSetting.CAREFUL,
+                        local_path="/local",
+                        local_sync_record_path="/local/.sync",
+                        remote="myremote",
+                        remote_path="/remote",
+                        remote_sync_record_path="remote/.sync",
+                        local_sync_backups_path="/backups",
+                        remote_sync_backups_path="remote/backups",
+                    )
+
+        asyncio.run(_test())
+
+    def test_careful_push_with_needs_pull_raises_unsafe(self):
+        """CAREFUL mode PUSH with NEEDS_PULL raises SyncUnsafe."""
+        async def _test():
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.NEEDS_PULL,
+                local_path_exists=True,
+                remote_path_exists=True,
+                local_sync_record=MagicMock(spec=SyncRecord),
+                remote_sync_record=MagicMock(spec=SyncRecord),
+                is_dir=True,
+                error_message=None,
+            )
+
+            with patch(
+                "repoyard._models.get_sync_status",
+                new=AsyncMock(return_value=mock_status),
+            ):
+                with pytest.raises(SyncUnsafe):
+                    await sync_helper(
+                        rclone_config_path="/config",
+                        sync_direction=SyncDirection.PUSH,
+                        sync_setting=SyncSetting.CAREFUL,
+                        local_path="/local",
+                        local_sync_record_path="/local/.sync",
+                        remote="myremote",
+                        remote_path="/remote",
+                        remote_sync_record_path="remote/.sync",
+                        local_sync_backups_path="/backups",
+                        remote_sync_backups_path="remote/backups",
+                    )
+
+        asyncio.run(_test())
+
+    def test_careful_pull_with_needs_push_raises_unsafe(self):
+        """CAREFUL mode PULL with NEEDS_PUSH raises SyncUnsafe."""
+        async def _test():
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.NEEDS_PUSH,
+                local_path_exists=True,
+                remote_path_exists=False,
+                local_sync_record=MagicMock(spec=SyncRecord),
+                remote_sync_record=None,
+                is_dir=True,
+                error_message=None,
+            )
+
+            with patch(
+                "repoyard._models.get_sync_status",
+                new=AsyncMock(return_value=mock_status),
+            ):
+                with pytest.raises(SyncUnsafe):
+                    await sync_helper(
+                        rclone_config_path="/config",
+                        sync_direction=SyncDirection.PULL,
+                        sync_setting=SyncSetting.CAREFUL,
+                        local_path="/local",
+                        local_sync_record_path="/local/.sync",
+                        remote="myremote",
+                        remote_path="/remote",
+                        remote_sync_record_path="remote/.sync",
+                        local_sync_backups_path="/backups",
+                        remote_sync_backups_path="remote/backups",
+                    )
+
+        asyncio.run(_test())
+
+
+# ============================================================================
+# Tests for sync_helper error handling
+# ============================================================================
+
+# %%
+#|export
+class TestSyncHelperErrorHandling:
+    """Tests for sync_helper error handling."""
+
+    def test_error_condition_raises_exception(self):
+        """ERROR condition raises exception in non-FORCE mode."""
+        async def _test():
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.ERROR,
+                local_path_exists=True,
+                remote_path_exists=True,
+                local_sync_record=None,
+                remote_sync_record=None,
+                is_dir=True,
+                error_message="Something went wrong",
+            )
+
+            with patch(
+                "repoyard._models.get_sync_status",
+                new=AsyncMock(return_value=mock_status),
+            ):
+                with pytest.raises(Exception, match="Something went wrong"):
+                    await sync_helper(
+                        rclone_config_path="/config",
+                        sync_direction=SyncDirection.PUSH,
+                        sync_setting=SyncSetting.CAREFUL,
+                        local_path="/local",
+                        local_sync_record_path="/local/.sync",
+                        remote="myremote",
+                        remote_path="/remote",
+                        remote_sync_record_path="remote/.sync",
+                        local_sync_backups_path="/backups",
+                        remote_sync_backups_path="remote/backups",
+                    )
+
+        asyncio.run(_test())
+
+    def test_error_condition_with_replace_raises_exception(self):
+        """ERROR condition raises exception in REPLACE mode."""
+        async def _test():
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.ERROR,
+                local_path_exists=True,
+                remote_path_exists=True,
+                local_sync_record=None,
+                remote_sync_record=None,
+                is_dir=True,
+                error_message="Error occurred",
+            )
+
+            with patch(
+                "repoyard._models.get_sync_status",
+                new=AsyncMock(return_value=mock_status),
+            ):
+                with pytest.raises(Exception, match="Error occurred"):
+                    await sync_helper(
+                        rclone_config_path="/config",
+                        sync_direction=SyncDirection.PUSH,
+                        sync_setting=SyncSetting.REPLACE,
+                        local_path="/local",
+                        local_sync_record_path="/local/.sync",
+                        remote="myremote",
+                        remote_path="/remote",
+                        remote_sync_record_path="remote/.sync",
+                        local_sync_backups_path="/backups",
+                        remote_sync_backups_path="remote/backups",
+                    )
+
+        asyncio.run(_test())
+
+    def test_sync_failure_raises_sync_failed(self):
+        """Sync failure raises SyncFailed exception."""
+        async def _test():
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.NEEDS_PUSH,
+                local_path_exists=True,
+                remote_path_exists=False,
+                local_sync_record=None,
+                remote_sync_record=None,
+                is_dir=True,
+                error_message=None,
+            )
+
+            with (
+                patch(
+                    "repoyard._models.get_sync_status",
+                    new=AsyncMock(return_value=mock_status),
+                ),
+                patch(
+                    "repoyard._utils.sync_helper.check_interrupted",
+                    return_value=False,
+                ),
+                patch(
+                    "repoyard._utils.rclone_sync",
+                    new=AsyncMock(return_value=(False, "stdout output", "stderr error")),
+                ),
+                patch(
+                    "repoyard._utils.rclone_mkdir",
+                    new=AsyncMock(),
+                ),
+                patch.object(
+                    SyncRecord,
+                    "create",
+                    return_value=MagicMock(
+                        ulid=MagicMock(__str__=lambda x: "test-ulid"),
+                        rclone_save=AsyncMock(),
+                    ),
+                ),
+            ):
+                with pytest.raises(SyncFailed, match="Sync failed"):
+                    await sync_helper(
+                        rclone_config_path="/config",
+                        sync_direction=SyncDirection.PUSH,
+                        sync_setting=SyncSetting.CAREFUL,
+                        local_path="/local",
+                        local_sync_record_path="/local/.sync",
+                        remote="myremote",
+                        remote_path="/remote",
+                        remote_sync_record_path="remote/.sync",
+                        local_sync_backups_path="/backups",
+                        remote_sync_backups_path="remote/backups",
+                    )
+
+        asyncio.run(_test())
+
+
+# ============================================================================
+# Tests for sync_helper soft interruption
+# ============================================================================
+
+# %%
+#|export
+class TestSyncHelperInterruption:
+    """Tests for sync_helper soft interruption handling."""
+
+    def test_interrupted_raises_soft_interruption(self):
+        """When interrupted flag is set, raises SoftInterruption."""
+        async def _test():
+            from repoyard._utils import SoftInterruption
+
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.NEEDS_PUSH,
+                local_path_exists=True,
+                remote_path_exists=False,
+                local_sync_record=None,
+                remote_sync_record=None,
+                is_dir=True,
+                error_message=None,
+            )
+
+            with (
+                patch(
+                    "repoyard._models.get_sync_status",
+                    new=AsyncMock(return_value=mock_status),
+                ),
+                patch(
+                    "repoyard._utils.sync_helper.check_interrupted",
+                    return_value=True,  # Interrupted!
+                ),
+            ):
+                with pytest.raises(SoftInterruption):
+                    await sync_helper(
+                        rclone_config_path="/config",
+                        sync_direction=SyncDirection.PUSH,
+                        sync_setting=SyncSetting.CAREFUL,
+                        local_path="/local",
+                        local_sync_record_path="/local/.sync",
+                        remote="myremote",
+                        remote_path="/remote",
+                        remote_sync_record_path="remote/.sync",
+                        local_sync_backups_path="/backups",
+                        remote_sync_backups_path="remote/backups",
+                    )
+
+        asyncio.run(_test())
+
+
+# ============================================================================
+# Tests for sync_helper FORCE mode
+# ============================================================================
+
+# %%
+#|export
+class TestSyncHelperForceMode:
+    """Tests for sync_helper FORCE mode behavior."""
+
+    def test_force_mode_syncs_even_when_synced(self):
+        """FORCE mode syncs even when already synced."""
+        async def _test():
+            mock_record = MagicMock(spec=SyncRecord)
+            mock_record.rclone_save = AsyncMock()
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.SYNCED,
+                local_path_exists=True,
+                remote_path_exists=True,
+                local_sync_record=mock_record,
+                remote_sync_record=mock_record,
+                is_dir=True,
+                error_message=None,
+            )
+
+            with (
+                patch(
+                    "repoyard._models.get_sync_status",
+                    new=AsyncMock(return_value=mock_status),
+                ),
+                patch(
+                    "repoyard._utils.sync_helper.check_interrupted",
+                    return_value=False,
+                ),
+                patch(
+                    "repoyard._utils.rclone_sync",
+                    new=AsyncMock(return_value=(True, "", "")),
+                ),
+                patch(
+                    "repoyard._utils.rclone_mkdir",
+                    new=AsyncMock(),
+                ),
+                patch(
+                    "repoyard._utils.rclone_purge",
+                    new=AsyncMock(),
+                ),
+                patch.object(
+                    SyncRecord,
+                    "create",
+                    return_value=MagicMock(
+                        ulid=MagicMock(__str__=lambda x: "test-ulid"),
+                        rclone_save=AsyncMock(),
+                    ),
+                ),
+            ):
+                status, synced = await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=SyncDirection.PUSH,
+                    sync_setting=SyncSetting.FORCE,
+                    local_path="/local",
+                    local_sync_record_path="/local/.sync",
+                    remote="myremote",
+                    remote_path="/remote",
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                )
+
+            assert synced is True
+
+        asyncio.run(_test())
+
+    def test_force_mode_ignores_conflict(self):
+        """FORCE mode ignores CONFLICT condition."""
+        async def _test():
+            mock_record = MagicMock(spec=SyncRecord)
+            mock_record.rclone_save = AsyncMock()
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.CONFLICT,
+                local_path_exists=True,
+                remote_path_exists=True,
+                local_sync_record=mock_record,
+                remote_sync_record=mock_record,
+                is_dir=True,
+                error_message=None,
+            )
+
+            with (
+                patch(
+                    "repoyard._models.get_sync_status",
+                    new=AsyncMock(return_value=mock_status),
+                ),
+                patch(
+                    "repoyard._utils.sync_helper.check_interrupted",
+                    return_value=False,
+                ),
+                patch(
+                    "repoyard._utils.rclone_sync",
+                    new=AsyncMock(return_value=(True, "", "")),
+                ),
+                patch(
+                    "repoyard._utils.rclone_mkdir",
+                    new=AsyncMock(),
+                ),
+                patch(
+                    "repoyard._utils.rclone_purge",
+                    new=AsyncMock(),
+                ),
+                patch.object(
+                    SyncRecord,
+                    "create",
+                    return_value=MagicMock(
+                        ulid=MagicMock(__str__=lambda x: "test-ulid"),
+                        rclone_save=AsyncMock(),
+                    ),
+                ),
+            ):
+                status, synced = await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=SyncDirection.PUSH,
+                    sync_setting=SyncSetting.FORCE,
+                    local_path="/local",
+                    local_sync_record_path="/local/.sync",
+                    remote="myremote",
+                    remote_path="/remote",
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                )
+
+            assert synced is True
+
+        asyncio.run(_test())
