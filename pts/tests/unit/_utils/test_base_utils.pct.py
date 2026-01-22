@@ -1,0 +1,506 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # Unit Tests for Base Utilities
+
+# %%
+#|default_exp unit._utils.test_base_utils
+
+# %%
+#|export
+import pytest
+import asyncio
+import tempfile
+from pathlib import Path
+from datetime import datetime, timezone, timedelta
+from unittest.mock import MagicMock, patch, AsyncMock
+import time
+
+
+# ============================================================================
+# Tests for get_repo_index_name_from_sub_path
+# ============================================================================
+
+# %%
+#|export
+from repoyard._utils import get_repo_index_name_from_sub_path
+
+
+class TestGetRepoIndexNameFromSubPath:
+    """Tests for get_repo_index_name_from_sub_path function."""
+
+    @pytest.fixture
+    def mock_config(self, tmp_path):
+        """Create a mock config with user_repos_path."""
+        config = MagicMock()
+        config.user_repos_path = tmp_path / "repos"
+        config.user_repos_path.mkdir(parents=True, exist_ok=True)
+        return config
+
+    def test_path_inside_repo(self, mock_config):
+        """Returns index_name for path inside a repo."""
+        # Create repo directory structure
+        repo_path = mock_config.user_repos_path / "20240101_120000_abcde__myrepo"
+        repo_path.mkdir(parents=True, exist_ok=True)
+        sub_path = repo_path / "src" / "main.py"
+        sub_path.parent.mkdir(parents=True, exist_ok=True)
+        sub_path.touch()
+
+        result = get_repo_index_name_from_sub_path(mock_config, str(sub_path))
+
+        assert result == "20240101_120000_abcde__myrepo"
+
+    def test_path_at_repo_root(self, mock_config):
+        """Returns index_name for path at repo root."""
+        repo_path = mock_config.user_repos_path / "20240101_120000_abcde__myrepo"
+        repo_path.mkdir(parents=True, exist_ok=True)
+
+        result = get_repo_index_name_from_sub_path(mock_config, str(repo_path))
+
+        assert result == "20240101_120000_abcde__myrepo"
+
+    def test_path_outside_repos(self, mock_config, tmp_path):
+        """Returns None for path outside user_repos_path."""
+        outside_path = tmp_path / "other" / "file.py"
+
+        result = get_repo_index_name_from_sub_path(mock_config, str(outside_path))
+
+        assert result is None
+
+    def test_path_at_repos_root(self, mock_config):
+        """Returns None for path at user_repos_path root itself."""
+        result = get_repo_index_name_from_sub_path(
+            mock_config, str(mock_config.user_repos_path)
+        )
+
+        assert result is None
+
+    def test_path_with_tilde(self, mock_config):
+        """Handles paths with tilde expansion."""
+        # Create repo under home-like structure
+        repo_path = mock_config.user_repos_path / "20240101_120000_abcde__myrepo"
+        repo_path.mkdir(parents=True, exist_ok=True)
+
+        result = get_repo_index_name_from_sub_path(mock_config, str(repo_path))
+
+        assert result == "20240101_120000_abcde__myrepo"
+
+
+# ============================================================================
+# Tests for get_hostname
+# ============================================================================
+
+# %%
+#|export
+from repoyard._utils import get_hostname
+
+
+class TestGetHostname:
+    """Tests for get_hostname function."""
+
+    def test_returns_string(self):
+        """get_hostname returns a string."""
+        result = get_hostname()
+
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    @patch("platform.system", return_value="Darwin")
+    @patch("subprocess.run")
+    def test_darwin_uses_scutil(self, mock_run, mock_system):
+        """On Darwin, tries scutil first."""
+        mock_run.return_value = MagicMock(
+            stdout="MyMacBook\n",
+            returncode=0,
+        )
+
+        result = get_hostname()
+
+        mock_run.assert_called_once()
+        assert "scutil" in mock_run.call_args[0][0]
+        assert result == "MyMacBook"
+
+    @patch("platform.system", return_value="Darwin")
+    @patch("subprocess.run", side_effect=Exception("scutil failed"))
+    @patch("platform.node", return_value="fallback-host")
+    def test_darwin_fallback_to_platform_node(
+        self, mock_node, mock_run, mock_system
+    ):
+        """On Darwin, falls back to platform.node if scutil fails."""
+        result = get_hostname()
+
+        assert result == "fallback-host"
+
+    @patch("platform.system", return_value="Linux")
+    @patch("platform.node", return_value="linux-host")
+    def test_linux_uses_platform_node(self, mock_node, mock_system):
+        """On Linux, uses platform.node directly."""
+        result = get_hostname()
+
+        assert result == "linux-host"
+
+
+# ============================================================================
+# Tests for check_last_time_modified
+# ============================================================================
+
+# %%
+#|export
+from repoyard._utils import check_last_time_modified
+
+
+class TestCheckLastTimeModified:
+    """Tests for check_last_time_modified function."""
+
+    def test_single_file(self, tmp_path):
+        """Returns modification time for a single file."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+
+        result = check_last_time_modified(test_file)
+
+        assert result is not None
+        assert isinstance(result, datetime)
+        assert result.tzinfo == timezone.utc
+
+    def test_directory_with_files(self, tmp_path):
+        """Returns latest modification time in directory."""
+        # Create files with different mtimes
+        file1 = tmp_path / "file1.txt"
+        file1.write_text("content1")
+
+        time.sleep(0.1)  # Ensure different timestamps
+
+        file2 = tmp_path / "file2.txt"
+        file2.write_text("content2")
+
+        result = check_last_time_modified(tmp_path)
+
+        assert result is not None
+        # Result should be close to file2's mtime (the newer one)
+        file2_mtime = datetime.fromtimestamp(file2.stat().st_mtime, tz=timezone.utc)
+        assert abs((result - file2_mtime).total_seconds()) < 1
+
+    def test_nested_directory(self, tmp_path):
+        """Handles nested directories."""
+        subdir = tmp_path / "subdir"
+        subdir.mkdir()
+        nested_file = subdir / "nested.txt"
+        nested_file.write_text("content")
+
+        result = check_last_time_modified(tmp_path)
+
+        assert result is not None
+
+    def test_empty_directory(self, tmp_path):
+        """Returns None for empty directory."""
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+
+        result = check_last_time_modified(empty_dir)
+
+        assert result is None
+
+    def test_nonexistent_path(self, tmp_path):
+        """Returns None for nonexistent path."""
+        nonexistent = tmp_path / "nonexistent"
+
+        result = check_last_time_modified(nonexistent)
+
+        assert result is None
+
+    def test_path_with_tilde(self, tmp_path):
+        """Handles paths with tilde expansion."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+
+        # Test with string path
+        result = check_last_time_modified(str(test_file))
+
+        assert result is not None
+
+
+# ============================================================================
+# Tests for run_cmd_async
+# ============================================================================
+
+# %%
+#|export
+from repoyard._utils import run_cmd_async
+
+
+class TestRunCmdAsync:
+    """Tests for run_cmd_async function."""
+
+    def test_successful_command(self):
+        """Runs successful command and captures output."""
+        async def _test():
+            returncode, stdout, stderr = await run_cmd_async(["echo", "hello"])
+            assert returncode == 0
+            assert "hello" in stdout
+            assert stderr == ""
+
+        asyncio.run(_test())
+
+    def test_command_with_stderr(self):
+        """Captures stderr output."""
+        async def _test():
+            returncode, stdout, stderr = await run_cmd_async(
+                ["python", "-c", "import sys; sys.stderr.write('error\\n')"]
+            )
+            assert returncode == 0
+            assert "error" in stderr
+
+        asyncio.run(_test())
+
+    def test_command_failure(self):
+        """Handles command failure."""
+        async def _test():
+            returncode, stdout, stderr = await run_cmd_async(
+                ["python", "-c", "import sys; sys.exit(1)"]
+            )
+            assert returncode == 1
+
+        asyncio.run(_test())
+
+    def test_command_with_arguments(self):
+        """Handles commands with multiple arguments."""
+        async def _test():
+            returncode, stdout, stderr = await run_cmd_async(
+                ["python", "-c", "print('arg1', 'arg2')"]
+            )
+            assert returncode == 0
+            assert "arg1" in stdout
+            assert "arg2" in stdout
+
+        asyncio.run(_test())
+
+
+# ============================================================================
+# Tests for async_throttler
+# ============================================================================
+
+# %%
+#|export
+from repoyard._utils import async_throttler
+
+
+class TestAsyncThrottler:
+    """Tests for async_throttler function."""
+
+    def test_runs_all_coroutines(self):
+        """Runs all coroutines and returns results."""
+        async def _test():
+            async def simple_coro(x):
+                return x * 2
+
+            coros = [simple_coro(i) for i in range(5)]
+            results = await async_throttler(coros, max_concurrency=2)
+            assert results == [0, 2, 4, 6, 8]
+
+        asyncio.run(_test())
+
+    def test_respects_max_concurrency(self):
+        """Respects max concurrency limit."""
+        async def _test():
+            concurrent_count = 0
+            max_concurrent = 0
+
+            async def tracking_coro(x):
+                nonlocal concurrent_count, max_concurrent
+                concurrent_count += 1
+                max_concurrent = max(max_concurrent, concurrent_count)
+                await asyncio.sleep(0.01)
+                concurrent_count -= 1
+                return x
+
+            coros = [tracking_coro(i) for i in range(10)]
+            await async_throttler(coros, max_concurrency=3)
+            assert max_concurrent <= 3
+
+        asyncio.run(_test())
+
+    def test_handles_timeout(self):
+        """Handles timeout for slow coroutines."""
+        async def _test():
+            async def slow_coro():
+                await asyncio.sleep(10)
+                return "done"
+
+            coros = [slow_coro()]
+
+            with pytest.raises(asyncio.TimeoutError):
+                await async_throttler(coros, max_concurrency=1, timeout=0.01)
+
+        asyncio.run(_test())
+
+    def test_raises_on_exception(self):
+        """Raises exception from failed coroutine."""
+        async def _test():
+            async def failing_coro():
+                raise ValueError("test error")
+
+            coros = [failing_coro()]
+
+            with pytest.raises(ValueError, match="test error"):
+                await async_throttler(coros, max_concurrency=1)
+
+        asyncio.run(_test())
+
+    def test_empty_list(self):
+        """Handles empty coroutine list."""
+        async def _test():
+            results = await async_throttler([], max_concurrency=5)
+            assert results == []
+
+        asyncio.run(_test())
+
+
+# ============================================================================
+# Tests for is_in_event_loop
+# ============================================================================
+
+# %%
+#|export
+from repoyard._utils import is_in_event_loop
+
+
+class TestIsInEventLoop:
+    """Tests for is_in_event_loop function."""
+
+    def test_not_in_event_loop(self):
+        """Returns False when not in event loop."""
+        # When running in pytest without asyncio marker
+        result = is_in_event_loop()
+
+        assert result is False
+
+    def test_in_event_loop(self):
+        """Returns True when in event loop."""
+        async def _test():
+            result = is_in_event_loop()
+            assert result is True
+
+        asyncio.run(_test())
+
+
+# ============================================================================
+# Tests for count_files_in_dir
+# ============================================================================
+
+# %%
+#|export
+from repoyard._utils import count_files_in_dir
+
+
+class TestCountFilesInDir:
+    """Tests for count_files_in_dir function."""
+
+    def test_empty_directory(self, tmp_path):
+        """Returns 0 for empty directory."""
+        result = count_files_in_dir(tmp_path)
+
+        assert result == 0
+
+    def test_flat_directory(self, tmp_path):
+        """Counts files in flat directory."""
+        (tmp_path / "file1.txt").touch()
+        (tmp_path / "file2.txt").touch()
+        (tmp_path / "file3.txt").touch()
+
+        result = count_files_in_dir(tmp_path)
+
+        assert result == 3
+
+    def test_nested_directory(self, tmp_path):
+        """Counts files in nested directories."""
+        (tmp_path / "file1.txt").touch()
+        subdir = tmp_path / "subdir"
+        subdir.mkdir()
+        (subdir / "file2.txt").touch()
+        (subdir / "file3.txt").touch()
+        deep_subdir = subdir / "deep"
+        deep_subdir.mkdir()
+        (deep_subdir / "file4.txt").touch()
+
+        result = count_files_in_dir(tmp_path)
+
+        assert result == 4
+
+    def test_ignores_subdirectories(self, tmp_path):
+        """Only counts files, not directories."""
+        (tmp_path / "file.txt").touch()
+        (tmp_path / "subdir1").mkdir()
+        (tmp_path / "subdir2").mkdir()
+
+        result = count_files_in_dir(tmp_path)
+
+        assert result == 1
+
+
+# ============================================================================
+# Tests for SoftInterruption
+# ============================================================================
+
+# %%
+#|export
+from repoyard._utils import SoftInterruption
+
+
+class TestSoftInterruption:
+    """Tests for SoftInterruption exception class."""
+
+    def test_is_exception(self):
+        """SoftInterruption is an Exception."""
+        assert issubclass(SoftInterruption, Exception)
+
+    def test_can_be_raised(self):
+        """SoftInterruption can be raised and caught."""
+        with pytest.raises(SoftInterruption):
+            raise SoftInterruption()
+
+    def test_with_message(self):
+        """SoftInterruption can have a message."""
+        with pytest.raises(SoftInterruption, match="custom message"):
+            raise SoftInterruption("custom message")
+
+
+# ============================================================================
+# Tests for enable_soft_interruption and check_interrupted
+# ============================================================================
+
+# %%
+#|export
+from repoyard._utils import enable_soft_interruption, check_interrupted
+import repoyard._utils.base as base_module
+
+
+class TestSoftInterruptionHandling:
+    """Tests for soft interruption handling."""
+
+    def test_check_interrupted_initial_state(self):
+        """check_interrupted returns False initially after reset."""
+        # Reset the global state
+        base_module._interrupted = False
+        base_module._interrupt_count = 0
+
+        result = check_interrupted()
+
+        assert result is False
+
+    def test_interrupted_flag_can_be_set(self):
+        """_interrupted flag can be set."""
+        base_module._interrupted = True
+
+        result = check_interrupted()
+
+        assert result is True
+
+        # Cleanup
+        base_module._interrupted = False

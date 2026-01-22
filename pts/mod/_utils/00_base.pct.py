@@ -10,10 +10,10 @@
 # # _utils.base
 
 # %%
-# |default_exp _utils.base
+#|default_exp _utils.base
 
 # %%
-# |hide
+#|hide
 import nblite
 from nblite import show_doc
 
@@ -21,7 +21,7 @@ nblite.nbl_export()
 import repoyard._utils.base as this_module
 
 # %%
-# |export
+#|export
 import subprocess
 import asyncio
 from repoyard import const
@@ -31,12 +31,11 @@ from typing import Any, Coroutine
 import repoyard.config
 
 # %%
-# |hide
+#|hide
 show_doc(this_module.get_repo_index_name_from_sub_path)
 
-
 # %%
-# |export
+#|export
 def get_repo_index_name_from_sub_path(
     config: repoyard.config.Config,
     sub_path: str,
@@ -62,13 +61,12 @@ def get_repo_index_name_from_sub_path(
     repo_index_name = rel_path.parts[0]
     return repo_index_name
 
-
 # %%
-# |hide
+#|hide
 show_doc(this_module.get_hostname)
 
 # %%
-# |export
+#|export
 import platform
 
 
@@ -91,14 +89,12 @@ def get_hostname():
         hostname = platform.node()
     return hostname
 
-
 # %%
-# |hide
+#|hide
 show_doc(this_module.run_fzf)
 
-
 # %%
-# |export
+#|export
 def run_fzf(terms: list[str], disp_terms: list[str] | None = None):
     """
     Launches the fzf command-line fuzzy finder with a list of terms and returns
@@ -134,14 +130,12 @@ def run_fzf(terms: list[str], disp_terms: list[str] | None = None):
     except FileNotFoundError:
         raise RuntimeError("fzf is not installed or not found in PATH.")
 
-
 # %%
-# |hide
+#|hide
 show_doc(this_module.check_last_time_modified)
 
-
 # %%
-# |export
+#|export
 def check_last_time_modified(path: str | Path) -> float | None:
     import os
     from datetime import datetime, timezone
@@ -178,14 +172,12 @@ def check_last_time_modified(path: str | Path) -> float | None:
         else None
     )
 
-
 # %%
-# |hide
+#|hide
 show_doc(this_module.run_cmd_async)
 
-
 # %%
-# |export
+#|export
 async def run_cmd_async(cmd: list[str]) -> subprocess.Popen:
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -195,17 +187,15 @@ async def run_cmd_async(cmd: list[str]) -> subprocess.Popen:
     stderr = stderr.decode("utf-8")
     return proc.returncode, stdout, stderr
 
-
 # %%
 await run_cmd_async(["echo", "hello", "world"])
 
 # %%
-# |hide
+#|hide
 show_doc(this_module.async_throttler)
 
-
 # %%
-# |export
+#|export
 async def async_throttler(
     coros: list[Coroutine],
     max_concurrency: int,
@@ -236,7 +226,6 @@ async def async_throttler(
             raise r
     return res
 
-
 # %%
 async def test_task():
     await asyncio.sleep(0.1)
@@ -246,12 +235,11 @@ coros = [test_task() for _ in range(10)]
 res = await async_throttler(coros, max_concurrency=2)
 
 # %%
-# |hide
+#|hide
 show_doc(this_module.is_in_event_loop)
 
-
 # %%
-# |export
+#|export
 def is_in_event_loop():
     try:
         asyncio.get_running_loop()
@@ -259,13 +247,12 @@ def is_in_event_loop():
     except RuntimeError:
         return False
 
-
 # %%
-# |hide
+#|hide
 show_doc(this_module.enable_soft_interruption)
 
 # %%
-# |export
+#|export
 import signal
 import sys
 
@@ -303,7 +290,6 @@ def check_interrupted():
     global _interrupted
     return _interrupted
 
-
 # %%
 p = Path("/Users/lukastk/dev/20251109_000000_7GfJI__repoyard")
 
@@ -317,13 +303,13 @@ for path, dirs, filenames in os.walk(p):
 print(len(files))
 
 # %%
-# |hide
+#|hide
 show_doc(this_module.count_files_in_dir)
 
-
 # %%
-# |export
+#|export
 def count_files_in_dir(path: Path) -> int:
+    import os
     num_files = 0
     for path, dirs, filenames in os.walk(path):
         num_files += len(filenames)
