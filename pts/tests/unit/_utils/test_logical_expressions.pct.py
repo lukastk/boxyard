@@ -515,41 +515,41 @@ def test_empty_parens_raises():
 
 # %%
 #|export
-@pytest.mark.xfail(reason="Bug: tokenizer doesn't require word boundaries - 'android' becomes ['AND', 'roid']")
 def test_group_name_resembling_and():
     """Group name that starts like 'and' but isn't.
 
-    Known bug: The tokenizer matches operators without word boundaries.
+    The tokenizer correctly requires word boundaries for operators,
+    so 'android' is treated as an identifier, not 'AND' + 'roid'.
     """
     filter_func = get_group_filter_func("android AND api")
     assert filter_func(["android", "api"]) == True
+    assert filter_func(["android"]) == False
+    assert filter_func(["api"]) == False
 
 # %%
 #|export
-@pytest.mark.xfail(reason="Bug: tokenizer doesn't require word boundaries - 'oracle' becomes ['OR', 'acle']")
 def test_group_name_resembling_or():
     """Group name that starts like 'or' but isn't.
 
-    Known bug: The tokenizer matches operators without word boundaries.
+    The tokenizer correctly requires word boundaries for operators,
+    so 'oracle' is treated as an identifier, not 'OR' + 'acle'.
     """
     filter_func = get_group_filter_func("oracle AND api")
     assert filter_func(["oracle", "api"]) == True
+    assert filter_func(["oracle"]) == False
+    assert filter_func(["api"]) == False
 
 # %%
 #|export
-@pytest.mark.xfail(reason="Bug: tokenizer doesn't require word boundaries - 'notebook' becomes ['NOT', 'ebook']")
 def test_group_name_resembling_not():
     """Group name that starts like 'not' but isn't.
 
-    Known bug: The tokenizer matches operators without word boundaries,
-    so 'notebook AND api' becomes 'NOT ebook AND api'.
-    This test uses a group list that exposes the bug: ["api"] alone
-    should NOT match "notebook AND api", but due to the bug it does
-    (because "NOT ebook" is True when ebook is absent).
+    The tokenizer correctly requires word boundaries for operators,
+    so 'notebook' is treated as an identifier, not 'NOT' + 'ebook'.
     """
     filter_func = get_group_filter_func("notebook AND api")
-    # Correctly, ["api"] should NOT match since "notebook" is missing
-    # But due to bug, "NOT ebook AND api" matches when api is present and ebook is absent
+    assert filter_func(["notebook", "api"]) == True
+    assert filter_func(["notebook"]) == False
     assert filter_func(["api"]) == False
 
 # %%

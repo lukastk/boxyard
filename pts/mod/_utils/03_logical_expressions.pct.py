@@ -27,9 +27,13 @@ show_doc(this_module._tokenize_expression)
 # %%
 # "a".isalnum?
 
-
 # %%
 # |exporti
+def _is_identifier_char(c: str) -> bool:
+    """Check if a character can be part of an identifier (group name)."""
+    return c.isalnum() or c in "_-/"
+
+
 def _tokenize_expression(expression: str) -> list[str]:
     """Tokenize the expression into operators, identifiers, and parentheses."""
     tokens = []
@@ -42,14 +46,20 @@ def _tokenize_expression(expression: str) -> list[str]:
             i += 1
             continue
 
-        # Check for operators and parentheses
-        if expression[i : i + 3].upper() == "AND":
+        # Check for operators - must be followed by non-identifier char (word boundary)
+        if expression[i : i + 3].upper() == "AND" and (
+            i + 3 >= len(expression) or not _is_identifier_char(expression[i + 3])
+        ):
             tokens.append("AND")
             i += 3
-        elif expression[i : i + 2].upper() == "OR":
+        elif expression[i : i + 2].upper() == "OR" and (
+            i + 2 >= len(expression) or not _is_identifier_char(expression[i + 2])
+        ):
             tokens.append("OR")
             i += 2
-        elif expression[i : i + 3].upper() == "NOT":
+        elif expression[i : i + 3].upper() == "NOT" and (
+            i + 3 >= len(expression) or not _is_identifier_char(expression[i + 3])
+        ):
             tokens.append("NOT")
             i += 3
         elif expression[i] == "(":
@@ -61,9 +71,7 @@ def _tokenize_expression(expression: str) -> list[str]:
         else:
             # Read identifier (group name)
             start = i
-            while i < len(expression) and (
-                expression[i].isalnum() or expression[i] in "_-/"
-            ):
+            while i < len(expression) and _is_identifier_char(expression[i]):
                 i += 1
             if i == start:
                 raise ValueError(f"Invalid character at position {i}: {expression[i]}")
@@ -129,7 +137,6 @@ def _parse_not_expression(
     pos[0] += 1
     return group_name in repo_groups
 
-
 # %%
 _tokenize_expression("group1 AND (group2 OR group3)")
 
@@ -139,7 +146,6 @@ _tokenize_expression("group1 AND parent_group/child_group")
 # %%
 # |hide
 show_doc(this_module.get_group_filter_func)
-
 
 # %%
 # |export
@@ -187,7 +193,6 @@ def get_group_filter_func(expression: str) -> bool:
 
     return _filter_func
 
-
 # %%
 # |exporti
 def _evaluate_group_expression(
@@ -195,7 +200,6 @@ def _evaluate_group_expression(
 ) -> bool:
     _filter_func = get_group_filter_func(expression)
     return _filter_func(repo_groups)
-
 
 # %%
 # Example usage:
