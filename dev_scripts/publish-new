@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+REPO_FOLDER="$(dirname "$(dirname "$0")")"
+PREV_CWD=$(pwd)
+cd "$REPO_FOLDER"
+
+# Extract current version from pyproject.toml (assuming standard PEP 621 layout)
+CURRENT_VERSION=$(grep -E '^[[:space:]]*version[[:space:]]*=' pyproject.toml | head -n 1 | sed -E 's/^[^"]*"([^"]*)".*$/\1/')
+
+if [[ -z "${CURRENT_VERSION:-}" ]]; then
+  echo "Could not determine current version from pyproject.toml"
+  exit 1
+fi
+
+echo "Current version: ${CURRENT_VERSION}"
+read -r -p "Next version (empty to cancel): " NEXT_VERSION
+
+if [[ -z "${NEXT_VERSION}" ]]; then
+  echo "No version entered, exiting."
+  exit 0
+fi
+
+VERSION="${NEXT_VERSION}"
+
+set -x
+sed -i '' -E "s/^([[:space:]]*version[[:space:]]*=[[:space:]]*\")[^\"]*(\".*)$/\1${VERSION}\2/" pyproject.toml
+git add pyproject.toml
+if git commit -m "chore: bump to version v${VERSION}" && git push; then
+  git tag "v${VERSION}"
+  git push origin "v${VERSION}"
+else
+  echo "Commit failed, not tagging or pushing."
+  exit 1
+fi
+
+cd "$PREV_CWD"

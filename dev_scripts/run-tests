@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+REPO_FOLDER="$(dirname "$(dirname "$0")")"
+PREV_CWD=$(pwd)
+
+pytest "$REPO_FOLDER"
+RES_PYTEST=$?
+
+cd "$REPO_FOLDER/example_projects"
+nbl prepare --fill-unchanged
+RES_EXAMPLES=$?
+
+echo -e "\n\n"
+
+echo "pytest:           $([[ $RES_PYTEST   == 0 ]] && echo Passed || echo Failed)"
+
+# Exit with failure if either failed
+[[ $RES_PYTEST == 0 ]]
+
+cd "$PREV_CWD"

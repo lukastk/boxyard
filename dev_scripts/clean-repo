@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+REPO_FOLDER="$(dirname "$(dirname "$0")")"
+PREV_CWD=$(pwd)
+cd "$REPO_FOLDER"
+
+ruff check --fix
+ruff format
+
+nbl prepare
+
+cd "$PREV_CWD"
