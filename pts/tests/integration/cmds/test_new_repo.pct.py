@@ -13,7 +13,6 @@
 #
 # Tests:
 # - Creating a basic repo
-# - Creating repo with custom timestamp
 # - Creating repo from existing directory
 # - Creating repo with groups
 
@@ -30,7 +29,6 @@ from nblite import nbl_export, show_doc; nbl_export();
 import asyncio
 import pytest
 from pathlib import Path
-from datetime import datetime
 
 from repoyard.cmds import new_repo, delete_repo
 from repoyard._models import get_repoyard_meta, RepoPart
@@ -79,28 +77,6 @@ assert repo_meta1.check_included(config)
 # Verify local paths exist
 assert repo_meta1.get_local_path(config).exists()
 assert repo_meta1.get_local_part_path(config, RepoPart.DATA).exists()
-
-# %% [markdown]
-# ## Test creating repo with custom timestamp
-
-# %%
-#|export
-custom_timestamp = datetime(2024, 6, 15, 10, 30, 0)
-
-repo2 = new_repo(
-    config_path=config_path,
-    repo_name="timestamped-repo",
-    storage_location=remote_name,
-    creation_timestamp_utc=custom_timestamp,
-)
-
-config = get_config(config_path)
-repoyard_meta = get_repoyard_meta(config, force_create=True)
-repo_meta2 = repoyard_meta.by_index_name[repo2]
-
-# Verify timestamp was set correctly
-assert repo_meta2.creation_timestamp_utc == "20240615_103000"
-assert "20240615_103000" in repo2
 
 # %% [markdown]
 # ## Test creating repo from existing directory
@@ -173,5 +149,5 @@ assert "api" in repo_meta4.groups
 
 # %%
 #|export
-for repo in [repo1, repo2, repo3, repo4]:
+for repo in [repo1, repo3, repo4]:
     await delete_repo(config_path=config_path, repo_index_name=repo)

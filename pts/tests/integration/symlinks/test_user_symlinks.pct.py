@@ -137,8 +137,9 @@ for symlink in backend_symlinks:
     assert symlink.is_symlink()
     target = symlink.resolve()
     assert target.exists()
-    # Target should be in user_repos_path
-    assert config.user_repos_path in target.parents or target.parent == config.user_repos_path
+    # Target should be in user_repos_path (resolve both to handle /tmp vs /private/tmp on macOS)
+    resolved_repos_path = config.user_repos_path.resolve()
+    assert resolved_repos_path in target.parents or target.parent == resolved_repos_path
 
 # %% [markdown]
 # ## Test symlink cleanup when repo is excluded

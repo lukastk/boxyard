@@ -119,7 +119,7 @@ from repoyard._utils import rclone_lsjson
 remote_files = await rclone_lsjson(
     config.rclone_config_path,
     source=remote_name,
-    source_path=repo_meta.get_remote_path(config) + "/data",
+    source_path=str(repo_meta.get_remote_path(config)) + "/data",
 )
 assert remote_files is not None
 assert len(remote_files) > 0
