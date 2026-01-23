@@ -894,7 +894,7 @@ wheels = [
 
 [[package]]
 name = "jupyterlab"
-version = "4.5.2"
+version = "4.5.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "async-lru" },
@@ -911,9 +911,9 @@ dependencies = [
     { name = "tornado" },
     { name = "traitlets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/93/dc/2c8c4ff1aee27ac999ba04c373c5d0d7c6c181b391640d7b916b884d5985/jupyterlab-4.5.2.tar.gz", hash = "sha256:c80a6b9f6dace96a566d590c65ee2785f61e7cd4aac5b4d453dcc7d0d5e069b7", size = 23990371, upload-time = "2026-01-12T12:27:08.493Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/76/393eae3349f9a39bf21f8f5406e5244d36e2bfc932049b6070c271f92764/jupyterlab-4.5.3.tar.gz", hash = "sha256:4a159f71067cb38e4a82e86a42de8e7e926f384d7f2291964f282282096d27e8", size = 23939231, upload-time = "2026-01-23T15:04:25.768Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a4/78/7e455920f104ef2aa94a4c0d2b40e5b44334ee7057eae1aa1fb97b9631ad/jupyterlab-4.5.2-py3-none-any.whl", hash = "sha256:76466ebcfdb7a9bb7e2fbd6459c0e2c032ccf75be673634a84bee4b3e6b13ab6", size = 12385807, upload-time = "2026-01-12T12:27:03.923Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/9a/0bf9a7a45f0006d7ff4fdc4fc313de4255acab02bf4db1887c65f0472c01/jupyterlab-4.5.3-py3-none-any.whl", hash = "sha256:63c9f3a48de72ba00df766ad6eed416394f5bb883829f11eeff0872302520ba7", size = 12391761, upload-time = "2026-01-23T15:04:21.214Z" },
 ]
 
 [[package]]
@@ -1161,7 +1161,7 @@ wheels = [
 
 [[package]]
 name = "nblite"
-version = "1.1.9"
+version = "1.1.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -1173,9 +1173,9 @@ dependencies = [
     { name = "rich" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9a/75/f0ae3010b7d029764d07b3b751580fc4781fe1ec4d3131215011fb06541b/nblite-1.1.9.tar.gz", hash = "sha256:374fcc49c6ff007495c5c53bf6111ae7d0bf92b3b0bce72753ba8ebb7c5261d6", size = 316256, upload-time = "2026-01-22T19:04:18.194Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/70/ff8eaf4598364180d4183740307ddbee54eeec14ee9602bb49d2b92d6a92/nblite-1.1.10.tar.gz", hash = "sha256:7e465b7bbad606ffe9094edab2a825af16ded5748e6181385ef061d7134bc73a", size = 319200, upload-time = "2026-01-23T17:17:25.972Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/06/ce/1e1072a96e13f826b2017cc0b5883c60fb13ae32d8e41e4524912e33a154/nblite-1.1.9-py3-none-any.whl", hash = "sha256:eee62d57264275aec8520197ead4c7acb7cab6e840a0b610d6338f6ef961d03d", size = 101395, upload-time = "2026-01-22T19:04:16.866Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/51/253036ccf09595eb0b56e142070853104275b3f0a4ec27f0c5f8df6a6711/nblite-1.1.10-py3-none-any.whl", hash = "sha256:43e890fa8d86d41d22be046463ad871654089822a132372a19fec40819a98abd", size = 101822, upload-time = "2026-01-23T17:17:24.256Z" },
 ]
 
 [[package]]
@@ -1738,7 +1738,6 @@ version = "0.1.8"
 source = { editable = "." }
 dependencies = [
     { name = "filelock" },
-    { name = "nblite" },
     { name = "pydantic" },
     { name = "python-ulid", extra = ["pydantic"] },
     { name = "rich" },
@@ -1761,7 +1760,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "filelock", specifier = ">=3.12.0" },
-    { name = "nblite", specifier = ">=1.1.7" },
     { name = "pydantic", specifier = ">=2.12.4" },
     { name = "python-ulid", extras = ["pydantic"], specifier = ">=3.1.0" },
     { name = "rich", specifier = ">=14.2.0" },
@@ -1774,7 +1772,7 @@ dev = [
     { name = "git-cliff", specifier = ">=2.10.1" },
     { name = "ipywidgets", specifier = ">=8.1.8" },
     { name = "jupyterlab", specifier = ">=4.4.0" },
-    { name = "nblite", specifier = ">=0.6.8" },
+    { name = "nblite", specifier = ">=1.1.10" },
     { name = "pytest", specifier = ">=9.0.0" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "ruff", specifier = ">=0.14.13" },

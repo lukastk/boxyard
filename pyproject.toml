@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "filelock>=3.12.0",
-    "nblite>=1.1.7",
     "pydantic>=2.12.4",
     "python-ulid[pydantic]>=3.1.0",
     "rich>=14.2.0",
@@ -28,7 +27,7 @@ dev = [
     "git-cliff>=2.10.1",
     "ipywidgets>=8.1.8",
     "jupyterlab>=4.4.0",
-    "nblite>=0.6.8",
+    "nblite>=1.1.10",
     "pytest>=9.0.0",
     "python-dotenv>=1.2.1",
     "ruff>=0.14.13",
