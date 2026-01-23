@@ -29,7 +29,7 @@ from repoyard import const
 from repoyard.config import get_config
 from repoyard._utils import async_throttler
 from repoyard._utils.sync_helper import SyncSetting, SyncDirection
-from repoyard._utils.locking import LockAcquisitionError, auto_cleanup_stale_locks
+from repoyard._utils.locking import LockAcquisitionError
 from repoyard._models import RepoPart
 from repoyard._cli.app import app, app_state
 
@@ -83,13 +83,6 @@ def entrypoint(
         config_path if config_path is not None else const.DEFAULT_CONFIG_PATH
     )
     if ctx.invoked_subcommand is not None:
-        # Auto-cleanup stale locks (older than 1 hour) on startup
-        try:
-            config = get_config(app_state["config_path"])
-            auto_cleanup_stale_locks(config.repoyard_data_path, max_age_hours=1.0)
-        except Exception:
-            # Don't fail if cleanup fails (e.g., config not yet initialized)
-            pass
         return
     typer.echo(ctx.get_help())
 

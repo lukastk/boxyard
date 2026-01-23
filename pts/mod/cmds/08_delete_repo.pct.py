@@ -24,8 +24,7 @@ import asyncio
 
 from repoyard.config import get_config
 from repoyard._utils import enable_soft_interruption
-from repoyard._utils.locking import RepoyardLockManager, LockAcquisitionError, REPO_SYNC_LOCK_TIMEOUT
-from filelock import Timeout
+from repoyard._utils.locking import RepoyardLockManager, LockAcquisitionError, REPO_SYNC_LOCK_TIMEOUT, acquire_lock_async
 
 # %%
 #|set_func_signature
@@ -92,76 +91,48 @@ assert repo_meta.get_local_path(config).exists()
 assert (remote_rclone_path / repo_meta.get_remote_path(config)).exists()
 
 # %% [markdown]
-# Acquire per-repo sync lock
+# Acquire per-repo sync lock and delete the repo
 
 # %%
 #|export
-_lock_manager = RepoyardLockManager(config.repoyard_data_path)
-_lock_path = _lock_manager.repo_sync_lock_path(repo_index_name)
-_lock_manager._ensure_lock_dir(_lock_path)
-_sync_lock = __import__('filelock').FileLock(_lock_path, timeout=REPO_SYNC_LOCK_TIMEOUT)
-_lock_acquired = False
-_loop = asyncio.get_running_loop()
-try:
-    await _loop.run_in_executor(None, _sync_lock.acquire)
-    _lock_acquired = True
-except Timeout:
-    raise LockAcquisitionError(
-        f"repo sync ({repo_index_name})",
-        _lock_path,
-        REPO_SYNC_LOCK_TIMEOUT,
-        message=(
-            f"Could not acquire sync lock for repo '{repo_index_name}' within {REPO_SYNC_LOCK_TIMEOUT}s. "
-            f"Another sync, include, exclude, or delete operation may be in progress on this repo."
-        )
-    )
-
-# %% [markdown]
-# Delete the repo
-
-# %%
-#|export
-
-# Delete local repo
 import shutil
-from repoyard._models import RepoPart
-
-shutil.rmtree(
-    repo_meta.get_local_part_path(config, RepoPart.DATA)
-)  # Deleting separately as the data part is in a separate directory
-shutil.rmtree(repo_meta.get_local_path(config))
-
-# Delete remote repo
+from repoyard._models import RepoPart, refresh_repoyard_meta
 from repoyard._utils import rclone_purge
 from repoyard.config import StorageType
 
-if repo_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL:
-    await rclone_purge(
-        config.rclone_config_path,
-        source=repo_meta.storage_location,
-        source_path=repo_meta.get_remote_path(config),
-    )
+_lock_manager = RepoyardLockManager(config.repoyard_data_path)
+_lock_path = _lock_manager.repo_sync_lock_path(repo_index_name)
+_lock_manager._ensure_lock_dir(_lock_path)
+_sync_lock = __import__('filelock').FileLock(_lock_path, timeout=0)
+await acquire_lock_async(
+    _sync_lock,
+    f"repo sync ({repo_index_name})",
+    _lock_path,
+    REPO_SYNC_LOCK_TIMEOUT,
+)
+try:
+    # Delete local repo
+    shutil.rmtree(
+        repo_meta.get_local_part_path(config, RepoPart.DATA)
+    )  # Deleting separately as the data part is in a separate directory
+    shutil.rmtree(repo_meta.get_local_path(config))
+
+    # Delete remote repo
+    if repo_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL:
+        await rclone_purge(
+            config.rclone_config_path,
+            source=repo_meta.storage_location,
+            source_path=repo_meta.get_remote_path(config),
+        )
+
+    # Refresh the repoyard meta file
+    refresh_repoyard_meta(config)
+finally:
+    _sync_lock.release()
 
 # %%
 assert not repo_meta.get_local_path(config).exists()
 assert not (remote_rclone_path / repo_meta.get_remote_path(config)).exists()
-
-# %% [markdown]
-# Refresh the repoyard meta file
-
-# %%
-#|export
-from repoyard._models import refresh_repoyard_meta
-
-refresh_repoyard_meta(config)
-
-# %% [markdown]
-# Release the sync lock
-
-# %%
-#|export
-if _lock_acquired:
-    await _loop.run_in_executor(None, _sync_lock.release)
 
 # %%
 from repoyard._models import get_repoyard_meta

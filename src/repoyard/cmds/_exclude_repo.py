@@ -5,8 +5,7 @@ import asyncio
 
 from .._utils.sync_helper import SyncSetting
 from ..config import get_config
-from .._utils.locking import RepoyardLockManager, LockAcquisitionError, REPO_SYNC_LOCK_TIMEOUT
-from filelock import Timeout
+from .._utils.locking import RepoyardLockManager, LockAcquisitionError, REPO_SYNC_LOCK_TIMEOUT, acquire_lock_async
 
 async def exclude_repo(
     config_path: Path,
@@ -33,39 +32,33 @@ async def exclude_repo(
         raise ValueError(
             f"Repo '{repo_index_name}' in local storage location '{repo_meta.storage_location}' cannot be excluded."
         )
+    import shutil
+    from repoyard._models import RepoPart
+    from repoyard.cmds import sync_repo
+    
     _lock_manager = RepoyardLockManager(config.repoyard_data_path)
     _lock_path = _lock_manager.repo_sync_lock_path(repo_index_name)
     _lock_manager._ensure_lock_dir(_lock_path)
-    _sync_lock = __import__('filelock').FileLock(_lock_path, timeout=REPO_SYNC_LOCK_TIMEOUT)
-    _lock_acquired = False
-    _loop = asyncio.get_running_loop()
+    _sync_lock = __import__('filelock').FileLock(_lock_path, timeout=0)
+    await acquire_lock_async(
+        _sync_lock,
+        f"repo sync ({repo_index_name})",
+        _lock_path,
+        REPO_SYNC_LOCK_TIMEOUT,
+    )
     try:
-        await _loop.run_in_executor(None, _sync_lock.acquire)
-        _lock_acquired = True
-    except Timeout:
-        raise LockAcquisitionError(
-            f"repo sync ({repo_index_name})",
-            _lock_path,
-            REPO_SYNC_LOCK_TIMEOUT,
-            message=(
-                f"Could not acquire sync lock for repo '{repo_index_name}' within {REPO_SYNC_LOCK_TIMEOUT}s. "
-                f"Another sync, include, exclude, or delete operation may be in progress on this repo."
+        # Sync any changes before removing locally
+        if not skip_sync:
+            await sync_repo(
+                config_path=config_path,
+                repo_index_name=repo_index_name,
+                sync_setting=SyncSetting.CAREFUL,
+                soft_interruption_enabled=soft_interruption_enabled,
+                _skip_lock=True,
             )
-        )
-    from repoyard.cmds import sync_repo
     
-    if not skip_sync:
-        await sync_repo(
-            config_path=config_path,
-            repo_index_name=repo_index_name,
-            sync_setting=SyncSetting.CAREFUL,
-            soft_interruption_enabled=soft_interruption_enabled,
-            _skip_lock=True,
-        )
-    import shutil
-    from repoyard._models import RepoPart
-    
-    shutil.rmtree(repo_meta.get_local_part_path(config, RepoPart.DATA))
-    repo_meta.get_local_sync_record_path(config, RepoPart.DATA).unlink()
-    if _lock_acquired:
-        await _loop.run_in_executor(None, _sync_lock.release)
+        # Exclude it - delete local data
+        shutil.rmtree(repo_meta.get_local_part_path(config, RepoPart.DATA))
+        repo_meta.get_local_sync_record_path(config, RepoPart.DATA).unlink()
+    finally:
+        _sync_lock.release()

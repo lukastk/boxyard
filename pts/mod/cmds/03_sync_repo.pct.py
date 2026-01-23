@@ -30,9 +30,8 @@ from repoyard._utils import (
     enable_soft_interruption,
     SoftInterruption,
 )
-from repoyard._utils.locking import RepoyardLockManager, LockAcquisitionError, REPO_SYNC_LOCK_TIMEOUT
+from repoyard._utils.locking import RepoyardLockManager, LockAcquisitionError, REPO_SYNC_LOCK_TIMEOUT, acquire_lock_async
 from repoyard import const
-from filelock import Timeout
 
 # %%
 #|set_func_signature
@@ -84,6 +83,7 @@ sync_choices = None
 verbose = True
 show_rclone_progress = False
 soft_interruption_enabled = True
+_skip_lock = False
 
 # %%
 # Put an excluded file into the repo data folder to make sure it is not synced
@@ -152,26 +152,17 @@ if repo_meta.get_storage_location_config(config).storage_type == StorageType.LOC
 # %%
 #|export
 _sync_lock = None
-_lock_acquired = False
-_loop = asyncio.get_running_loop()
 if not _skip_lock:
     _lock_manager = RepoyardLockManager(config.repoyard_data_path)
     _lock_path = _lock_manager.repo_sync_lock_path(repo_index_name)
     _lock_manager._ensure_lock_dir(_lock_path)
-    _sync_lock = __import__('filelock').FileLock(_lock_path, timeout=REPO_SYNC_LOCK_TIMEOUT)
-    try:
-        await _loop.run_in_executor(None, _sync_lock.acquire)
-        _lock_acquired = True
-    except Timeout:
-        raise LockAcquisitionError(
-            f"repo sync ({repo_index_name})",
-            _lock_path,
-            REPO_SYNC_LOCK_TIMEOUT,
-            message=(
-                f"Could not acquire sync lock for repo '{repo_index_name}' within {REPO_SYNC_LOCK_TIMEOUT}s. "
-                f"Another sync, include, exclude, or delete operation may be in progress on this repo."
-            )
-        )
+    _sync_lock = __import__('filelock').FileLock(_lock_path, timeout=0)
+    await acquire_lock_async(
+        _sync_lock,
+        f"repo sync ({repo_index_name})",
+        _lock_path,
+        REPO_SYNC_LOCK_TIMEOUT,
+    )
 
 # %% [markdown]
 # Prints
@@ -354,8 +345,8 @@ if RepoPart.META in sync_choices:
 
 # %%
 #|export
-if _sync_lock is not None and _lock_acquired:
-    await _loop.run_in_executor(None, _sync_lock.release)
+if _sync_lock is not None:
+    _sync_lock.release()
 
 # %%
 #|func_return

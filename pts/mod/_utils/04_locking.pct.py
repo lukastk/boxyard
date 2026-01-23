@@ -207,22 +207,18 @@ async def async_global_lock(
     """
     Async context manager for acquiring the global lock.
 
-    This wraps the synchronous lock in an executor to avoid blocking the event loop.
+    Uses polling-based acquisition to keep lock in main thread,
+    avoiding thread-local state issues with filelock.
     """
-    loop = asyncio.get_event_loop()
-
     lock_path = lock_manager.global_lock_path
     lock_manager._ensure_lock_dir(lock_path)
-    lock = FileLock(lock_path, timeout=timeout)
+    lock = FileLock(lock_path, timeout=0)
 
+    await acquire_lock_async(lock, "global", lock_path, timeout)
     try:
-        await loop.run_in_executor(None, lock.acquire)
         yield
-    except Timeout:
-        raise LockAcquisitionError("global", lock_path, timeout)
     finally:
-        if lock.is_locked:
-            await loop.run_in_executor(None, lock.release)
+        lock.release()
 
 
 @asynccontextmanager
@@ -234,30 +230,23 @@ async def async_repo_sync_lock(
     """
     Async context manager for acquiring a per-repository sync lock.
 
-    This wraps the synchronous lock in an executor to avoid blocking the event loop.
+    Uses polling-based acquisition to keep lock in main thread,
+    avoiding thread-local state issues with filelock.
     """
-    loop = asyncio.get_event_loop()
-
     lock_path = lock_manager.repo_sync_lock_path(index_name)
     lock_manager._ensure_lock_dir(lock_path)
-    lock = FileLock(lock_path, timeout=timeout)
+    lock = FileLock(lock_path, timeout=0)
 
+    await acquire_lock_async(
+        lock,
+        f"repo sync ({index_name})",
+        lock_path,
+        timeout,
+    )
     try:
-        await loop.run_in_executor(None, lock.acquire)
         yield
-    except Timeout:
-        raise LockAcquisitionError(
-            f"repo sync ({index_name})",
-            lock_path,
-            timeout,
-            message=(
-                f"Could not acquire sync lock for repo '{index_name}' within {timeout}s. "
-                f"Another sync, include, exclude, or delete operation may be in progress on this repo."
-            )
-        )
     finally:
-        if lock.is_locked:
-            await loop.run_in_executor(None, lock.release)
+        lock.release()
 
 # %% [markdown]
 # # Utility Functions

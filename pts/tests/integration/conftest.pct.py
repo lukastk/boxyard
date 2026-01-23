@@ -32,11 +32,22 @@ from repoyard.config import get_config
 # Fixture config paths
 # ============================================================================
 
-# Path to fixture configs in the repo
-# Generated conftest.py is at src/tests/integration/conftest.py
-# Fixtures are at tests/fixtures/configs/ (at repo root)
-# So we go up 4 levels to repo root, then into tests/fixtures/configs
-FIXTURE_CONFIGS_PATH = Path(__file__).parent.parent.parent.parent / "tests" / "fixtures" / "configs"
+def _get_fixture_configs_path() -> Path:
+    """Get path to fixture configs, handling both module and notebook contexts."""
+    # When running as a module, __file__ is defined
+    # Generated conftest.py is at src/tests/integration/conftest.py
+    # Fixtures are at tests/fixtures/configs/ (at repo root)
+    try:
+        return Path(__file__).parent.parent.parent.parent / "tests" / "fixtures" / "configs"
+    except NameError:
+        # Running in a notebook - find repo root by looking for pyproject.toml
+        cwd = Path.cwd()
+        for parent in [cwd] + list(cwd.parents):
+            if (parent / "pyproject.toml").exists():
+                return parent / "tests" / "fixtures" / "configs"
+        raise RuntimeError("Could not find repo root (no pyproject.toml found in parent directories)")
+
+FIXTURE_CONFIGS_PATH = _get_fixture_configs_path()
 
 
 # ============================================================================

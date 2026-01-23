@@ -134,14 +134,29 @@ def check_last_time_modified(path: str | Path) -> float | None:
     )
 
 # %% pts/mod/_utils/00_base.pct.py 13
+# Semaphore to limit concurrent subprocess creation and avoid fd exhaustion
+_subprocess_semaphore: asyncio.Semaphore | None = None
+_MAX_CONCURRENT_SUBPROCESSES = 10
+
+
+def _get_subprocess_semaphore() -> asyncio.Semaphore:
+    """Get or create the subprocess semaphore for the current event loop."""
+    global _subprocess_semaphore
+    if _subprocess_semaphore is None:
+        _subprocess_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_SUBPROCESSES)
+    return _subprocess_semaphore
+
+
 async def run_cmd_async(cmd: list[str]) -> subprocess.Popen:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await proc.communicate()
-    stdout = stdout.decode("utf-8")
-    stderr = stderr.decode("utf-8")
-    return proc.returncode, stdout, stderr
+    semaphore = _get_subprocess_semaphore()
+    async with semaphore:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        stdout = stdout.decode("utf-8")
+        stderr = stderr.decode("utf-8")
+        return proc.returncode, stdout, stderr
 
 # %% pts/mod/_utils/00_base.pct.py 16
 async def async_throttler(
