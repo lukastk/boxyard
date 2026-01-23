@@ -45,6 +45,7 @@ async def sync_repo(
     verbose: bool = False,
     show_rclone_progress: bool = False,
     soft_interruption_enabled: bool = True,
+    _skip_lock: bool = False,
 ) -> dict[RepoPart, SyncStatus]:
     """
     Syncs a repo with its remote.
@@ -150,23 +151,27 @@ if repo_meta.get_storage_location_config(config).storage_type == StorageType.LOC
 
 # %%
 #|export
-_lock_manager = RepoyardLockManager(config.repoyard_data_path)
-_lock_path = _lock_manager.repo_sync_lock_path(repo_index_name)
-_lock_manager._ensure_lock_dir(_lock_path)
-_sync_lock = __import__('filelock').FileLock(_lock_path, timeout=REPO_SYNC_LOCK_TIMEOUT)
-_loop = asyncio.get_event_loop()
-try:
-    await _loop.run_in_executor(None, _sync_lock.acquire)
-except Timeout:
-    raise LockAcquisitionError(
-        f"repo sync ({repo_index_name})",
-        _lock_path,
-        REPO_SYNC_LOCK_TIMEOUT,
-        message=(
-            f"Could not acquire sync lock for repo '{repo_index_name}' within {REPO_SYNC_LOCK_TIMEOUT}s. "
-            f"Another sync, include, exclude, or delete operation may be in progress on this repo."
+_sync_lock = None
+_lock_acquired = False
+_loop = asyncio.get_running_loop()
+if not _skip_lock:
+    _lock_manager = RepoyardLockManager(config.repoyard_data_path)
+    _lock_path = _lock_manager.repo_sync_lock_path(repo_index_name)
+    _lock_manager._ensure_lock_dir(_lock_path)
+    _sync_lock = __import__('filelock').FileLock(_lock_path, timeout=REPO_SYNC_LOCK_TIMEOUT)
+    try:
+        await _loop.run_in_executor(None, _sync_lock.acquire)
+        _lock_acquired = True
+    except Timeout:
+        raise LockAcquisitionError(
+            f"repo sync ({repo_index_name})",
+            _lock_path,
+            REPO_SYNC_LOCK_TIMEOUT,
+            message=(
+                f"Could not acquire sync lock for repo '{repo_index_name}' within {REPO_SYNC_LOCK_TIMEOUT}s. "
+                f"Another sync, include, exclude, or delete operation may be in progress on this repo."
+            )
         )
-    )
 
 # %% [markdown]
 # Prints
@@ -349,7 +354,7 @@ if RepoPart.META in sync_choices:
 
 # %%
 #|export
-if _sync_lock.is_locked:
+if _sync_lock is not None and _lock_acquired:
     await _loop.run_in_executor(None, _sync_lock.release)
 
 # %%

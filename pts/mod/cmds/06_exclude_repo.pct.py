@@ -114,9 +114,11 @@ _lock_manager = RepoyardLockManager(config.repoyard_data_path)
 _lock_path = _lock_manager.repo_sync_lock_path(repo_index_name)
 _lock_manager._ensure_lock_dir(_lock_path)
 _sync_lock = __import__('filelock').FileLock(_lock_path, timeout=REPO_SYNC_LOCK_TIMEOUT)
-_loop = asyncio.get_event_loop()
+_lock_acquired = False
+_loop = asyncio.get_running_loop()
 try:
     await _loop.run_in_executor(None, _sync_lock.acquire)
+    _lock_acquired = True
 except Timeout:
     raise LockAcquisitionError(
         f"repo sync ({repo_index_name})",
@@ -141,6 +143,7 @@ if not skip_sync:
         repo_index_name=repo_index_name,
         sync_setting=SyncSetting.CAREFUL,
         soft_interruption_enabled=soft_interruption_enabled,
+        _skip_lock=True,
     )
 
 # %% [markdown]
@@ -159,7 +162,7 @@ repo_meta.get_local_sync_record_path(config, RepoPart.DATA).unlink()
 
 # %%
 #|export
-if _sync_lock.is_locked:
+if _lock_acquired:
     await _loop.run_in_executor(None, _sync_lock.release)
 
 # %%
