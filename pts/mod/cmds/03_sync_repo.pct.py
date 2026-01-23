@@ -164,53 +164,123 @@ if not _skip_lock:
         REPO_SYNC_LOCK_TIMEOUT,
     )
 
-# %% [markdown]
-# Prints
-
-# %%
-#|export
-if verbose:
-    print(f"Syncing repo {repo_index_name} at {repo_meta.storage_location}.")
-
-# %% [markdown]
-# Get the backup locations
-
-# %%
-#|export
-sl_config = repo_meta.get_storage_location_config(config)
-local_sync_backups_path = config.local_sync_backups_path
-remote_sync_backups_path = sl_config.store_path / const.REMOTE_BACKUP_REL_PATH
-
-# %% [markdown]
-# Sync the repometa
-
-# %%
-#|export
-sync_results = {}
-
-if check_interrupted():
-    raise SoftInterruption()
-
-sync_part = RepoPart.META
-if sync_part in sync_choices:
+try:
+    # Prints
     if verbose:
-        print(f"Syncing {sync_part.value}.")
-    sync_results[RepoPart.META] = await sync_helper(
-        rclone_config_path=config.rclone_config_path,
-        sync_direction=sync_direction,
-        sync_setting=sync_setting,
-        local_path=repo_meta.get_local_part_path(config, RepoPart.META),
-        local_sync_record_path=repo_meta.get_local_sync_record_path(config, sync_part),
-        remote=repo_meta.storage_location,
-        remote_path=repo_meta.get_remote_part_path(config, RepoPart.META),
-        remote_sync_record_path=repo_meta.get_remote_sync_record_path(
-            config, sync_part
-        ),
-        local_sync_backups_path=local_sync_backups_path,
-        remote_sync_backups_path=remote_sync_backups_path,
-        verbose=verbose,
-        show_rclone_progress=show_rclone_progress,
+        print(f"Syncing repo {repo_index_name} at {repo_meta.storage_location}.")
+
+    # Get the backup locations
+    sl_config = repo_meta.get_storage_location_config(config)
+    local_sync_backups_path = config.local_sync_backups_path
+    remote_sync_backups_path = sl_config.store_path / const.REMOTE_BACKUP_REL_PATH
+
+    # Sync the repometa
+    sync_results = {}
+
+    if check_interrupted():
+        raise SoftInterruption()
+
+    sync_part = RepoPart.META
+    if sync_part in sync_choices:
+        if verbose:
+            print(f"Syncing {sync_part.value}.")
+        sync_results[RepoPart.META] = await sync_helper(
+            rclone_config_path=config.rclone_config_path,
+            sync_direction=sync_direction,
+            sync_setting=sync_setting,
+            local_path=repo_meta.get_local_part_path(config, RepoPart.META),
+            local_sync_record_path=repo_meta.get_local_sync_record_path(config, sync_part),
+            remote=repo_meta.storage_location,
+            remote_path=repo_meta.get_remote_part_path(config, RepoPart.META),
+            remote_sync_record_path=repo_meta.get_remote_sync_record_path(
+                config, sync_part
+            ),
+            local_sync_backups_path=local_sync_backups_path,
+            remote_sync_backups_path=remote_sync_backups_path,
+            verbose=verbose,
+            show_rclone_progress=show_rclone_progress,
+        )
+
+    # Sync the repoconf
+    if check_interrupted():
+        raise SoftInterruption()
+
+    sync_part = RepoPart.CONF
+    if sync_part in sync_choices:
+        if verbose:
+            print("Syncing", sync_part.value)
+        sync_results[sync_part] = await sync_helper(
+            rclone_config_path=config.rclone_config_path,
+            sync_direction=sync_direction,
+            sync_setting=sync_setting,
+            local_path=repo_meta.get_local_part_path(config, RepoPart.CONF),
+            local_sync_record_path=repo_meta.get_local_sync_record_path(config, sync_part),
+            remote=repo_meta.storage_location,
+            remote_path=repo_meta.get_remote_part_path(config, RepoPart.CONF),
+            remote_sync_record_path=repo_meta.get_remote_sync_record_path(
+                config, sync_part
+            ),
+            local_sync_backups_path=local_sync_backups_path,
+            remote_sync_backups_path=remote_sync_backups_path,
+            verbose=verbose,
+            show_rclone_progress=show_rclone_progress,
+        )
+
+    # Get the now locally synced conf files for the sync of the repo data
+    _rclone_include_path = (
+        repo_meta.get_local_part_path(config, RepoPart.CONF) / ".rclone_include"
     )
+    _rclone_exclude_path = (
+        repo_meta.get_local_part_path(config, RepoPart.CONF) / ".rclone_exclude"
+    )
+    _rclone_filters_path = (
+        repo_meta.get_local_part_path(config, RepoPart.CONF) / ".rclone_filters"
+    )
+
+    _rclone_include_path = _rclone_include_path if _rclone_include_path.exists() else None
+    _rclone_exclude_path = (
+        _rclone_exclude_path
+        if _rclone_exclude_path.exists()
+        else config.default_rclone_exclude_path
+    )
+    _rclone_filters_path = _rclone_filters_path if _rclone_filters_path.exists() else None
+
+    # Sync the repo data
+    if check_interrupted():
+        raise SoftInterruption()
+
+    sync_part = RepoPart.DATA
+    if sync_part in sync_choices:
+        if verbose:
+            print("Syncing", sync_part.value)
+        sync_results[sync_part] = await sync_helper(
+            rclone_config_path=config.rclone_config_path,
+            sync_direction=sync_direction,
+            sync_setting=sync_setting,
+            local_path=repo_meta.get_local_part_path(config, RepoPart.DATA),
+            local_sync_record_path=repo_meta.get_local_sync_record_path(config, sync_part),
+            remote=repo_meta.storage_location,
+            remote_path=repo_meta.get_remote_part_path(config, RepoPart.DATA),
+            remote_sync_record_path=repo_meta.get_remote_sync_record_path(
+                config, sync_part
+            ),
+            local_sync_backups_path=local_sync_backups_path,
+            remote_sync_backups_path=remote_sync_backups_path,
+            include_path=_rclone_include_path,
+            exclude_path=_rclone_exclude_path,
+            filters_path=_rclone_filters_path,
+            verbose=verbose,
+            show_rclone_progress=show_rclone_progress,
+        )
+
+    # Refresh the repoyard meta file
+    if RepoPart.META in sync_choices:
+        from repoyard._models import refresh_repoyard_meta
+
+        refresh_repoyard_meta(config)
+finally:
+    if _sync_lock is not None:
+        _sync_lock.release()
 
 # %%
 # Check that the synced worked
@@ -223,37 +293,8 @@ _lsjson = await rclone_lsjson(
 )
 assert "repometa.toml" in {f["Name"] for f in _lsjson}
 
-# %% [markdown]
-# Sync the repoconf
-
 # %%
-#|export
-if check_interrupted():
-    raise SoftInterruption()
-
-sync_part = RepoPart.CONF
-if sync_part in sync_choices:
-    if verbose:
-        print("Syncing", sync_part.value)
-    sync_results[sync_part] = await sync_helper(
-        rclone_config_path=config.rclone_config_path,
-        sync_direction=sync_direction,
-        sync_setting=sync_setting,
-        local_path=repo_meta.get_local_part_path(config, RepoPart.CONF),
-        local_sync_record_path=repo_meta.get_local_sync_record_path(config, sync_part),
-        remote=repo_meta.storage_location,
-        remote_path=repo_meta.get_remote_part_path(config, RepoPart.CONF),
-        remote_sync_record_path=repo_meta.get_remote_sync_record_path(
-            config, sync_part
-        ),
-        local_sync_backups_path=local_sync_backups_path,
-        remote_sync_backups_path=remote_sync_backups_path,
-        verbose=verbose,
-        show_rclone_progress=show_rclone_progress,
-    )
-
-# %%
-# Check that the synced worked
+# Check that the repoconf synced worked
 from repoyard._utils import rclone_lsjson
 
 _lsjson = await rclone_lsjson(
@@ -263,63 +304,8 @@ _lsjson = await rclone_lsjson(
 )
 assert _lsjson is None  # Empty by default
 
-# %% [markdown]
-# Get the now locally synced conf files for the sync of the repo data
-
 # %%
-#|export
-_rclone_include_path = (
-    repo_meta.get_local_part_path(config, RepoPart.CONF) / ".rclone_include"
-)
-_rclone_exclude_path = (
-    repo_meta.get_local_part_path(config, RepoPart.CONF) / ".rclone_exclude"
-)
-_rclone_filters_path = (
-    repo_meta.get_local_part_path(config, RepoPart.CONF) / ".rclone_filters"
-)
-
-_rclone_include_path = _rclone_include_path if _rclone_include_path.exists() else None
-_rclone_exclude_path = (
-    _rclone_exclude_path
-    if _rclone_exclude_path.exists()
-    else config.default_rclone_exclude_path
-)
-_rclone_filters_path = _rclone_filters_path if _rclone_filters_path.exists() else None
-
-# %% [markdown]
-# Sync the repo data
-
-# %%
-#|export
-if check_interrupted():
-    raise SoftInterruption()
-
-sync_part = RepoPart.DATA
-if sync_part in sync_choices:
-    if verbose:
-        print("Syncing", sync_part.value)
-    sync_results[sync_part] = await sync_helper(
-        rclone_config_path=config.rclone_config_path,
-        sync_direction=sync_direction,
-        sync_setting=sync_setting,
-        local_path=repo_meta.get_local_part_path(config, RepoPart.DATA),
-        local_sync_record_path=repo_meta.get_local_sync_record_path(config, sync_part),
-        remote=repo_meta.storage_location,
-        remote_path=repo_meta.get_remote_part_path(config, RepoPart.DATA),
-        remote_sync_record_path=repo_meta.get_remote_sync_record_path(
-            config, sync_part
-        ),
-        local_sync_backups_path=local_sync_backups_path,
-        remote_sync_backups_path=remote_sync_backups_path,
-        include_path=_rclone_include_path,
-        exclude_path=_rclone_exclude_path,
-        filters_path=_rclone_filters_path,
-        verbose=verbose,
-        show_rclone_progress=show_rclone_progress,
-    )
-
-# %%
-# Check that the synced worked
+# Check that the repo data synced worked
 from repoyard._utils import rclone_lsjson
 
 _lsjson = await rclone_lsjson(
@@ -329,24 +315,6 @@ _lsjson = await rclone_lsjson(
 )
 assert ".git" in {f["Name"] for f in _lsjson}
 assert ".venv" not in {f["Name"] for f in _lsjson}
-
-# %% [markdown]
-# Refresh the repoyard meta file
-
-# %%
-#|export
-if RepoPart.META in sync_choices:
-    from repoyard._models import refresh_repoyard_meta
-
-    refresh_repoyard_meta(config)
-
-# %% [markdown]
-# Release the sync lock
-
-# %%
-#|export
-if _sync_lock is not None:
-    _sync_lock.release()
 
 # %%
 #|func_return
