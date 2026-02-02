@@ -1,7 +1,7 @@
 # ---
 # jupyter:
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: .venv
 #     language: python
 #     name: python3
 # ---
@@ -127,9 +127,9 @@ try:
         )
 
     # Delete local repo
-    shutil.rmtree(
-        repo_meta.get_local_part_path(config, RepoPart.DATA)
-    )  # Deleting separately as the data part is in a separate directory
+    local_repo_path = repo_meta.get_local_part_path(config, RepoPart.DATA)
+    if local_repo_path.exists():
+        shutil.rmtree(local_repo_path)  
     shutil.rmtree(repo_meta.get_local_path(config))
 
     # Delete remote repo
