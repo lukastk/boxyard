@@ -296,6 +296,7 @@ try:
             remote_sync_backups_path=remote_sync_backups_path,
             verbose=verbose,
             show_rclone_progress=show_rclone_progress,
+            allow_missing_source=True,  # CONF is optional - may not exist on either side
         )
 
     # Get the now locally synced conf files for the sync of the repo data

@@ -87,6 +87,7 @@ async def sync_helper(
     syncer_hostname: str | None = None,
     verbose: bool = False,
     show_rclone_progress: bool = False,
+    allow_missing_source: bool = False,
 ) -> tuple[SyncStatus, bool]:
     """
     Helper to execute the standard routine for syncing a local and remote folder.
@@ -147,6 +148,7 @@ delete_backup = True
 syncer_hostname = None
 verbose = True
 show_rclone_progress = False
+allow_missing_source = False
 
 # %% [markdown]
 # # Function body
@@ -297,6 +299,19 @@ if sync_setting == SyncSetting.CAREFUL:
                 _raise_unsafe()  # This shouldn't happen, but just in case
         else:
             _raise_unsafe()
+
+# %% [markdown]
+# Handle missing source when allowed (for optional parts like CONF)
+
+# %%
+#|export
+# If source doesn't exist and we allow missing source, return early
+if allow_missing_source:
+    source_exists = remote_path_exists if sync_direction == SyncDirection.PULL else local_path_exists
+    if not source_exists:
+        if verbose:
+            print(f"Source does not exist and allow_missing_source=True. Skipping sync.")
+        sync_status, False  #|func_return_line
 
 # %% [markdown]
 # Sync
