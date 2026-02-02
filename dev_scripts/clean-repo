@@ -4,9 +4,11 @@ REPO_FOLDER="$(dirname "$(dirname "$0")")"
 PREV_CWD=$(pwd)
 cd "$REPO_FOLDER"
 
-ruff check --fix
-ruff format
+nbl export
 
-nbl prepare
+# ruff check --fix
+# ruff format
+
+nbl export --reverse
 
 cd "$PREV_CWD"
