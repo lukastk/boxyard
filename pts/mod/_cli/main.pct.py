@@ -1821,3 +1821,67 @@ def cli_force_push(
     )
 
     typer.echo("Force push complete.")
+
+# %% [markdown]
+# # `which`
+
+# %%
+#|export
+@app.command(name="which")
+def cli_which(
+    path: Path | None = Option(
+        None, "--path", "-p", help="The path to check. Defaults to current working directory.",
+    ),
+    json_output: bool = Option(False, "--json", "-j", help="Output as JSON."),
+    index_name_only: bool = Option(False, "--index-name", "-i", help="Only print the index name."),
+):
+    """
+    Identify which repository a path belongs to.
+    """
+    import json
+    from repoyard._utils import get_repo_index_name_from_sub_path
+    from repoyard._models import get_repoyard_meta
+
+    config = get_config(app_state["config_path"])
+    target_path = path if path is not None else Path.cwd()
+
+    repo_index_name = get_repo_index_name_from_sub_path(
+        config=config,
+        sub_path=target_path,
+    )
+
+    if repo_index_name is None:
+        typer.echo("Not inside a repoyard repository.", err=True)
+        raise typer.Exit(code=1)
+
+    if index_name_only:
+        typer.echo(repo_index_name)
+        return
+
+    repoyard_meta = get_repoyard_meta(config)
+    if repo_index_name not in repoyard_meta.by_index_name:
+        typer.echo(f"Repository directory found ({repo_index_name}) but no matching metadata.", err=True)
+        raise typer.Exit(code=1)
+
+    repo_meta = repoyard_meta.by_index_name[repo_index_name]
+
+    info = {
+        "name": repo_meta.name,
+        "repo_id": repo_meta.repo_id,
+        "index_name": repo_meta.index_name,
+        "storage_location": repo_meta.storage_location,
+        "groups": repo_meta.groups if repo_meta.groups else [],
+        "local_data_path": repo_meta.get_local_part_path(config, RepoPart.DATA).as_posix(),
+        "included": repo_meta.check_included(config),
+    }
+
+    if json_output:
+        typer.echo(json.dumps(info, indent=2))
+    else:
+        typer.echo(f"name: {info['name']}")
+        typer.echo(f"repo_id: {info['repo_id']}")
+        typer.echo(f"index_name: {info['index_name']}")
+        typer.echo(f"storage_location: {info['storage_location']}")
+        typer.echo(f"groups: {', '.join(info['groups']) if info['groups'] else '(none)'}")
+        typer.echo(f"local_data_path: {info['local_data_path']}")
+        typer.echo(f"included: {info['included']}")
