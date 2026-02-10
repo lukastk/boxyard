@@ -26,7 +26,7 @@ async def sync_repo(
     show_rclone_progress: bool = False,
     soft_interruption_enabled: bool = True,
     _skip_lock: bool = False,
-) -> dict[RepoPart, SyncStatus]:
+) -> dict[RepoPart, tuple[SyncStatus, bool]]:
     """
     Syncs a repo with its remote.
 
@@ -70,7 +70,7 @@ async def sync_repo(
         from repoyard._models import SyncRecord
         _dummy_sync_record = SyncRecord.create(sync_complete=False)
         sync_results = {
-            part: SyncStatus(
+            part: (SyncStatus(
                 sync_condition=SyncCondition.TOMBSTONED,
                 local_path_exists=False,
                 remote_path_exists=False,
@@ -78,7 +78,7 @@ async def sync_repo(
                 remote_sync_record=_dummy_sync_record,
                 is_dir=True,
                 error_message=_tombstone_msg,
-            )
+            ), False)
             for part in sync_choices
         }
         return sync_results
@@ -148,7 +148,7 @@ async def sync_repo(
         if sync_part in sync_choices:
             if verbose:
                 print(f"Syncing {sync_part.value}.")
-            sync_results[RepoPart.META], _ = await sync_helper(
+            sync_results[RepoPart.META] = await sync_helper(
                 rclone_config_path=config.rclone_config_path,
                 sync_direction=sync_direction,
                 sync_setting=sync_setting,
@@ -173,7 +173,7 @@ async def sync_repo(
         if sync_part in sync_choices:
             if verbose:
                 print("Syncing", sync_part.value)
-            sync_results[sync_part], _ = await sync_helper(
+            sync_results[sync_part] = await sync_helper(
                 rclone_config_path=config.rclone_config_path,
                 sync_direction=sync_direction,
                 sync_setting=sync_setting,
@@ -218,7 +218,7 @@ async def sync_repo(
         if sync_part in sync_choices:
             if verbose:
                 print("Syncing", sync_part.value)
-            sync_results[sync_part], _ = await sync_helper(
+            sync_results[sync_part] = await sync_helper(
                 rclone_config_path=config.rclone_config_path,
                 sync_direction=sync_direction,
                 sync_setting=sync_setting,

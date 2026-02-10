@@ -179,7 +179,7 @@ local_data_path = local_meta.get_local_part_path(config, RepoPart.DATA)
 sync_result = await sync_repo(config_path=config_path, repo_index_name=renamed_repo3)
 
 # Verify sync succeeded (not an error)
-for part, status in sync_result.items():
+for part, (status, _synced) in sync_result.items():
     assert status.sync_condition != SyncCondition.ERROR, f"Sync failed for {part}: {status}"
 
 # %% [markdown]
@@ -212,7 +212,7 @@ await create_tombstone(
 sync_result = await sync_repo(config_path=config_path, repo_index_name=repo4)
 
 # Verify all parts return TOMBSTONED
-for part, status in sync_result.items():
+for part, (status, _synced) in sync_result.items():
     assert status.sync_condition == SyncCondition.TOMBSTONED, f"Expected TOMBSTONED for {part}, got {status.sync_condition}"
 
 print("Tombstone was detected during sync!")
