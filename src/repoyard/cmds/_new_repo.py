@@ -10,7 +10,6 @@ from .._utils.locking import RepoyardLockManager, LockAcquisitionError, GLOBAL_L
 from filelock import Timeout
 from .._models import generate_unique_repo_id
 
-
 def _extract_repo_name_from_git_url(url: str) -> str:
     """Extract repository name from a git URL (SSH or HTTPS)."""
     # Remove trailing .git if present
@@ -32,7 +31,6 @@ def _extract_repo_name_from_git_url(url: str) -> str:
 
     # Fallback: just take the last path component
     return url.split("/")[-1]
-
 
 def new_repo(
     config_path: Path,
@@ -68,57 +66,61 @@ def new_repo(
         The index name of the new repository.
     """
     from repoyard.config import get_config
-
+    
     config = get_config(config_path)
-
+    
     if storage_location is None:
         storage_location = config.default_storage_location
-
+    
     if storage_location not in config.storage_locations:
         raise ValueError(
             f"Invalid storage location: {storage_location}. Must be one of: {', '.join(config.storage_locations)}."
         )
-
+    
     if git_clone_url is not None and from_path is not None:
         raise ValueError("`git_clone_url` and `from_path` are mutually exclusive.")
-
+    
     if repo_name is None and from_path is None and git_clone_url is None:
         raise ValueError("Either `repo_name`, `from_path`, or `git_clone_url` must be provided.")
-
+    
     if from_path is not None:
         from_path = Path(from_path).expanduser().resolve()
-
+    
     if from_path is not None and repo_name is None:
         repo_name = from_path.name
-
+    
     if git_clone_url is not None and repo_name is None:
         repo_name = _extract_repo_name_from_git_url(git_clone_url)
-
+    
     if from_path is None and copy_from_path:
         raise ValueError("`from_path` must be provided if `copy_from_path` is True.")
-
+    
     from repoyard._utils import get_hostname
-
+    
     if creator_hostname is None:
         creator_hostname = get_hostname()
-
+    
     # Resolve sync_first from config if not specified
     if sync_first is None:
         sync_first = config.sync_before_new_repo
     if sync_first:
         from repoyard.cmds import sync_repometas
-
         if verbose:
             print("Syncing repometas before creating new repo...")
-        asyncio.get_event_loop().run_until_complete(sync_repometas(config_path=config_path, verbose=verbose))
+        asyncio.get_event_loop().run_until_complete(
+            sync_repometas(config_path=config_path, verbose=verbose)
+        )
     from repoyard._models import get_repoyard_meta, RepoPart
-
+    
     repoyard_meta = get_repoyard_meta(config)
-
+    
     if from_path is not None:
         from_path = Path(from_path).expanduser().resolve()
-        repo_paths = [repo_meta.get_local_part_path(config, RepoPart.DATA) for repo_meta in repoyard_meta.repo_metas]
-
+        repo_paths = [
+            repo_meta.get_local_part_path(config, RepoPart.DATA)
+            for repo_meta in repoyard_meta.repo_metas
+        ]
+    
         if from_path in repo_paths and not copy_from_path:
             raise ValueError(
                 f"'{from_path}' is already a repoyard repository. Use `copy_from_path=True` to copy the contents of this repo into a new repo."
@@ -126,7 +128,7 @@ def new_repo(
     _lock_manager = RepoyardLockManager(config.repoyard_data_path)
     _lock_path = _lock_manager.global_lock_path
     _lock_manager._ensure_lock_dir(_lock_path)
-    _global_lock = __import__("filelock").FileLock(_lock_path, timeout=GLOBAL_LOCK_TIMEOUT)
+    _global_lock = __import__('filelock').FileLock(_lock_path, timeout=GLOBAL_LOCK_TIMEOUT)
     try:
         _global_lock.acquire()
     except Timeout:
@@ -137,26 +139,25 @@ def new_repo(
             message=(
                 f"Could not acquire global lock within {GLOBAL_LOCK_TIMEOUT}s. "
                 f"Another repoyard operation may be in progress."
-            ),
+            )
         )
     from repoyard._models import RepoMeta
-
+    
     # Collect all existing repo IDs to prevent collisions
     existing_ids = {rm.repo_id for rm in repoyard_meta.repo_metas}
-
+    
     # Generate unique timestamp and subid
     creation_timestamp, repo_subid = generate_unique_repo_id(config, existing_ids)
-
+    
     # If user provided a timestamp, use it (but still use the unique subid)
     if creation_timestamp_utc is not None:
         from repoyard.config import RepoTimestampFormat
         from repoyard import const
-
         if config.repo_timestamp_format == RepoTimestampFormat.DATE_AND_TIME:
             creation_timestamp = creation_timestamp_utc.strftime(const.REPO_TIMESTAMP_FORMAT)
         else:
             creation_timestamp = creation_timestamp_utc.strftime(const.REPO_TIMESTAMP_FORMAT_DATE_ONLY)
-
+    
     repo_meta = RepoMeta(
         creation_timestamp_utc=creation_timestamp,
         repo_subid=repo_subid,
@@ -165,16 +166,16 @@ def new_repo(
         creator_hostname=creator_hostname,
         groups=config.default_repo_groups,
     )
-
+    
     repo_meta.save(config)
     from repoyard._models import RepoPart
-
+    
     repo_path = repo_meta.get_local_path(config)
     repo_data_path = repo_meta.get_local_part_path(config, RepoPart.DATA)
     repo_conf_path = repo_meta.get_local_part_path(config, RepoPart.CONF)
     repo_path.mkdir(parents=True, exist_ok=True)
     repo_conf_path.mkdir(parents=True, exist_ok=True)
-
+    
     if git_clone_url is not None:
         if verbose:
             print(f"Cloning {git_clone_url}")
@@ -189,8 +190,10 @@ def new_repo(
     elif from_path is not None:
         if copy_from_path:
             import shutil
-
-            shutil.copytree(from_path, repo_data_path)  # TESTREF: test_new_repo_copy_from_path
+    
+            shutil.copytree(
+                from_path, repo_data_path
+            )  # TESTREF: test_new_repo_copy_from_path
         else:
             from_path.rename(repo_data_path)
     else:
@@ -210,7 +213,7 @@ def new_repo(
             if verbose:
                 print("Warning: Failed to initialise git repository")
     from repoyard._models import refresh_repoyard_meta
-
+    
     refresh_repoyard_meta(config, _skip_lock=True)
     if _global_lock.is_locked:
         _global_lock.release()

@@ -23,14 +23,7 @@ from typer import Option
 from typing import Literal
 from pathlib import Path
 from enum import Enum
-import asyncio
-
-from repoyard import const
-from repoyard.config import get_config
-from repoyard._utils import async_throttler
-from repoyard._utils.sync_helper import SyncSetting, SyncDirection
-from repoyard._utils.locking import LockAcquisitionError
-from repoyard._models import RepoPart
+from repoyard._enums import SyncSetting, SyncDirection, RepoPart, RenameScope, SyncNameDirection
 from repoyard._cli.app import app, app_state
 
 # %% [markdown]
@@ -40,6 +33,8 @@ from repoyard._cli.app import app, app_state
 #|exporti
 def _run_with_lock_handling(coro):
     """Run an async coroutine and handle LockAcquisitionError gracefully."""
+    import asyncio
+    from repoyard._utils.locking import LockAcquisitionError
     try:
         return asyncio.run(coro)
     except LockAcquisitionError as e:
@@ -54,6 +49,7 @@ def _run_with_lock_handling(coro):
 
 def _call_with_lock_handling(func, *args, **kwargs):
     """Call a function and handle LockAcquisitionError gracefully."""
+    from repoyard._utils.locking import LockAcquisitionError
     try:
         return func(*args, **kwargs)
     except LockAcquisitionError as e:
@@ -76,9 +72,10 @@ def entrypoint(
     config_path: Path | None = Option(
         None,
         "--config",
-        help=f"The path to the config file. Will be '{const.DEFAULT_CONFIG_PATH}' if not provided.",
+        help="The path to the config file. Will be '~/.config/repoyard/config.toml' if not provided.",
     ),
 ):
+    from repoyard import const
     app_state["config_path"] = (
         config_path if config_path is not None else const.DEFAULT_CONFIG_PATH
     )
@@ -158,6 +155,7 @@ def _get_repo_index_name(
     )
 
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
 
     config = get_config(app_state["config_path"])
     if repo_metas is None:
@@ -242,12 +240,12 @@ def cli_init(
     config_path: Path | None = Option(
         None,
         "--config-path",
-        help=f"The path to the config file. Will be {const.DEFAULT_CONFIG_PATH} if not provided.",
+        help="The path to the config file. Will be ~/.config/repoyard/config.toml if not provided.",
     ),
     data_path: Path | None = Option(
         None,
         "--data-path",
-        help=f"The path to the data directory. Will be {const.DEFAULT_DATA_PATH} if not provided.",
+        help="The path to the data directory. Will be ~/.repoyard if not provided.",
     ),
 ):
     """
@@ -333,6 +331,7 @@ def cli_new(
 
     if creation_timestamp_utc is not None:
         from datetime import datetime
+        from repoyard import const
 
         try:
             creation_timestamp_utc = datetime.strptime(
@@ -364,6 +363,7 @@ def cli_new(
 
     if groups:
         from repoyard.cmds import modify_repometa
+        from repoyard.config import get_config
 
         config = get_config(app_state["config_path"])
         modify_repometa(
@@ -436,6 +436,7 @@ def cli_sync(
 
     if repo_path is not None:
         from repoyard._utils import get_repo_index_name_from_sub_path
+        from repoyard.config import get_config
 
         config = get_config(app_state["config_path"])
         repo_index_name = get_repo_index_name_from_sub_path(
@@ -512,6 +513,7 @@ def cli_sync_missing_meta(
     """
     Syncs repometa on remote storage locations not yet present locally.
     """
+    import asyncio
     from repoyard.cmds import sync_missing_repometas
 
     asyncio.run(
@@ -586,6 +588,7 @@ def cli_add_to_group(
     """
     from repoyard.cmds import modify_repometa
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
 
     if all([arg is None for arg in [repo_path, repo_index_name, repo_id, repo_name]]):
         repo_path = Path.cwd()
@@ -625,6 +628,7 @@ def cli_add_to_group(
         )
 
         if sync_after:
+            import asyncio
             from repoyard.cmds import sync_repo
             from repoyard._models import RepoPart
 
@@ -699,6 +703,7 @@ def cli_remove_from_group(
     """
     from repoyard.cmds import modify_repometa
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
 
     if all([arg is None for arg in [repo_path, repo_index_name, repo_id, repo_name]]):
         repo_path = Path.cwd()
@@ -736,6 +741,7 @@ def cli_remove_from_group(
         )
 
         if sync_after:
+            import asyncio
             from repoyard.cmds import sync_repo
             from repoyard._models import RepoPart
 
@@ -795,6 +801,7 @@ def cli_include(
     """
     from repoyard.cmds import include_repo
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
 
     repo_index_name = _get_repo_index_name(
         repo_name=repo_name,
@@ -867,6 +874,7 @@ def cli_exclude(
     """
     from repoyard.cmds import exclude_repo
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
 
     repo_index_name = _get_repo_index_name(
         repo_name=repo_name,
@@ -934,6 +942,7 @@ def cli_delete(
     """
     from repoyard.cmds import delete_repo
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
 
     repo_index_name = _get_repo_index_name(
         repo_name=repo_name,
@@ -1051,7 +1060,9 @@ def cli_repo_status(
     """
     Get the sync status of a repository.
     """
+    import asyncio
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
     import json
 
     if repo_path is not None:
@@ -1114,7 +1125,10 @@ def cli_yard_status(
     """
     Get the sync status of all repositories in the yard.
     """
+    import asyncio
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
+    from repoyard._utils import async_throttler
     import json
 
     config = get_config(app_state["config_path"])
@@ -1218,6 +1232,7 @@ def cli_list(
     List all repositories in the yard.
     """
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
     import json
 
     config = get_config(app_state["config_path"])
@@ -1271,6 +1286,7 @@ def cli_list_groups(
     List all groups a repository belongs to, or all groups if `--all` is provided.
     """
     from repoyard._models import get_repoyard_meta, get_repo_group_configs
+    from repoyard.config import get_config
 
     config = get_config(app_state["config_path"])
     repoyard_meta = get_repoyard_meta(config)
@@ -1405,6 +1421,7 @@ def cli_path(
     Get the path of a repository.
     """
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
 
     config = get_config(app_state["config_path"])
     repoyard_meta = get_repoyard_meta(config)
@@ -1495,8 +1512,6 @@ def cli_create_user_symlinks(
 
 # %%
 #|export
-from repoyard.cmds._rename_repo import RenameScope
-
 @app.command(name="rename")
 def cli_rename(
     repo_index_name: str | None = Option(
@@ -1539,6 +1554,7 @@ def cli_rename(
     """
     from repoyard.cmds._rename_repo import rename_repo
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
 
     repo_index_name = _get_repo_index_name(
         repo_name=repo_name,
@@ -1576,8 +1592,6 @@ def cli_rename(
 
 # %%
 #|export
-from repoyard.cmds._sync_name import SyncNameDirection
-
 @app.command(name="sync-name")
 def cli_sync_name(
     repo_index_name: str | None = Option(
@@ -1623,6 +1637,7 @@ def cli_sync_name(
     """
     from repoyard.cmds._sync_name import sync_name
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
 
     if to_local == to_remote:
         typer.echo("Error: Must specify exactly one of --to-local or --to-remote.", err=True)
@@ -1712,8 +1727,10 @@ def cli_copy(
     This downloads the repo data to any local path without adding it to
     repoyard tracking, creating sync records, or making it an "included" repo.
     """
+    import asyncio
     from repoyard.cmds._copy_from_remote import copy_from_remote
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
 
     repo_index_name = _get_repo_index_name(
         repo_name=repo_name,
@@ -1793,6 +1810,7 @@ def cli_force_push(
     """
     from repoyard.cmds._force_push_to_remote import force_push_to_remote
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
 
     repo_index_name = _get_repo_index_name(
         repo_name=repo_name,
@@ -1841,6 +1859,7 @@ def cli_which(
     import json
     from repoyard._utils import get_repo_index_name_from_sub_path
     from repoyard._models import get_repoyard_meta
+    from repoyard.config import get_config
 
     config = get_config(app_state["config_path"])
     target_path = path if path is not None else Path.cwd()

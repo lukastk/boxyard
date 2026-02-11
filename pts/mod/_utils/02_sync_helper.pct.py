@@ -30,26 +30,15 @@ from nblite import nbl_export, show_doc; nbl_export();
 # %%
 #|top_export
 from pathlib import Path
-from enum import Enum
-import inspect
+import textwrap
 from repoyard._utils import check_interrupted, SoftInterruption
+from repoyard._enums import SyncSetting, SyncDirection
 
 from repoyard import const
 
 # %%
 #|top_export
 from repoyard._models import SyncStatus
-
-
-class SyncSetting(str, Enum):
-    CAREFUL = "careful"
-    REPLACE = "replace"
-    FORCE = "force"
-
-
-class SyncDirection(str, Enum):
-    PUSH = "push"  # local -> remote
-    PULL = "pull"  # remote -> local
 
 # %%
 #|top_export
@@ -233,14 +222,14 @@ def _raise_unsafe(message=None):
     if message:
         raise SyncUnsafe(message)
     raise SyncUnsafe(
-        inspect.cleandoc(f"""
+        textwrap.dedent(f"""
         Sync is unsafe. Info:
             Local exists: {local_path_exists}
             Remote exists: {remote_path_exists}
             Local sync record: {local_sync_record}
             Remote sync record: {remote_sync_record}
             Sync condition: {sync_condition.value}
-    """)
+    """).strip()
     )
 
 

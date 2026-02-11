@@ -7,7 +7,6 @@ from .._utils.sync_helper import SyncSetting
 from ..config import get_config
 from .._utils.locking import RepoyardLockManager, LockAcquisitionError, REPO_SYNC_LOCK_TIMEOUT, acquire_lock_async
 
-
 async def exclude_repo(
     config_path: Path,
     repo_index_name: str,
@@ -17,18 +16,18 @@ async def exclude_repo(
     """ """
     config = get_config(config_path)
     from repoyard._models import get_repoyard_meta
-
+    
     repoyard_meta = get_repoyard_meta(config)
-
+    
     if repo_index_name not in repoyard_meta.by_index_name:
         raise ValueError(f"Repo '{repo_index_name}' does not exist.")
-
+    
     repo_meta = repoyard_meta.by_index_name[repo_index_name]
-
+    
     if not repo_meta.check_included(config):
         raise ValueError(f"Repo '{repo_index_name}' is already excluded.")
     from repoyard.config import StorageType
-
+    
     if repo_meta.get_storage_location_config(config).storage_type == StorageType.LOCAL:
         raise ValueError(
             f"Repo '{repo_index_name}' in local storage location '{repo_meta.storage_location}' cannot be excluded."
@@ -36,11 +35,11 @@ async def exclude_repo(
     import shutil
     from repoyard._models import RepoPart
     from repoyard.cmds import sync_repo
-
+    
     _lock_manager = RepoyardLockManager(config.repoyard_data_path)
     _lock_path = _lock_manager.repo_sync_lock_path(repo_index_name)
     _lock_manager._ensure_lock_dir(_lock_path)
-    _sync_lock = __import__("filelock").FileLock(_lock_path, timeout=0)
+    _sync_lock = __import__('filelock').FileLock(_lock_path, timeout=0)
     await acquire_lock_async(
         _sync_lock,
         f"repo sync ({repo_index_name})",
@@ -57,7 +56,7 @@ async def exclude_repo(
                 soft_interruption_enabled=soft_interruption_enabled,
                 _skip_lock=True,
             )
-
+    
         # Exclude it - delete local data
         shutil.rmtree(repo_meta.get_local_part_path(config, RepoPart.DATA))
         repo_meta.get_local_sync_record_path(config, RepoPart.DATA).unlink()

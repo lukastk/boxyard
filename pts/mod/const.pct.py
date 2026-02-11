@@ -19,7 +19,7 @@ from nblite import nbl_export, show_doc; nbl_export();
 # %%
 #|export
 from pathlib import Path
-import inspect
+import textwrap
 import string
 from pydantic import BaseModel, ConfigDict
 import repoyard as proj
@@ -55,7 +55,7 @@ DEFAULT_FAKE_STORE_REL_PATH = "fake_store"
 
 # %%
 #|export
-DEFAULT_RCLONE_EXCLUDE = inspect.cleandoc("""
+DEFAULT_RCLONE_EXCLUDE = textwrap.dedent("""
 .venv/
 .pixi/
 .trunk/
@@ -63,7 +63,7 @@ node_modules/
 __pycache__/
 
 .DS_Store
-""")
+""").strip()
 
 REPO_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 REPO_TIMESTAMP_FORMAT_DATE_ONLY = "%Y%m%d"

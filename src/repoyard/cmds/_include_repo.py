@@ -6,7 +6,6 @@ import asyncio
 from ..config import get_config
 from .._utils.locking import RepoyardLockManager, LockAcquisitionError, REPO_SYNC_LOCK_TIMEOUT, acquire_lock_async
 
-
 async def include_repo(
     config_path: Path,
     repo_index_name: str,
@@ -15,24 +14,24 @@ async def include_repo(
     """ """
     config = get_config(config_path)
     from repoyard._models import get_repoyard_meta
-
+    
     repoyard_meta = get_repoyard_meta(config)
-
+    
     if repo_index_name not in repoyard_meta.by_index_name:
         raise ValueError(f"Repo '{repo_index_name}' does not exist.")
-
+    
     repo_meta = repoyard_meta.by_index_name[repo_index_name]
-
+    
     if repo_meta.check_included(config):
         raise ValueError(f"Repo '{repo_index_name}' is already included.")
     from repoyard.cmds import sync_repo
     from repoyard._models import RepoPart
     from repoyard._utils.sync_helper import SyncSetting, SyncDirection
-
+    
     _lock_manager = RepoyardLockManager(config.repoyard_data_path)
     _lock_path = _lock_manager.repo_sync_lock_path(repo_index_name)
     _lock_manager._ensure_lock_dir(_lock_path)
-    _sync_lock = __import__("filelock").FileLock(_lock_path, timeout=0)
+    _sync_lock = __import__('filelock').FileLock(_lock_path, timeout=0)
     await acquire_lock_async(
         _sync_lock,
         f"repo sync ({repo_index_name})",
@@ -50,7 +49,7 @@ async def include_repo(
             soft_interruption_enabled=soft_interruption_enabled,
             _skip_lock=True,
         )
-
+    
         # Then sync the rest
         await sync_repo(
             config_path=config_path,

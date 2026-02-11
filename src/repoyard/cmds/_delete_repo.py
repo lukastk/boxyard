@@ -9,7 +9,6 @@ from .._utils.locking import RepoyardLockManager, LockAcquisitionError, REPO_SYN
 from .._tombstones import create_tombstone
 from .._remote_index import remove_from_remote_index_cache
 
-
 async def delete_repo(
     config_path: Path,
     repo_index_name: str,
@@ -17,26 +16,26 @@ async def delete_repo(
 ):
     """ """
     config = get_config(config_path)
-
+    
     if soft_interruption_enabled:
         enable_soft_interruption()
     from repoyard._models import get_repoyard_meta
-
+    
     repoyard_meta = get_repoyard_meta(config)
-
+    
     if repo_index_name not in repoyard_meta.by_index_name:
         raise ValueError(f"Repo '{repo_index_name}' does not exist.")
-
+    
     repo_meta = repoyard_meta.by_index_name[repo_index_name]
     import shutil
     from repoyard._models import RepoPart, refresh_repoyard_meta, RepoMeta
     from repoyard._utils import rclone_purge
     from repoyard.config import StorageType
-
+    
     _lock_manager = RepoyardLockManager(config.repoyard_data_path)
     _lock_path = _lock_manager.repo_sync_lock_path(repo_index_name)
     _lock_manager._ensure_lock_dir(_lock_path)
-    _sync_lock = __import__("filelock").FileLock(_lock_path, timeout=0)
+    _sync_lock = __import__('filelock').FileLock(_lock_path, timeout=0)
     await acquire_lock_async(
         _sync_lock,
         f"repo sync ({repo_index_name})",
@@ -47,7 +46,7 @@ async def delete_repo(
         # Extract repo_id for tombstone and cache operations
         repo_id = RepoMeta.extract_repo_id(repo_index_name)
         storage_location = repo_meta.storage_location
-
+    
         # Create tombstone BEFORE deleting remote (so other machines can see it)
         if repo_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL:
             await create_tombstone(
@@ -56,13 +55,13 @@ async def delete_repo(
                 repo_id=repo_id,
                 last_known_name=repo_meta.name,
             )
-
+    
         # Delete local repo
         local_repo_path = repo_meta.get_local_part_path(config, RepoPart.DATA)
         if local_repo_path.exists():
-            shutil.rmtree(local_repo_path)
+            shutil.rmtree(local_repo_path)  
         shutil.rmtree(repo_meta.get_local_path(config))
-
+    
         # Delete remote repo
         if repo_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL:
             await rclone_purge(
@@ -70,10 +69,10 @@ async def delete_repo(
                 source=storage_location,
                 source_path=repo_meta.get_remote_path(config),
             )
-
+    
         # Remove from remote index cache
         remove_from_remote_index_cache(config, storage_location, repo_id)
-
+    
         # Refresh the repoyard meta file
         refresh_repoyard_meta(config)
     finally:

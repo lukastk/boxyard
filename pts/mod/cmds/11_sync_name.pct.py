@@ -23,16 +23,11 @@ from nblite import nbl_export, show_doc; nbl_export();
 # %%
 #|top_export
 from pathlib import Path
-from enum import Enum
 
 from repoyard.config import get_config, StorageType
 from repoyard._remote_index import find_remote_repo_by_id
 from repoyard._models import RepoMeta
-
-
-class SyncNameDirection(Enum):
-    TO_LOCAL = "to_local"
-    TO_REMOTE = "to_remote"
+from repoyard._enums import SyncNameDirection
 
 # %%
 #|set_func_signature

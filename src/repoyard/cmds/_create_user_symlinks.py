@@ -4,7 +4,6 @@ from pathlib import Path
 
 from ..config import get_config
 
-
 def create_user_symlinks(
     config_path: Path,
     user_repos_path: Path | None = None,
@@ -12,16 +11,16 @@ def create_user_symlinks(
 ):
     """ """
     config = get_config(config_path)
-
+    
     if user_repos_path is None:
         user_repos_path = config.user_repos_path
     if user_repo_groups_path is None:
         user_repo_groups_path = config.user_repo_groups_path
     from repoyard._models import refresh_repoyard_meta
-
+    
     refresh_repoyard_meta(config)
     from repoyard._models import create_user_repo_group_symlinks
-
+    
     create_user_repo_group_symlinks(
         config=config,
     )

@@ -21,12 +21,8 @@ from nblite import nbl_export, show_doc; nbl_export();
 #|top_export
 import typer
 from typer import Option
-import asyncio
 
-from repoyard.config import get_config
-from repoyard._utils import async_throttler, enable_soft_interruption, SoftInterruption
-from repoyard._utils.sync_helper import SyncSetting, SyncDirection
-from repoyard._models import RepoPart
+from repoyard._enums import SyncSetting, SyncDirection, RepoPart
 from repoyard._cli.app import app, app_state
 
 # %%
@@ -127,6 +123,9 @@ soft_interruption_enabled = True
 
 # %%
 #|export
+from repoyard._utils import enable_soft_interruption, SoftInterruption
+from repoyard.config import get_config
+
 if soft_interruption_enabled:
     enable_soft_interruption()
 
@@ -212,6 +211,8 @@ async def _task(num, repo_meta):
 # %%
 
 #|export
+import asyncio
+
 sync_stats = {}
 
 finish_monitoring_event = asyncio.Event()
@@ -331,6 +332,7 @@ if sync_recently_modified_first:
 
     _repo_metas = sorted(_repo_metas, key=get_last_modified, reverse=True)
 
+from repoyard._utils import async_throttler
 sync_task = async_throttler(
     [_task(num, repo_meta) for num, repo_meta in enumerate(_repo_metas)],
     max_concurrency=max_concurrent_rclone_ops,

@@ -22,19 +22,13 @@ from nblite import nbl_export, show_doc; nbl_export();
 # %%
 #|top_export
 from pathlib import Path
-from enum import Enum
 import shutil
 
 from repoyard.config import get_config, StorageType
 from repoyard._utils.locking import RepoyardLockManager, LockAcquisitionError, REPO_SYNC_LOCK_TIMEOUT, acquire_lock_async
 from repoyard._remote_index import update_remote_index_cache, find_remote_repo_by_id
+from repoyard._enums import RenameScope
 from repoyard import const
-
-
-class RenameScope(Enum):
-    LOCAL = "local"
-    REMOTE = "remote"
-    BOTH = "both"
 
 # %%
 #|set_func_signature

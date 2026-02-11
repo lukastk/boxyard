@@ -34,10 +34,7 @@ from repoyard.config import RepoGroupConfig, RepoTimestampFormat
 
 # %%
 #|export
-class RepoPart(str, Enum):
-    DATA = "data"
-    META = "meta"
-    CONF = "conf"
+from repoyard._enums import RepoPart
 
 # %%
 #|exporti
