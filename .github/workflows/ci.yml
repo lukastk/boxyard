@@ -52,7 +52,7 @@ jobs:
         run: uv sync --all-extras
 
       - name: Run ruff check
-        run: uv run ruff check src/repoyard
+        run: uv run ruff check src/boxyard
 
       - name: Run ruff format check
-        run: uv run ruff format --check src/repoyard
+        run: uv run ruff format --check src/boxyard

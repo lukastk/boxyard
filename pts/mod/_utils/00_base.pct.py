@@ -15,48 +15,48 @@
 # %%
 #|hide
 from nblite import nbl_export, show_doc; nbl_export();
-import repoyard._utils.base as this_module
+import boxyard._utils.base as this_module
 
 # %%
 #|export
 import subprocess
 import asyncio
-from repoyard import const
+from boxyard import const
 from pathlib import Path
 from typing import Any, Coroutine
 
-import repoyard.config
+import boxyard.config
 
 # %%
 #|hide
-show_doc(this_module.get_repo_index_name_from_sub_path)
+show_doc(this_module.get_box_index_name_from_sub_path)
 
 # %%
 #|export
-def get_repo_index_name_from_sub_path(
-    config: repoyard.config.Config,
+def get_box_index_name_from_sub_path(
+    config: boxyard.config.Config,
     sub_path: str,
 ) -> Path | None:
     """
-    Get the index name of a synced repo from a path inside of the repo.
+    Get the index name of a synced box from a path inside of the box.
     """
     sub_path = (
         Path(sub_path).expanduser().resolve()
     )  # Need to resolve to replace symlinks
-    is_in_local_store_path = sub_path.is_relative_to(config.user_repos_path)
+    is_in_local_store_path = sub_path.is_relative_to(config.user_boxes_path)
 
     if not is_in_local_store_path:
         return None
 
-    rel_path = sub_path.relative_to(config.user_repos_path)
+    rel_path = sub_path.relative_to(config.user_boxes_path)
 
     if (
-        config.user_repos_path.as_posix() == sub_path.as_posix()
-    ):  # The path is not inside a repo but is in the repo store root
+        config.user_boxes_path.as_posix() == sub_path.as_posix()
+    ):  # The path is not inside a box but is in the box store root
         return None
 
-    repo_index_name = rel_path.parts[0]
-    return repo_index_name
+    box_index_name = rel_path.parts[0]
+    return box_index_name
 
 # %%
 #|hide
@@ -303,7 +303,7 @@ def check_interrupted():
     return _interrupted
 
 # %%
-p = Path("/Users/lukastk/dev/20251109_000000_7GfJI__repoyard")
+p = Path("/Users/lukastk/dev/20251109_000000_7GfJI__boxyard")
 
 import os
 

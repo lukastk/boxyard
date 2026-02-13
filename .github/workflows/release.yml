@@ -61,7 +61,7 @@ jobs:
           uv pip install dist/*.whl --python .venv/bin/python
 
       - name: Test CLI works
-        run: .venv/bin/repoyard --help
+        run: .venv/bin/boxyard --help
 
   publish-pypi:
     name: Publish to PyPI
@@ -69,7 +69,7 @@ jobs:
     needs: [build, test-build]
     environment:
       name: pypi
-      url: https://pypi.org/p/repoyard
+      url: https://pypi.org/p/boxyard
     permissions:
       id-token: write
 

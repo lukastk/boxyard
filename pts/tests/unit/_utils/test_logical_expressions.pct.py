@@ -18,7 +18,7 @@
 # %%
 #|export
 import pytest
-from repoyard._utils.logical_expressions import get_group_filter_func
+from boxyard._utils.logical_expressions import get_group_filter_func
 
 # %% [markdown]
 # ## 1. Basic Operators - Single Group

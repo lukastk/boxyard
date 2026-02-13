@@ -21,14 +21,14 @@ from nblite import nbl_export, show_doc; nbl_export();
 #|top_export
 from pathlib import Path
 
-from repoyard.config import get_config
+from boxyard.config import get_config
 
 # %%
 #|set_func_signature
 def create_user_symlinks(
     config_path: Path,
-    user_repos_path: Path | None = None,
-    user_repo_groups_path: Path | None = None,
+    user_boxes_path: Path | None = None,
+    user_box_groups_path: Path | None = None,
 ):
     """ """
     ...
@@ -37,58 +37,58 @@ def create_user_symlinks(
 # Set up testing args
 
 # %%
-from tests.integration.conftest import create_repoyards
+from tests.integration.conftest import create_boxyards
 
-remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
+remote_name, remote_rclone_path, config, config_path, data_path = create_boxyards()
 
 # %%
 # Args
 config_path = config_path
-user_repos_path = None
-user_repo_groups_path = None
+user_boxes_path = None
+user_box_groups_path = None
 
 # %%
 
 # %%
 # Run init
-from repoyard.cmds import new_repo, modify_repometa
+from boxyard.cmds import new_box, modify_boxmeta
 
-# Create a new repo
-repo_index_name = new_repo(config_path=config_path, repo_name="test_repo")
-modify_repometa(
+# Create a new box
+box_index_name = new_box(config_path=config_path, box_name="test_box")
+modify_boxmeta(
     config_path=config_path,
-    repo_index_name=repo_index_name,
+    box_index_name=box_index_name,
     modifications={
         "groups": ["test_group"],
     },
 )
 
-# Add a test group and demand unique repo names in it to test the following
+# Add a test group and demand unique box names in it to test the following
 import toml
 
 config_dump = toml.load(config_path)
-config_dump["repo_groups"] = {
+config_dump["box_groups"] = {
     "test_group": {
-        "repo_title_mode": "name",
-        "unique_repo_names": True,
+        "box_title_mode": "name",
+        "unique_box_names": True,
     }
 }
 config_path.write_text(toml.dumps(config_dump))
 
-# Create a new repo with the same name, to test the conflict handling when adding it to the same group
-from repoyard.cmds._modify_repometa import RepoNameConflict
+# Create a new box with the same name, to test the conflict handling when adding it to the same group
+from boxyard.cmds._modify_boxmeta import BoxNameConflict
 
 try:
-    repo_index_name2 = new_repo(config_path=config_path, repo_name="test_repo")
-    modify_repometa(
+    box_index_name2 = new_box(config_path=config_path, box_name="test_box")
+    modify_boxmeta(
         config_path=config_path,
-        repo_index_name=repo_index_name2,
+        box_index_name=box_index_name2,
         modifications={
             "groups": ["test_group"],
         },
     )
     raise ValueError("Should not happen")
-except RepoNameConflict:
+except BoxNameConflict:
     pass
 
 # %% [markdown]
@@ -101,37 +101,37 @@ except RepoNameConflict:
 #|export
 config = get_config(config_path)
 
-if user_repos_path is None:
-    user_repos_path = config.user_repos_path
-if user_repo_groups_path is None:
-    user_repo_groups_path = config.user_repo_groups_path
+if user_boxes_path is None:
+    user_boxes_path = config.user_boxes_path
+if user_box_groups_path is None:
+    user_box_groups_path = config.user_box_groups_path
 
 # %% [markdown]
-# Refresh the repoyard meta file
+# Refresh the boxyard meta file
 
 # %%
 #|export
-from repoyard._models import refresh_repoyard_meta
+from boxyard._models import refresh_boxyard_meta
 
-refresh_repoyard_meta(config)
+refresh_boxyard_meta(config)
 
 # %%
-ps = [p.name for p in config.user_repos_path.glob("*")]
-assert repo_index_name in ps
+ps = [p.name for p in config.user_boxes_path.glob("*")]
+assert box_index_name in ps
 
 # %% [markdown]
-# Create repo group symlinks
+# Create box group symlinks
 
 # %%
 #|export
-from repoyard._models import create_user_repo_group_symlinks
+from boxyard._models import create_user_box_group_symlinks
 
-create_user_repo_group_symlinks(
+create_user_box_group_symlinks(
     config=config,
 )
 
 # %%
 assert (
-    next(p.name for p in (config.user_repo_groups_path / "test_group").glob("*"))
-    == "test_repo"
+    next(p.name for p in (config.user_box_groups_path / "test_group").glob("*"))
+    == "test_box"
 )

@@ -25,77 +25,77 @@ from datetime import datetime, timezone
 import random
 from ulid import ULID
 from enum import Enum
-import repoyard.config
-from repoyard import const
-from repoyard.config import RepoGroupConfig, RepoTimestampFormat
+import boxyard.config
+from boxyard import const
+from boxyard.config import BoxGroupConfig, BoxTimestampFormat
 
 # %% [markdown]
-# # `RepoMeta`
+# # `BoxMeta`
 
 # %%
 #|export
-from repoyard._enums import RepoPart
+from boxyard._enums import BoxPart
 
 # %%
 #|exporti
-def _create_repo_subid(character_set: str, length: int) -> str:
+def _create_box_subid(character_set: str, length: int) -> str:
     return "".join(random.choices(character_set, k=length))
 
 # %%
 #|export
-def generate_unique_repo_id(
-    config: repoyard.config.Config,
+def generate_unique_box_id(
+    config: boxyard.config.Config,
     existing_ids: set[str],
     max_attempts: int = 100,
 ) -> tuple[str, str]:
     """
-    Generate a repo ID that doesn't collide with existing IDs.
+    Generate a box ID that doesn't collide with existing IDs.
 
     Args:
-        config: Repoyard config (for timestamp format and subid settings)
-        existing_ids: Set of existing repo IDs to check against
+        config: Boxyard config (for timestamp format and subid settings)
+        existing_ids: Set of existing box IDs to check against
         max_attempts: Maximum generation attempts before raising error
 
     Returns:
-        Tuple of (creation_timestamp, repo_subid)
+        Tuple of (creation_timestamp, box_subid)
 
     Raises:
         RuntimeError: If unable to generate unique ID after max_attempts
     """
-    from repoyard.config import RepoTimestampFormat
+    from boxyard.config import BoxTimestampFormat
 
     for _ in range(max_attempts):
-        if config.repo_timestamp_format == RepoTimestampFormat.DATE_AND_TIME:
+        if config.box_timestamp_format == BoxTimestampFormat.DATE_AND_TIME:
             creation_timestamp = datetime.now(timezone.utc).strftime(
-                const.REPO_TIMESTAMP_FORMAT
+                const.BOX_TIMESTAMP_FORMAT
             )
-        elif config.repo_timestamp_format == RepoTimestampFormat.DATE_ONLY:
+        elif config.box_timestamp_format == BoxTimestampFormat.DATE_ONLY:
             creation_timestamp = datetime.now(timezone.utc).strftime(
-                const.REPO_TIMESTAMP_FORMAT_DATE_ONLY
+                const.BOX_TIMESTAMP_FORMAT_DATE_ONLY
             )
         else:
             raise Exception(
-                f"Invalid repo timestamp format: {config.repo_timestamp_format}"
+                f"Invalid box timestamp format: {config.box_timestamp_format}"
             )
 
-        repo_subid = _create_repo_subid(
-            config.repo_subid_character_set, config.repo_subid_length
+        box_subid = _create_box_subid(
+            config.box_subid_character_set, config.box_subid_length
         )
-        repo_id = f"{creation_timestamp}_{repo_subid}"
+        box_id = f"{creation_timestamp}_{box_subid}"
 
-        if repo_id not in existing_ids:
-            return creation_timestamp, repo_subid
+        if box_id not in existing_ids:
+            return creation_timestamp, box_subid
 
     raise RuntimeError(
-        f"Failed to generate unique repo ID after {max_attempts} attempts. "
+        f"Failed to generate unique box ID after {max_attempts} attempts. "
         f"This should be extremely rare - please report this issue."
     )
 
 # %%
 #|export
-class RepoMeta(const.StrictModel):
+class BoxMeta(const.StrictModel):
     creation_timestamp_utc: str
-    repo_subid: str
+    box_subid: str
     name: str
     storage_location: str
     creator_hostname: str
@@ -104,40 +104,40 @@ class RepoMeta(const.StrictModel):
     @classmethod
     def create(
         cls,
-        config: repoyard.config.Config,
+        config: boxyard.config.Config,
         name: str,
         storage_location_name: str,
         creator_hostname: str,
         groups: list[str],
         creation_timestamp_utc: datetime | None = None,
-    ) -> "RepoMeta":
+    ) -> "BoxMeta":
         if creation_timestamp_utc is None:
-            if config.repo_timestamp_format == RepoTimestampFormat.DATE_AND_TIME:
+            if config.box_timestamp_format == BoxTimestampFormat.DATE_AND_TIME:
                 creation_timestamp_utc = datetime.now(timezone.utc).strftime(
-                    const.REPO_TIMESTAMP_FORMAT
+                    const.BOX_TIMESTAMP_FORMAT
                 )
-            elif config.repo_timestamp_format == RepoTimestampFormat.DATE_ONLY:
+            elif config.box_timestamp_format == BoxTimestampFormat.DATE_ONLY:
                 creation_timestamp_utc = datetime.now(timezone.utc).strftime(
-                    const.REPO_TIMESTAMP_FORMAT_DATE_ONLY
+                    const.BOX_TIMESTAMP_FORMAT_DATE_ONLY
                 )
             else:
                 raise Exception(
-                    f"Invalid repo timestamp format: {config.repo_timestamp_format}"
+                    f"Invalid box timestamp format: {config.box_timestamp_format}"
                 )
         else:
             if "_" in creation_timestamp_utc:
                 creation_timestamp_utc = creation_timestamp_utc.strftime(
-                    const.REPO_TIMESTAMP_FORMAT
+                    const.BOX_TIMESTAMP_FORMAT
                 )
             else:
                 creation_timestamp_utc = creation_timestamp_utc.strftime(
-                    const.REPO_TIMESTAMP_FORMAT_DATE_ONLY
+                    const.BOX_TIMESTAMP_FORMAT_DATE_ONLY
                 )
 
-        return RepoMeta(
+        return BoxMeta(
             creation_timestamp_utc=creation_timestamp_utc,
-            repo_subid=_create_repo_subid(
-                config.repo_subid_character_set, config.repo_subid_length
+            box_subid=_create_box_subid(
+                config.box_subid_character_set, config.box_subid_length
             ),
             name=name,
             storage_location=storage_location_name,
@@ -149,104 +149,104 @@ class RepoMeta(const.StrictModel):
     def creation_timestamp_datetime(self) -> datetime:
         if "_" in self.creation_timestamp_utc:
             return datetime.strptime(
-                self.creation_timestamp_utc, const.REPO_TIMESTAMP_FORMAT
+                self.creation_timestamp_utc, const.BOX_TIMESTAMP_FORMAT
             )
         else:
             return datetime.strptime(
-                self.creation_timestamp_utc, const.REPO_TIMESTAMP_FORMAT_DATE_ONLY
+                self.creation_timestamp_utc, const.BOX_TIMESTAMP_FORMAT_DATE_ONLY
             )
 
     @property
-    def repo_id(self) -> str:
-        return f"{self.creation_timestamp_utc}_{str(self.repo_subid)}"
+    def box_id(self) -> str:
+        return f"{self.creation_timestamp_utc}_{str(self.box_subid)}"
 
     @property
     def index_name(self) -> str:
-        return f"{self.repo_id}__{self.name}"
+        return f"{self.box_id}__{self.name}"
 
     @classmethod
     def parse_index_name(cls, index_name: str) -> tuple[str, str]:
-        """Parse index_name into (repo_id, name)."""
+        """Parse index_name into (box_id, name)."""
         parts = index_name.split("__", 1)
         if len(parts) != 2:
             raise ValueError(f"Invalid index_name format: {index_name}")
         return parts[0], parts[1]
 
     @classmethod
-    def extract_repo_id(cls, index_name: str) -> str:
-        """Extract just the repo_id from an index_name."""
+    def extract_box_id(cls, index_name: str) -> str:
+        """Extract just the box_id from an index_name."""
         return cls.parse_index_name(index_name)[0]
 
     def get_storage_location_config(
-        self, config: repoyard.config.StorageConfig
-    ) -> repoyard.config.StorageConfig:
+        self, config: boxyard.config.StorageConfig
+    ) -> boxyard.config.StorageConfig:
         return config.storage_locations[self.storage_location]
 
-    def get_remote_path(self, config: repoyard.config.Config) -> Path:
+    def get_remote_path(self, config: boxyard.config.Config) -> Path:
         return (
             config.storage_locations[self.storage_location].store_path
-            / const.REMOTE_REPOS_REL_PATH
+            / const.REMOTE_BOXES_REL_PATH
             / self.index_name
         )
 
-    def get_local_path(self, config: repoyard.config.Config) -> Path:
+    def get_local_path(self, config: boxyard.config.Config) -> Path:
         return config.local_store_path / self.storage_location / self.index_name
 
     def get_remote_part_path(
-        self, config: repoyard.config.Config, repo_part: RepoPart
+        self, config: boxyard.config.Config, box_part: BoxPart
     ) -> Path:
-        if repo_part == RepoPart.DATA:
-            return self.get_remote_path(config) / const.REPO_DATA_REL_PATH
-        elif repo_part == RepoPart.META:
-            return self.get_remote_path(config) / const.REPO_METAFILE_REL_PATH
-        elif repo_part == RepoPart.CONF:
-            return self.get_remote_path(config) / const.REPO_CONF_REL_PATH
+        if box_part == BoxPart.DATA:
+            return self.get_remote_path(config) / const.BOX_DATA_REL_PATH
+        elif box_part == BoxPart.META:
+            return self.get_remote_path(config) / const.BOX_METAFILE_REL_PATH
+        elif box_part == BoxPart.CONF:
+            return self.get_remote_path(config) / const.BOX_CONF_REL_PATH
         else:
-            raise ValueError(f"Invalid repo part: {repo_part}")
+            raise ValueError(f"Invalid box part: {box_part}")
 
     def get_local_part_path(
-        self, config: repoyard.config.Config, repo_part: RepoPart
+        self, config: boxyard.config.Config, box_part: BoxPart
     ) -> Path:
-        if repo_part == RepoPart.DATA:
-            return config.user_repos_path / self.index_name
-        elif repo_part == RepoPart.META:
-            return self.get_local_path(config) / const.REPO_METAFILE_REL_PATH
-        elif repo_part == RepoPart.CONF:
-            return self.get_local_path(config) / const.REPO_CONF_REL_PATH
+        if box_part == BoxPart.DATA:
+            return config.user_boxes_path / self.index_name
+        elif box_part == BoxPart.META:
+            return self.get_local_path(config) / const.BOX_METAFILE_REL_PATH
+        elif box_part == BoxPart.CONF:
+            return self.get_local_path(config) / const.BOX_CONF_REL_PATH
         else:
-            raise ValueError(f"Invalid repo part: {repo_part}")
+            raise ValueError(f"Invalid box part: {box_part}")
 
     def get_remote_sync_record_path(
-        self, config: repoyard.config.Config, repo_part: RepoPart
+        self, config: boxyard.config.Config, box_part: BoxPart
     ) -> Path:
         sl_conf = self.get_storage_location_config(config)
         return (
             sl_conf.store_path
             / const.SYNC_RECORDS_REL_PATH
             / self.index_name
-            / f"{repo_part.value}.rec"
+            / f"{box_part.value}.rec"
         )
 
     def get_local_sync_record_path(
-        self, config: repoyard.config.Config, repo_part: RepoPart
+        self, config: boxyard.config.Config, box_part: BoxPart
     ) -> Path:
         return (
-            config.repoyard_data_path
+            config.boxyard_data_path
             / const.SYNC_RECORDS_REL_PATH
             / self.index_name
-            / f"{repo_part.value}.rec"
+            / f"{box_part.value}.rec"
         )
 
-    def check_included(self, config: repoyard.config.Config) -> bool:
-        included_repo_path = self.get_local_part_path(config, RepoPart.DATA)
-        return included_repo_path.is_dir() and included_repo_path.exists()
+    def check_included(self, config: boxyard.config.Config) -> bool:
+        included_box_path = self.get_local_part_path(config, BoxPart.DATA)
+        return included_box_path.is_dir() and included_box_path.exists()
 
-    def save(self, config: repoyard.config.Config):
-        save_path = self.get_local_part_path(config, RepoPart.META)
+    def save(self, config: boxyard.config.Config):
+        save_path = self.get_local_part_path(config, BoxPart.META)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         model_dump = self.model_dump()
         del model_dump["creation_timestamp_utc"]
-        del model_dump["repo_subid"]
+        del model_dump["box_subid"]
         del model_dump["name"]
         # Atomic write: temp file + rename
         tmp_path = save_path.with_suffix(".tmp")
@@ -256,34 +256,34 @@ class RepoMeta(const.StrictModel):
     @classmethod
     def load(
         cls,
-        config: repoyard.config.Config,
+        config: boxyard.config.Config,
         storage_location_name: str,
-        repo_index_name: str,
-    ) -> "RepoMeta":
-        repo_id, name = repo_index_name.split("__", 1)
-        repo_id_parts = repo_id.split("_")
-        if len(repo_id_parts) == 3:
-            creation_timestamp = f"{repo_id_parts[0]}_{repo_id_parts[1]}"
-        elif len(repo_id_parts) == 2:
-            creation_timestamp = repo_id_parts[0]
+        box_index_name: str,
+    ) -> "BoxMeta":
+        box_id, name = box_index_name.split("__", 1)
+        box_id_parts = box_id.split("_")
+        if len(box_id_parts) == 3:
+            creation_timestamp = f"{box_id_parts[0]}_{box_id_parts[1]}"
+        elif len(box_id_parts) == 2:
+            creation_timestamp = box_id_parts[0]
         else:
-            raise ValueError(f"Invalid repo id: {repo_id}")
-        repo_subid = repo_id_parts[-1]
+            raise ValueError(f"Invalid box id: {box_id}")
+        box_subid = box_id_parts[-1]
 
-        repometa_path = (
+        boxmeta_path = (
             config.local_store_path
             / storage_location_name
-            / repo_index_name
-            / const.REPO_METAFILE_REL_PATH
+            / box_index_name
+            / const.BOX_METAFILE_REL_PATH
         )
-        if not repometa_path.exists():
-            raise ValueError(f"Repo meta file {repometa_path} does not exist.")
+        if not boxmeta_path.exists():
+            raise ValueError(f"Box meta file {boxmeta_path} does not exist.")
 
-        return RepoMeta(
+        return BoxMeta(
             **{
-                **toml.loads(repometa_path.read_text()),
+                **toml.loads(boxmeta_path.read_text()),
                 "creation_timestamp_utc": creation_timestamp,
-                "repo_subid": repo_subid,
+                "box_subid": box_subid,
                 "name": name,
                 "storage_location": storage_location_name,
             }
@@ -304,7 +304,7 @@ class RepoMeta(const.StrictModel):
             )
 
     @model_validator(mode="after")
-    def validate_repo_meta(self):
+    def validate_box_meta(self):
         if len(self.groups) != len(set(self.groups)):
             raise ValueError("Groups must be unique.")
 
@@ -320,150 +320,150 @@ class RepoMeta(const.StrictModel):
         return self
 
 # %%
-from tests.integration.conftest import create_repoyards
-from repoyard.config import get_config
+from tests.integration.conftest import create_boxyards
+from boxyard.config import get_config
 
-sl_name, _, _, config_path, data_path = create_repoyards()
+sl_name, _, _, config_path, data_path = create_boxyards()
 config = get_config(config_path)
 
-repo_meta = RepoMeta.create(config, "my_repo", sl_name, "creator_hostname", [])
-repo_meta.save(config)
-_repo_meta = RepoMeta.load(config, sl_name, repo_meta.index_name)
+box_meta = BoxMeta.create(config, "my_box", sl_name, "creator_hostname", [])
+box_meta.save(config)
+_box_meta = BoxMeta.load(config, sl_name, box_meta.index_name)
 
-assert repo_meta.model_dump_json() == _repo_meta.model_dump_json()
+assert box_meta.model_dump_json() == _box_meta.model_dump_json()
 
 # %% [markdown]
-# # `RepoyardMeta`
+# # `BoxyardMeta`
 
 # %%
 #|export
-class RepoyardMeta(const.StrictModel):
-    repo_metas: list[RepoMeta]
+class BoxyardMeta(const.StrictModel):
+    box_metas: list[BoxMeta]
 
     @property
-    def by_storage_location(self) -> dict[str, dict[str, RepoMeta]]:
+    def by_storage_location(self) -> dict[str, dict[str, BoxMeta]]:
         if not hasattr(self, "__by_storage_location"):
-            storage_location_names = set(rm.storage_location for rm in self.repo_metas)
+            storage_location_names = set(rm.storage_location for rm in self.box_metas)
             self.__by_storage_location = {
                 sl_name: {
-                    repo_meta.index_name: repo_meta
-                    for repo_meta in self.repo_metas
-                    if repo_meta.storage_location == sl_name
+                    box_meta.index_name: box_meta
+                    for box_meta in self.box_metas
+                    if box_meta.storage_location == sl_name
                 }
                 for sl_name in storage_location_names
             }
         return self.__by_storage_location
 
     @property
-    def by_id(self) -> dict[str, RepoMeta]:
+    def by_id(self) -> dict[str, BoxMeta]:
         if not hasattr(self, "__by_id"):
             self.__by_id = {
-                repo_meta.repo_id: repo_meta for repo_meta in self.repo_metas
+                box_meta.box_id: box_meta for box_meta in self.box_metas
             }
         return self.__by_id
 
     @property
-    def by_repo_id(self) -> dict[str, RepoMeta]:
+    def by_box_id(self) -> dict[str, BoxMeta]:
         """Alias for by_id for clarity."""
         return self.by_id
 
     @property
-    def by_index_name(self) -> dict[str, RepoMeta]:
+    def by_index_name(self) -> dict[str, BoxMeta]:
         if not hasattr(self, "__by_index_name"):
             self.__by_index_name = {
-                repo_meta.index_name: repo_meta for repo_meta in self.repo_metas
+                box_meta.index_name: box_meta for box_meta in self.box_metas
             }
         return self.__by_index_name
 
 # %%
 #|export
-def create_repoyard_meta(config: repoyard.config.Config) -> RepoyardMeta:
-    """Create a dict of all repo metas. To be saved in `config.repoyard_meta_path`."""
-    repo_metas = []
+def create_boxyard_meta(config: boxyard.config.Config) -> BoxyardMeta:
+    """Create a dict of all box metas. To be saved in `config.boxyard_meta_path`."""
+    box_metas = []
     for storage_location_name in config.storage_locations:
         local_storage_location_path = config.local_store_path / storage_location_name
-        for repo_path in local_storage_location_path.glob("*"):
-            if repo_path.is_file():
+        for box_path in local_storage_location_path.glob("*"):
+            if box_path.is_file():
                 continue
-            repo_metas.append(
-                RepoMeta.load(config, storage_location_name, repo_path.name)
+            box_metas.append(
+                BoxMeta.load(config, storage_location_name, box_path.name)
             )
-    return RepoyardMeta(repo_metas=repo_metas)
+    return BoxyardMeta(box_metas=box_metas)
 
 # %%
 #|export
-def refresh_repoyard_meta(
-    config: repoyard.config.Config,
+def refresh_boxyard_meta(
+    config: boxyard.config.Config,
     _skip_lock: bool = False,
-) -> RepoyardMeta:
-    from repoyard._utils.locking import RepoyardLockManager
+) -> BoxyardMeta:
+    from boxyard._utils.locking import BoxyardLockManager
     from contextlib import nullcontext
 
-    lock_manager = RepoyardLockManager(config.repoyard_data_path)
+    lock_manager = BoxyardLockManager(config.boxyard_data_path)
     lock_context = nullcontext() if _skip_lock else lock_manager.global_lock()
 
     with lock_context:
-        repoyard_meta = create_repoyard_meta(config)
+        boxyard_meta = create_boxyard_meta(config)
         # Atomic write: temp file + rename
-        tmp_path = config.repoyard_meta_path.with_suffix(".tmp")
-        tmp_path.write_text(repoyard_meta.model_dump_json())
-        tmp_path.rename(config.repoyard_meta_path)
-    return repoyard_meta
+        tmp_path = config.boxyard_meta_path.with_suffix(".tmp")
+        tmp_path.write_text(boxyard_meta.model_dump_json())
+        tmp_path.rename(config.boxyard_meta_path)
+    return boxyard_meta
 
 # %%
 #|export
-def get_repoyard_meta(
-    config: repoyard.config.Config,
+def get_boxyard_meta(
+    config: boxyard.config.Config,
     force_create: bool = False,
-) -> RepoyardMeta:
-    if not config.repoyard_meta_path.exists() or force_create:
-        refresh_repoyard_meta(config)
-    return RepoyardMeta.model_validate_json(config.repoyard_meta_path.read_text())
+) -> BoxyardMeta:
+    if not config.boxyard_meta_path.exists() or force_create:
+        refresh_boxyard_meta(config)
+    return BoxyardMeta.model_validate_json(config.boxyard_meta_path.read_text())
 
 # %%
 #|export
-def get_repo_group_configs(
-    config: repoyard.config.Config,
-    repo_metas: list[RepoMeta],
-) -> dict[str, RepoGroupConfig]:
-    repo_group_configs = config.repo_groups.copy()
-    for repo_meta in repo_metas:
-        for group_name in repo_meta.groups:
-            if group_name not in repo_group_configs:
-                repo_group_configs[group_name] = RepoGroupConfig()
-    return repo_group_configs, config.virtual_repo_groups
+def get_box_group_configs(
+    config: boxyard.config.Config,
+    box_metas: list[BoxMeta],
+) -> dict[str, BoxGroupConfig]:
+    box_group_configs = config.box_groups.copy()
+    for box_meta in box_metas:
+        for group_name in box_meta.groups:
+            if group_name not in box_group_configs:
+                box_group_configs[group_name] = BoxGroupConfig()
+    return box_group_configs, config.virtual_box_groups
 
 # %%
 #|export
-def create_user_repo_group_symlinks(
-    config: repoyard.config.Config,
+def create_user_box_group_symlinks(
+    config: boxyard.config.Config,
 ):
     from collections import defaultdict
-    from repoyard.config import RepoGroupTitleMode, VirtualRepoGroupConfig
+    from boxyard.config import BoxGroupTitleMode, VirtualBoxGroupConfig
 
-    repo_metas = [
-        repo_meta
-        for repo_meta in get_repoyard_meta(config).repo_metas
-        if repo_meta.check_included(config)
+    box_metas = [
+        box_meta
+        for box_meta in get_boxyard_meta(config).box_metas
+        if box_meta.check_included(config)
     ]
-    repo_metas.sort(key=lambda x: x.creation_timestamp_datetime)
-    groups, virtual_repo_groups = get_repo_group_configs(config, repo_metas)
+    box_metas.sort(key=lambda x: x.creation_timestamp_datetime)
+    groups, virtual_box_groups = get_box_group_configs(config, box_metas)
     symlink_paths = []
 
-    for vg in virtual_repo_groups:
+    for vg in virtual_box_groups:
         if vg in groups:
-            print(f"Warning: Virtual repo group '{vg}' is also a regular repo group.")
-    groups.update(virtual_repo_groups)
+            print(f"Warning: Virtual box group '{vg}' is also a regular box group.")
+    groups.update(virtual_box_groups)
 
-    def _get_symlink_title(repo_meta: RepoMeta, group_config: RepoGroupConfig) -> str:
-        if group_config.repo_title_mode == RepoGroupTitleMode.INDEX_NAME:
-            title = repo_meta.index_name
-        elif group_config.repo_title_mode == RepoGroupTitleMode.DATETIME_AND_NAME:
-            title = f"{repo_meta.creation_timestamp_utc}__{repo_meta.name}"
-        elif group_config.repo_title_mode == RepoGroupTitleMode.NAME:
-            title = repo_meta.name
+    def _get_symlink_title(box_meta: BoxMeta, group_config: BoxGroupConfig) -> str:
+        if group_config.box_title_mode == BoxGroupTitleMode.INDEX_NAME:
+            title = box_meta.index_name
+        elif group_config.box_title_mode == BoxGroupTitleMode.DATETIME_AND_NAME:
+            title = f"{box_meta.creation_timestamp_utc}__{box_meta.name}"
+        elif group_config.box_title_mode == BoxGroupTitleMode.NAME:
+            title = box_meta.name
         else:
-            raise Exception(f"Invalid repo title mode: {group_config.repo_title_mode}")
+            raise Exception(f"Invalid box title mode: {group_config.box_title_mode}")
         return title
 
     # Generate all symlink paths to create
@@ -471,26 +471,26 @@ def create_user_repo_group_symlinks(
     for group_name, group_config in groups.items():
         title_counter = defaultdict(int)
         group_symlink_name = group_config.symlink_name or group_name
-        for repo_meta in repo_metas:
-            if not repo_meta.check_included(config):
+        for box_meta in box_metas:
+            if not box_meta.check_included(config):
                 continue
-            if isinstance(group_config, VirtualRepoGroupConfig):
-                if not group_config.is_in_group(repo_meta.groups):
+            if isinstance(group_config, VirtualBoxGroupConfig):
+                if not group_config.is_in_group(box_meta.groups):
                     continue
             else:
-                if group_name not in repo_meta.groups:
+                if group_name not in box_meta.groups:
                     continue
-            dest_path = repo_meta.get_local_part_path(config, RepoPart.DATA)
-            title = _get_symlink_title(repo_meta, group_config)
+            dest_path = box_meta.get_local_part_path(config, BoxPart.DATA)
+            title = _get_symlink_title(box_meta, group_config)
             if title_counter[title] > 1:
                 title = f"{title} (CONFLICT {title_counter[title]})"  # TODO this will break if the title contains a `(CONFLICT ...`
             title_counter[title] += 1
-            symlink_path = config.user_repo_groups_path / group_symlink_name / title
+            symlink_path = config.user_box_groups_path / group_symlink_name / title
             _symlinks.append((dest_path, symlink_path))
 
     # Remove all existing symlinks that are not in the _symlinks list
     _symlink_paths = [symlink_path for _, symlink_path in _symlinks]
-    for path in config.user_repo_groups_path.glob("**/*"):
+    for path in config.user_box_groups_path.glob("**/*"):
         if path in _symlink_paths:
             continue
         if path.is_symlink():
@@ -506,15 +506,15 @@ def create_user_repo_group_symlinks(
             else:
                 if p not in _symlink_paths:
                     raise Exception(
-                        f"File '{p}' is in the user repo group path '{config.user_repo_groups_path}'."
+                        f"File '{p}' is in the user box group path '{config.user_box_groups_path}'."
                     )
 
-    for path in config.user_repo_groups_path.glob("*"):
+    for path in config.user_box_groups_path.glob("*"):
         if path.is_dir():
             _inspect_folder(path)
         else:
             raise Exception(
-                f"'{path}' is in the user repo group path '{config.user_repo_groups_path}' but is not a directory!"
+                f"'{path}' is in the user box group path '{config.user_box_groups_path}' but is not a directory!"
             )
 
     # Create the symlinks
@@ -530,7 +530,7 @@ def create_user_repo_group_symlinks(
                     continue  # The symlink already points to the correct destination so leave it as it is
             else:
                 raise Exception(
-                    f"'{symlink_path}' is in the user repo group path '{config.user_repo_groups_path}' but is not a symlink!"
+                    f"'{symlink_path}' is in the user box group path '{config.user_box_groups_path}' but is not a symlink!"
                 )
         symlink_path.symlink_to(dest_path, target_is_directory=True)
 
@@ -542,12 +542,12 @@ def create_user_repo_group_symlinks(
             if p.is_dir():
                 _remove_empty_non_group_folders(p)
         is_group_folder = (
-            path.relative_to(config.user_repo_groups_path).as_posix() in groups
+            path.relative_to(config.user_box_groups_path).as_posix() in groups
         )
         if not is_group_folder and len(list(path.iterdir())) == 0:
             path.rmdir()
 
-    for path in config.user_repo_groups_path.glob("*"):
+    for path in config.user_box_groups_path.glob("*"):
         _remove_empty_non_group_folders(path)
 
 # %% [markdown]
@@ -565,7 +565,7 @@ class SyncRecord(const.StrictModel):
 
     @classmethod
     def create(cls, sync_complete: bool, syncer_hostname: str | None = None) -> None:
-        from repoyard._utils import get_hostname
+        from boxyard._utils import get_hostname
 
         return SyncRecord(
             sync_complete=sync_complete,
@@ -575,7 +575,7 @@ class SyncRecord(const.StrictModel):
     async def rclone_save(
         self, rclone_config_path: str, dest: str, dest_path: str
     ) -> None:
-        from repoyard._utils import rclone_copyto
+        from boxyard._utils import rclone_copyto
         import tempfile
 
         temp_path = Path(tempfile.mkstemp(suffix=".json")[1])
@@ -593,7 +593,7 @@ class SyncRecord(const.StrictModel):
     async def rclone_read(
         cls, rclone_config_path: str, source: str, sync_record_path: str
     ) -> str:
-        from repoyard._utils import rclone_cat
+        from boxyard._utils import rclone_cat
 
         sync_record_exists, sync_record = await rclone_cat(
             rclone_config_path=rclone_config_path,
@@ -628,7 +628,7 @@ class SyncCondition(Enum):
     NEEDS_PULL = "needs_pull"
     EXCLUDED = "excluded"
     ERROR = "error"
-    TOMBSTONED = "tombstoned"  # Repo was deleted on remote
+    TOMBSTONED = "tombstoned"  # Box was deleted on remote
 
 
 class SyncStatus(NamedTuple):
@@ -650,8 +650,8 @@ async def get_sync_status(
     remote_path: str,
     remote_sync_record_path: str,
 ) -> SyncStatus:
-    from repoyard._utils import check_last_time_modified
-    from repoyard._utils import rclone_path_exists
+    from boxyard._utils import check_last_time_modified
+    from boxyard._utils import rclone_path_exists
 
     local_path_exists, local_path_is_dir = await rclone_path_exists(
         rclone_config_path=rclone_config_path,

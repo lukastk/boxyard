@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from datetime import datetime, timezone, timedelta
 from ulid import ULID
 
-from repoyard._models import get_sync_status, SyncCondition, SyncStatus, SyncRecord
+from boxyard._models import get_sync_status, SyncCondition, SyncStatus, SyncRecord
 
 
 # ============================================================================
@@ -40,7 +40,7 @@ class TestGetSyncStatusBasicScenarios:
         async def _test():
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(return_value=(False, False)),
                 ),
                 patch.object(
@@ -68,19 +68,19 @@ class TestGetSyncStatusBasicScenarios:
         """Returns NEEDS_PUSH when local exists but remote does not."""
         async def _test():
             # Create actual local directory (empty)
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists, is dir
                         (False, False),  # remote doesn't exist
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=datetime.now(timezone.utc),
                 ),
                 patch.object(
@@ -112,14 +112,14 @@ class TestGetSyncStatusBasicScenarios:
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (False, False),  # local doesn't exist
                         (True, True),  # remote exists, is dir
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=None,
                 ),
                 patch.object(
@@ -159,7 +159,7 @@ class TestGetSyncStatusSynced:
         """Returns SYNCED when records match and no local changes."""
         async def _test():
             # Create actual local directory
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             shared_ulid = ULID()
@@ -170,14 +170,14 @@ class TestGetSyncStatusSynced:
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists, is dir
                         (True, True),  # remote exists, is dir
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=mock_record.timestamp - timedelta(hours=1),  # Modified before sync
                 ),
                 patch.object(
@@ -214,7 +214,7 @@ class TestGetSyncStatusNeedsPush:
         """Returns NEEDS_PUSH when local was modified after last sync."""
         async def _test():
             # Create actual local directory
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             shared_ulid = ULID()
@@ -225,14 +225,14 @@ class TestGetSyncStatusNeedsPush:
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists, is dir
                         (True, True),  # remote exists, is dir
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=datetime.now(timezone.utc),  # Modified after sync
                 ),
                 patch.object(
@@ -262,7 +262,7 @@ class TestGetSyncStatusNeedsPull:
         """Returns NEEDS_PULL when remote sync record is more recent."""
         async def _test():
             # Create actual local directory
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             local_record = MagicMock(spec=SyncRecord)
@@ -280,14 +280,14 @@ class TestGetSyncStatusNeedsPull:
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists, is dir
                         (True, True),  # remote exists, is dir
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=local_record.timestamp - timedelta(hours=1),  # No local changes
                 ),
                 patch.object(
@@ -322,7 +322,7 @@ class TestGetSyncStatusConflict:
         """Returns CONFLICT when both local and remote have changes."""
         async def _test():
             # Create actual local directory
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             local_record = MagicMock(spec=SyncRecord)
@@ -340,14 +340,14 @@ class TestGetSyncStatusConflict:
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists, is dir
                         (True, True),  # remote exists, is dir
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=datetime.now(timezone.utc),  # Local also modified
                 ),
                 patch.object(
@@ -373,7 +373,7 @@ class TestGetSyncStatusConflict:
         """Returns CONFLICT when local sync record is more recent than remote."""
         async def _test():
             # Create actual local directory
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             # Remote record is older
@@ -392,14 +392,14 @@ class TestGetSyncStatusConflict:
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists, is dir
                         (True, True),  # remote exists, is dir
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=local_record.timestamp - timedelta(hours=1),
                 ),
                 patch.object(
@@ -433,7 +433,7 @@ class TestGetSyncStatusIncomplete:
     def test_sync_from_remote_incomplete_when_local_sync_incomplete(self, tmp_path):
         """Returns SYNC_FROM_REMOTE_INCOMPLETE when local sync record is incomplete (pull interrupted)."""
         async def _test():
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             local_record = MagicMock(spec=SyncRecord)
@@ -448,14 +448,14 @@ class TestGetSyncStatusIncomplete:
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists, is dir
                         (True, True),  # remote exists, is dir
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=datetime.now(timezone.utc),
                 ),
                 patch.object(
@@ -480,7 +480,7 @@ class TestGetSyncStatusIncomplete:
     def test_sync_to_remote_incomplete_when_remote_sync_incomplete(self, tmp_path):
         """Returns SYNC_TO_REMOTE_INCOMPLETE when remote sync record is incomplete (push interrupted)."""
         async def _test():
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             local_record = MagicMock(spec=SyncRecord)
@@ -495,14 +495,14 @@ class TestGetSyncStatusIncomplete:
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists, is dir
                         (True, True),  # remote exists, is dir
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=datetime.now(timezone.utc),
                 ),
                 patch.object(
@@ -527,7 +527,7 @@ class TestGetSyncStatusIncomplete:
     def test_sync_to_remote_incomplete_when_both_incomplete_matching_ulids(self, tmp_path):
         """Returns SYNC_TO_REMOTE_INCOMPLETE when both are incomplete with matching ULIDs (push interrupted from this machine)."""
         async def _test():
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             shared_ulid = ULID()
@@ -544,14 +544,14 @@ class TestGetSyncStatusIncomplete:
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists, is dir
                         (True, True),  # remote exists, is dir
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=datetime.now(timezone.utc),
                 ),
                 patch.object(
@@ -576,7 +576,7 @@ class TestGetSyncStatusIncomplete:
     def test_error_when_both_incomplete_different_ulids(self, tmp_path):
         """Returns ERROR when both are incomplete with different ULIDs (inconsistent state)."""
         async def _test():
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             local_record = MagicMock(spec=SyncRecord)
@@ -593,14 +593,14 @@ class TestGetSyncStatusIncomplete:
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists, is dir
                         (True, True),  # remote exists, is dir
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=datetime.now(timezone.utc),
                 ),
                 patch.object(
@@ -637,14 +637,14 @@ class TestGetSyncStatusErrors:
         async def _test():
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (False, False),  # local doesn't exist
                         (True, True),  # remote exists
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=None,
                 ),
                 patch.object(
@@ -670,7 +670,7 @@ class TestGetSyncStatusErrors:
     def test_error_when_local_has_record_but_remote_missing(self, tmp_path):
         """Returns ERROR when local has sync record but remote path is missing."""
         async def _test():
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             local_record = MagicMock(spec=SyncRecord)
@@ -680,14 +680,14 @@ class TestGetSyncStatusErrors:
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists
                         (False, False),  # remote doesn't exist
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=datetime.now(timezone.utc),
                 ),
                 patch.object(
@@ -713,7 +713,7 @@ class TestGetSyncStatusErrors:
     def test_error_when_both_exist_but_local_record_missing(self, tmp_path):
         """Returns ERROR when both paths exist but local sync record is missing."""
         async def _test():
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             remote_record = MagicMock(spec=SyncRecord)
@@ -723,14 +723,14 @@ class TestGetSyncStatusErrors:
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists
                         (True, True),  # remote exists
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=datetime.now(timezone.utc),
                 ),
                 patch.object(
@@ -767,7 +767,7 @@ class TestGetSyncStatusTypeMismatch:
         async def _test():
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, False),  # local exists, is file
                         (True, True),  # remote exists, is dir
@@ -789,12 +789,12 @@ class TestGetSyncStatusTypeMismatch:
     def test_raises_when_local_is_dir_remote_is_file(self, tmp_path):
         """Raises exception when local is directory but remote is file."""
         async def _test():
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists, is dir
                         (True, False),  # remote exists, is file
@@ -827,7 +827,7 @@ class TestGetSyncStatusReturnValue:
         async def _test():
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(return_value=(False, False)),
                 ),
                 patch.object(
@@ -858,19 +858,19 @@ class TestGetSyncStatusReturnValue:
     def test_is_dir_reflects_path_type(self, tmp_path):
         """is_dir field correctly reflects whether paths are directories."""
         async def _test():
-            local_dir = tmp_path / "local_repo"
+            local_dir = tmp_path / "local_box"
             local_dir.mkdir()
 
             with (
                 patch(
-                    "repoyard._utils.rclone_path_exists",
+                    "boxyard._utils.rclone_path_exists",
                     new=AsyncMock(side_effect=[
                         (True, True),  # local exists, is dir
                         (False, False),  # remote doesn't exist
                     ]),
                 ),
                 patch(
-                    "repoyard._utils.check_last_time_modified",
+                    "boxyard._utils.check_last_time_modified",
                     return_value=datetime.now(timezone.utc),
                 ),
                 patch.object(

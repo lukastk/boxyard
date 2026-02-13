@@ -10,7 +10,7 @@
 # # Unit Tests for CLI Helper Functions
 #
 # Tests for CLI utility functions like subsequence matching, name matching modes,
-# and repo filtering.
+# and box filtering.
 
 # %%
 #|default_exp unit._cli.test_cli_helpers
@@ -19,7 +19,7 @@
 #|export
 import pytest
 from unittest.mock import MagicMock
-from repoyard._cli.main import _is_subsequence_match, NameMatchMode, _get_filtered_repo_metas
+from boxyard._cli.main import _is_subsequence_match, NameMatchMode, _get_filtered_box_metas
 
 
 # ============================================================================
@@ -152,13 +152,13 @@ class TestNameMatchMode:
 
 
 # ============================================================================
-# Tests for _get_filtered_repo_metas
+# Tests for _get_filtered_box_metas
 # ============================================================================
 
 # %%
 #|export
-def _create_mock_repo_meta(name: str, groups: list[str]) -> MagicMock:
-    """Create a mock RepoMeta with name and groups."""
+def _create_mock_box_meta(name: str, groups: list[str]) -> MagicMock:
+    """Create a mock BoxMeta with name and groups."""
     mock = MagicMock()
     mock.name = name
     mock.groups = groups
@@ -166,199 +166,199 @@ def _create_mock_repo_meta(name: str, groups: list[str]) -> MagicMock:
 
 # %%
 #|export
-class TestGetFilteredRepoMetas:
-    """Tests for the _get_filtered_repo_metas function."""
+class TestGetFilteredBoxMetas:
+    """Tests for the _get_filtered_box_metas function."""
 
     def test_no_filters_returns_all(self):
-        """With no filters, all repos are returned."""
-        repos = [
-            _create_mock_repo_meta("repo1", ["backend"]),
-            _create_mock_repo_meta("repo2", ["frontend"]),
-            _create_mock_repo_meta("repo3", ["backend", "api"]),
+        """With no filters, all boxes are returned."""
+        boxes = [
+            _create_mock_box_meta("box1", ["backend"]),
+            _create_mock_box_meta("box2", ["frontend"]),
+            _create_mock_box_meta("box3", ["backend", "api"]),
         ]
 
-        result = _get_filtered_repo_metas(repos, None, None, None)
+        result = _get_filtered_box_metas(boxes, None, None, None)
         assert len(result) == 3
 
     def test_include_single_group(self):
         """Include filter with single group."""
-        repos = [
-            _create_mock_repo_meta("repo1", ["backend"]),
-            _create_mock_repo_meta("repo2", ["frontend"]),
-            _create_mock_repo_meta("repo3", ["backend", "api"]),
+        boxes = [
+            _create_mock_box_meta("box1", ["backend"]),
+            _create_mock_box_meta("box2", ["frontend"]),
+            _create_mock_box_meta("box3", ["backend", "api"]),
         ]
 
-        result = _get_filtered_repo_metas(repos, ["backend"], None, None)
+        result = _get_filtered_box_metas(boxes, ["backend"], None, None)
         assert len(result) == 2
         assert all("backend" in r.groups for r in result)
 
     def test_include_multiple_groups(self):
         """Include filter with multiple groups (OR logic)."""
-        repos = [
-            _create_mock_repo_meta("repo1", ["backend"]),
-            _create_mock_repo_meta("repo2", ["frontend"]),
-            _create_mock_repo_meta("repo3", ["api"]),
-            _create_mock_repo_meta("repo4", ["other"]),
+        boxes = [
+            _create_mock_box_meta("box1", ["backend"]),
+            _create_mock_box_meta("box2", ["frontend"]),
+            _create_mock_box_meta("box3", ["api"]),
+            _create_mock_box_meta("box4", ["other"]),
         ]
 
-        result = _get_filtered_repo_metas(repos, ["backend", "frontend"], None, None)
+        result = _get_filtered_box_metas(boxes, ["backend", "frontend"], None, None)
         assert len(result) == 2
 
     def test_exclude_single_group(self):
         """Exclude filter with single group."""
-        repos = [
-            _create_mock_repo_meta("repo1", ["backend"]),
-            _create_mock_repo_meta("repo2", ["frontend"]),
-            _create_mock_repo_meta("repo3", ["backend", "deprecated"]),
+        boxes = [
+            _create_mock_box_meta("box1", ["backend"]),
+            _create_mock_box_meta("box2", ["frontend"]),
+            _create_mock_box_meta("box3", ["backend", "deprecated"]),
         ]
 
-        result = _get_filtered_repo_metas(repos, None, ["deprecated"], None)
+        result = _get_filtered_box_metas(boxes, None, ["deprecated"], None)
         assert len(result) == 2
         assert all("deprecated" not in r.groups for r in result)
 
     def test_exclude_multiple_groups(self):
         """Exclude filter with multiple groups."""
-        repos = [
-            _create_mock_repo_meta("repo1", ["backend"]),
-            _create_mock_repo_meta("repo2", ["frontend", "deprecated"]),
-            _create_mock_repo_meta("repo3", ["api", "legacy"]),
-            _create_mock_repo_meta("repo4", ["other"]),
+        boxes = [
+            _create_mock_box_meta("box1", ["backend"]),
+            _create_mock_box_meta("box2", ["frontend", "deprecated"]),
+            _create_mock_box_meta("box3", ["api", "legacy"]),
+            _create_mock_box_meta("box4", ["other"]),
         ]
 
-        result = _get_filtered_repo_metas(repos, None, ["deprecated", "legacy"], None)
+        result = _get_filtered_box_metas(boxes, None, ["deprecated", "legacy"], None)
         assert len(result) == 2
 
     def test_include_and_exclude_combined(self):
         """Include and exclude filters work together."""
-        repos = [
-            _create_mock_repo_meta("repo1", ["backend"]),
-            _create_mock_repo_meta("repo2", ["backend", "deprecated"]),
-            _create_mock_repo_meta("repo3", ["frontend"]),
+        boxes = [
+            _create_mock_box_meta("box1", ["backend"]),
+            _create_mock_box_meta("box2", ["backend", "deprecated"]),
+            _create_mock_box_meta("box3", ["frontend"]),
         ]
 
-        result = _get_filtered_repo_metas(repos, ["backend"], ["deprecated"], None)
+        result = _get_filtered_box_metas(boxes, ["backend"], ["deprecated"], None)
         assert len(result) == 1
-        assert result[0].name == "repo1"
+        assert result[0].name == "box1"
 
     def test_group_filter_simple(self):
         """Group filter with simple expression."""
-        repos = [
-            _create_mock_repo_meta("repo1", ["backend"]),
-            _create_mock_repo_meta("repo2", ["frontend"]),
-            _create_mock_repo_meta("repo3", ["backend", "api"]),
+        boxes = [
+            _create_mock_box_meta("box1", ["backend"]),
+            _create_mock_box_meta("box2", ["frontend"]),
+            _create_mock_box_meta("box3", ["backend", "api"]),
         ]
 
-        result = _get_filtered_repo_metas(repos, None, None, "backend")
+        result = _get_filtered_box_metas(boxes, None, None, "backend")
         assert len(result) == 2
         assert all("backend" in r.groups for r in result)
 
     def test_group_filter_and_expression(self):
         """Group filter with AND expression."""
-        repos = [
-            _create_mock_repo_meta("repo1", ["backend"]),
-            _create_mock_repo_meta("repo2", ["backend", "api"]),
-            _create_mock_repo_meta("repo3", ["frontend", "api"]),
+        boxes = [
+            _create_mock_box_meta("box1", ["backend"]),
+            _create_mock_box_meta("box2", ["backend", "api"]),
+            _create_mock_box_meta("box3", ["frontend", "api"]),
         ]
 
-        result = _get_filtered_repo_metas(repos, None, None, "backend AND api")
+        result = _get_filtered_box_metas(boxes, None, None, "backend AND api")
         assert len(result) == 1
-        assert result[0].name == "repo2"
+        assert result[0].name == "box2"
 
     def test_group_filter_or_expression(self):
         """Group filter with OR expression."""
-        repos = [
-            _create_mock_repo_meta("repo1", ["backend"]),
-            _create_mock_repo_meta("repo2", ["frontend"]),
-            _create_mock_repo_meta("repo3", ["other"]),
+        boxes = [
+            _create_mock_box_meta("box1", ["backend"]),
+            _create_mock_box_meta("box2", ["frontend"]),
+            _create_mock_box_meta("box3", ["other"]),
         ]
 
-        result = _get_filtered_repo_metas(repos, None, None, "backend OR frontend")
+        result = _get_filtered_box_metas(boxes, None, None, "backend OR frontend")
         assert len(result) == 2
 
     def test_group_filter_not_expression(self):
         """Group filter with NOT expression."""
-        repos = [
-            _create_mock_repo_meta("repo1", ["backend"]),
-            _create_mock_repo_meta("repo2", ["backend", "deprecated"]),
-            _create_mock_repo_meta("repo3", ["frontend"]),
+        boxes = [
+            _create_mock_box_meta("box1", ["backend"]),
+            _create_mock_box_meta("box2", ["backend", "deprecated"]),
+            _create_mock_box_meta("box3", ["frontend"]),
         ]
 
-        result = _get_filtered_repo_metas(repos, None, None, "backend AND NOT deprecated")
+        result = _get_filtered_box_metas(boxes, None, None, "backend AND NOT deprecated")
         assert len(result) == 1
-        assert result[0].name == "repo1"
+        assert result[0].name == "box1"
 
     def test_group_filter_complex_expression(self):
         """Group filter with complex expression."""
-        repos = [
-            _create_mock_repo_meta("repo1", ["backend", "prod"]),
-            _create_mock_repo_meta("repo2", ["backend", "staging"]),
-            _create_mock_repo_meta("repo3", ["frontend", "prod"]),
-            _create_mock_repo_meta("repo4", ["backend", "prod", "deprecated"]),
+        boxes = [
+            _create_mock_box_meta("box1", ["backend", "prod"]),
+            _create_mock_box_meta("box2", ["backend", "staging"]),
+            _create_mock_box_meta("box3", ["frontend", "prod"]),
+            _create_mock_box_meta("box4", ["backend", "prod", "deprecated"]),
         ]
 
-        result = _get_filtered_repo_metas(
-            repos, None, None, "(backend OR frontend) AND prod AND NOT deprecated"
+        result = _get_filtered_box_metas(
+            boxes, None, None, "(backend OR frontend) AND prod AND NOT deprecated"
         )
         assert len(result) == 2
         names = [r.name for r in result]
-        assert "repo1" in names
-        assert "repo3" in names
+        assert "box1" in names
+        assert "box3" in names
 
     def test_all_filters_combined(self):
         """Include, exclude, and group filter all together."""
-        repos = [
-            _create_mock_repo_meta("repo1", ["backend", "api"]),
-            _create_mock_repo_meta("repo2", ["backend", "api", "deprecated"]),
-            _create_mock_repo_meta("repo3", ["frontend", "api"]),
-            _create_mock_repo_meta("repo4", ["other"]),
+        boxes = [
+            _create_mock_box_meta("box1", ["backend", "api"]),
+            _create_mock_box_meta("box2", ["backend", "api", "deprecated"]),
+            _create_mock_box_meta("box3", ["frontend", "api"]),
+            _create_mock_box_meta("box4", ["other"]),
         ]
 
         # Include api, exclude deprecated, then filter for backend
-        result = _get_filtered_repo_metas(repos, ["api"], ["deprecated"], "backend")
+        result = _get_filtered_box_metas(boxes, ["api"], ["deprecated"], "backend")
         assert len(result) == 1
-        assert result[0].name == "repo1"
+        assert result[0].name == "box1"
 
-    def test_empty_repo_list(self):
-        """Empty repo list returns empty result."""
-        result = _get_filtered_repo_metas([], ["backend"], None, None)
+    def test_empty_box_list(self):
+        """Empty box list returns empty result."""
+        result = _get_filtered_box_metas([], ["backend"], None, None)
         assert len(result) == 0
 
     def test_no_matches_returns_empty(self):
-        """No matching repos returns empty list."""
-        repos = [
-            _create_mock_repo_meta("repo1", ["frontend"]),
-            _create_mock_repo_meta("repo2", ["other"]),
+        """No matching boxes returns empty list."""
+        boxes = [
+            _create_mock_box_meta("box1", ["frontend"]),
+            _create_mock_box_meta("box2", ["other"]),
         ]
 
-        result = _get_filtered_repo_metas(repos, ["backend"], None, None)
+        result = _get_filtered_box_metas(boxes, ["backend"], None, None)
         assert len(result) == 0
 
-    def test_repo_with_no_groups(self):
-        """Repo with no groups is handled correctly."""
-        repos = [
-            _create_mock_repo_meta("repo1", []),
-            _create_mock_repo_meta("repo2", ["backend"]),
+    def test_box_with_no_groups(self):
+        """Box with no groups is handled correctly."""
+        boxes = [
+            _create_mock_box_meta("box1", []),
+            _create_mock_box_meta("box2", ["backend"]),
         ]
 
-        # Include filter excludes repo with no groups
-        result = _get_filtered_repo_metas(repos, ["backend"], None, None)
+        # Include filter excludes box with no groups
+        result = _get_filtered_box_metas(boxes, ["backend"], None, None)
         assert len(result) == 1
 
-        # Exclude filter keeps repo with no groups
-        result = _get_filtered_repo_metas(repos, None, ["backend"], None)
+        # Exclude filter keeps box with no groups
+        result = _get_filtered_box_metas(boxes, None, ["backend"], None)
         assert len(result) == 1
-        assert result[0].name == "repo1"
+        assert result[0].name == "box1"
 
     def test_group_filter_with_empty_groups(self):
-        """Group filter handles repos with empty groups."""
-        repos = [
-            _create_mock_repo_meta("repo1", []),
-            _create_mock_repo_meta("repo2", ["backend"]),
+        """Group filter handles boxes with empty groups."""
+        boxes = [
+            _create_mock_box_meta("box1", []),
+            _create_mock_box_meta("box2", ["backend"]),
         ]
 
-        result = _get_filtered_repo_metas(repos, None, None, "NOT backend")
+        result = _get_filtered_box_metas(boxes, None, None, "NOT backend")
         assert len(result) == 1
-        assert result[0].name == "repo1"
+        assert result[0].name == "box1"
 
 
 # ============================================================================
@@ -368,7 +368,7 @@ class TestGetFilteredRepoMetas:
 # %%
 #|export
 from datetime import datetime
-from repoyard import const
+from boxyard import const
 
 
 class TestTimestampParsing:
@@ -377,7 +377,7 @@ class TestTimestampParsing:
     def test_full_timestamp_format(self):
         """Full timestamp format YYYYMMDD_HHMMSS is parsed correctly."""
         timestamp_str = "20251116_105532"
-        result = datetime.strptime(timestamp_str, const.REPO_TIMESTAMP_FORMAT)
+        result = datetime.strptime(timestamp_str, const.BOX_TIMESTAMP_FORMAT)
         assert result.year == 2025
         assert result.month == 11
         assert result.day == 16
@@ -388,7 +388,7 @@ class TestTimestampParsing:
     def test_date_only_format(self):
         """Date-only format YYYYMMDD is parsed correctly."""
         timestamp_str = "20251116"
-        result = datetime.strptime(timestamp_str, const.REPO_TIMESTAMP_FORMAT_DATE_ONLY)
+        result = datetime.strptime(timestamp_str, const.BOX_TIMESTAMP_FORMAT_DATE_ONLY)
         assert result.year == 2025
         assert result.month == 11
         assert result.day == 16
@@ -399,21 +399,21 @@ class TestTimestampParsing:
     def test_invalid_timestamp_raises(self):
         """Invalid timestamp format raises ValueError."""
         with pytest.raises(ValueError):
-            datetime.strptime("2025-11-16", const.REPO_TIMESTAMP_FORMAT)
+            datetime.strptime("2025-11-16", const.BOX_TIMESTAMP_FORMAT)
 
     def test_invalid_date_only_raises(self):
         """Invalid date-only format raises ValueError."""
         with pytest.raises(ValueError):
-            datetime.strptime("2025-11-16", const.REPO_TIMESTAMP_FORMAT_DATE_ONLY)
+            datetime.strptime("2025-11-16", const.BOX_TIMESTAMP_FORMAT_DATE_ONLY)
 
     def test_partial_timestamp_raises(self):
         """Partial timestamp raises ValueError."""
         with pytest.raises(ValueError):
-            datetime.strptime("20251116_10", const.REPO_TIMESTAMP_FORMAT)
+            datetime.strptime("20251116_10", const.BOX_TIMESTAMP_FORMAT)
 
 
 # ============================================================================
-# Tests for repo path inference helper
+# Tests for box path inference helper
 # ============================================================================
 
 # %%
@@ -421,79 +421,79 @@ class TestTimestampParsing:
 from unittest.mock import patch
 
 
-class TestRepoPathInference:
-    """Tests for get_repo_index_name_from_sub_path function.
+class TestBoxPathInference:
+    """Tests for get_box_index_name_from_sub_path function.
 
     Uses real temp directories since the function calls Path.resolve().
     """
 
-    def test_path_within_repo_data(self, tmp_path):
-        """Path within repo data directory returns index name."""
-        from repoyard._utils import get_repo_index_name_from_sub_path
+    def test_path_within_box_data(self, tmp_path):
+        """Path within box data directory returns index name."""
+        from boxyard._utils import get_box_index_name_from_sub_path
 
         # Create real directory structure
-        repos_path = tmp_path / "repos"
-        repo_dir = repos_path / "20251116_123456_abc12__myrepo" / "subdir"
-        repo_dir.mkdir(parents=True)
+        boxes_path = tmp_path / "boxes"
+        box_dir = boxes_path / "20251116_123456_abc12__mybox" / "subdir"
+        box_dir.mkdir(parents=True)
 
         mock_config = MagicMock()
-        mock_config.user_repos_path = repos_path
+        mock_config.user_boxes_path = boxes_path
 
-        result = get_repo_index_name_from_sub_path(mock_config, repo_dir)
-        assert result == "20251116_123456_abc12__myrepo"
+        result = get_box_index_name_from_sub_path(mock_config, box_dir)
+        assert result == "20251116_123456_abc12__mybox"
 
-    def test_path_at_repo_root(self, tmp_path):
-        """Path at repo root returns index name."""
-        from repoyard._utils import get_repo_index_name_from_sub_path
+    def test_path_at_box_root(self, tmp_path):
+        """Path at box root returns index name."""
+        from boxyard._utils import get_box_index_name_from_sub_path
 
-        repos_path = tmp_path / "repos"
-        repo_dir = repos_path / "20251116_123456_abc12__myrepo"
-        repo_dir.mkdir(parents=True)
+        boxes_path = tmp_path / "boxes"
+        box_dir = boxes_path / "20251116_123456_abc12__mybox"
+        box_dir.mkdir(parents=True)
 
         mock_config = MagicMock()
-        mock_config.user_repos_path = repos_path
+        mock_config.user_boxes_path = boxes_path
 
-        result = get_repo_index_name_from_sub_path(mock_config, repo_dir)
-        assert result == "20251116_123456_abc12__myrepo"
+        result = get_box_index_name_from_sub_path(mock_config, box_dir)
+        assert result == "20251116_123456_abc12__mybox"
 
-    def test_path_outside_repos(self, tmp_path):
-        """Path outside repos directory returns None."""
-        from repoyard._utils import get_repo_index_name_from_sub_path
+    def test_path_outside_boxes(self, tmp_path):
+        """Path outside boxes directory returns None."""
+        from boxyard._utils import get_box_index_name_from_sub_path
 
-        repos_path = tmp_path / "repos"
-        repos_path.mkdir(parents=True)
+        boxes_path = tmp_path / "boxes"
+        boxes_path.mkdir(parents=True)
         other_dir = tmp_path / "other" / "directory"
         other_dir.mkdir(parents=True)
 
         mock_config = MagicMock()
-        mock_config.user_repos_path = repos_path
+        mock_config.user_boxes_path = boxes_path
 
-        result = get_repo_index_name_from_sub_path(mock_config, other_dir)
+        result = get_box_index_name_from_sub_path(mock_config, other_dir)
         assert result is None
 
-    def test_path_at_repos_root(self, tmp_path):
-        """Path at repos root (not inside a repo) returns None."""
-        from repoyard._utils import get_repo_index_name_from_sub_path
+    def test_path_at_boxes_root(self, tmp_path):
+        """Path at boxes root (not inside a box) returns None."""
+        from boxyard._utils import get_box_index_name_from_sub_path
 
-        repos_path = tmp_path / "repos"
-        repos_path.mkdir(parents=True)
+        boxes_path = tmp_path / "boxes"
+        boxes_path.mkdir(parents=True)
 
         mock_config = MagicMock()
-        mock_config.user_repos_path = repos_path
+        mock_config.user_boxes_path = boxes_path
 
-        result = get_repo_index_name_from_sub_path(mock_config, repos_path)
+        result = get_box_index_name_from_sub_path(mock_config, boxes_path)
         assert result is None
 
     def test_deeply_nested_path(self, tmp_path):
         """Deeply nested path still returns correct index name."""
-        from repoyard._utils import get_repo_index_name_from_sub_path
+        from boxyard._utils import get_box_index_name_from_sub_path
 
-        repos_path = tmp_path / "repos"
-        deep_dir = repos_path / "20251116_123456_abc12__myrepo" / "a" / "b" / "c" / "d" / "e"
+        boxes_path = tmp_path / "boxes"
+        deep_dir = boxes_path / "20251116_123456_abc12__mybox" / "a" / "b" / "c" / "d" / "e"
         deep_dir.mkdir(parents=True)
 
         mock_config = MagicMock()
-        mock_config.user_repos_path = repos_path
+        mock_config.user_boxes_path = boxes_path
 
-        result = get_repo_index_name_from_sub_path(mock_config, deep_dir)
-        assert result == "20251116_123456_abc12__myrepo"
+        result = get_box_index_name_from_sub_path(mock_config, deep_dir)
+        assert result == "20251116_123456_abc12__mybox"

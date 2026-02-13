@@ -24,72 +24,72 @@ import time
 
 
 # ============================================================================
-# Tests for get_repo_index_name_from_sub_path
+# Tests for get_box_index_name_from_sub_path
 # ============================================================================
 
 # %%
 #|export
-from repoyard._utils import get_repo_index_name_from_sub_path
+from boxyard._utils import get_box_index_name_from_sub_path
 
 
-class TestGetRepoIndexNameFromSubPath:
-    """Tests for get_repo_index_name_from_sub_path function."""
+class TestGetBoxIndexNameFromSubPath:
+    """Tests for get_box_index_name_from_sub_path function."""
 
     @pytest.fixture
     def mock_config(self, tmp_path):
-        """Create a mock config with user_repos_path."""
+        """Create a mock config with user_boxes_path."""
         config = MagicMock()
-        config.user_repos_path = tmp_path / "repos"
-        config.user_repos_path.mkdir(parents=True, exist_ok=True)
+        config.user_boxes_path = tmp_path / "boxes"
+        config.user_boxes_path.mkdir(parents=True, exist_ok=True)
         return config
 
-    def test_path_inside_repo(self, mock_config):
-        """Returns index_name for path inside a repo."""
-        # Create repo directory structure
-        repo_path = mock_config.user_repos_path / "20240101_120000_abcde__myrepo"
-        repo_path.mkdir(parents=True, exist_ok=True)
-        sub_path = repo_path / "src" / "main.py"
+    def test_path_inside_box(self, mock_config):
+        """Returns index_name for path inside a box."""
+        # Create box directory structure
+        box_path = mock_config.user_boxes_path / "20240101_120000_abcde__mybox"
+        box_path.mkdir(parents=True, exist_ok=True)
+        sub_path = box_path / "src" / "main.py"
         sub_path.parent.mkdir(parents=True, exist_ok=True)
         sub_path.touch()
 
-        result = get_repo_index_name_from_sub_path(mock_config, str(sub_path))
+        result = get_box_index_name_from_sub_path(mock_config, str(sub_path))
 
-        assert result == "20240101_120000_abcde__myrepo"
+        assert result == "20240101_120000_abcde__mybox"
 
-    def test_path_at_repo_root(self, mock_config):
-        """Returns index_name for path at repo root."""
-        repo_path = mock_config.user_repos_path / "20240101_120000_abcde__myrepo"
-        repo_path.mkdir(parents=True, exist_ok=True)
+    def test_path_at_box_root(self, mock_config):
+        """Returns index_name for path at box root."""
+        box_path = mock_config.user_boxes_path / "20240101_120000_abcde__mybox"
+        box_path.mkdir(parents=True, exist_ok=True)
 
-        result = get_repo_index_name_from_sub_path(mock_config, str(repo_path))
+        result = get_box_index_name_from_sub_path(mock_config, str(box_path))
 
-        assert result == "20240101_120000_abcde__myrepo"
+        assert result == "20240101_120000_abcde__mybox"
 
-    def test_path_outside_repos(self, mock_config, tmp_path):
-        """Returns None for path outside user_repos_path."""
+    def test_path_outside_boxes(self, mock_config, tmp_path):
+        """Returns None for path outside user_boxes_path."""
         outside_path = tmp_path / "other" / "file.py"
 
-        result = get_repo_index_name_from_sub_path(mock_config, str(outside_path))
+        result = get_box_index_name_from_sub_path(mock_config, str(outside_path))
 
         assert result is None
 
-    def test_path_at_repos_root(self, mock_config):
-        """Returns None for path at user_repos_path root itself."""
-        result = get_repo_index_name_from_sub_path(
-            mock_config, str(mock_config.user_repos_path)
+    def test_path_at_boxes_root(self, mock_config):
+        """Returns None for path at user_boxes_path root itself."""
+        result = get_box_index_name_from_sub_path(
+            mock_config, str(mock_config.user_boxes_path)
         )
 
         assert result is None
 
     def test_path_with_tilde(self, mock_config):
         """Handles paths with tilde expansion."""
-        # Create repo under home-like structure
-        repo_path = mock_config.user_repos_path / "20240101_120000_abcde__myrepo"
-        repo_path.mkdir(parents=True, exist_ok=True)
+        # Create box under home-like structure
+        box_path = mock_config.user_boxes_path / "20240101_120000_abcde__mybox"
+        box_path.mkdir(parents=True, exist_ok=True)
 
-        result = get_repo_index_name_from_sub_path(mock_config, str(repo_path))
+        result = get_box_index_name_from_sub_path(mock_config, str(box_path))
 
-        assert result == "20240101_120000_abcde__myrepo"
+        assert result == "20240101_120000_abcde__mybox"
 
 
 # ============================================================================
@@ -98,7 +98,7 @@ class TestGetRepoIndexNameFromSubPath:
 
 # %%
 #|export
-from repoyard._utils import get_hostname
+from boxyard._utils import get_hostname
 
 
 class TestGetHostname:
@@ -152,7 +152,7 @@ class TestGetHostname:
 
 # %%
 #|export
-from repoyard._utils import check_last_time_modified
+from boxyard._utils import check_last_time_modified
 
 
 class TestCheckLastTimeModified:
@@ -232,7 +232,7 @@ class TestCheckLastTimeModified:
 
 # %%
 #|export
-from repoyard._utils import run_cmd_async
+from boxyard._utils import run_cmd_async
 
 
 class TestRunCmdAsync:
@@ -288,7 +288,7 @@ class TestRunCmdAsync:
 
 # %%
 #|export
-from repoyard._utils import async_throttler
+from boxyard._utils import async_throttler
 
 
 class TestAsyncThrottler:
@@ -368,7 +368,7 @@ class TestAsyncThrottler:
 
 # %%
 #|export
-from repoyard._utils import is_in_event_loop
+from boxyard._utils import is_in_event_loop
 
 
 class TestIsInEventLoop:
@@ -396,7 +396,7 @@ class TestIsInEventLoop:
 
 # %%
 #|export
-from repoyard._utils import count_files_in_dir
+from boxyard._utils import count_files_in_dir
 
 
 class TestCountFilesInDir:
@@ -450,7 +450,7 @@ class TestCountFilesInDir:
 
 # %%
 #|export
-from repoyard._utils import SoftInterruption
+from boxyard._utils import SoftInterruption
 
 
 class TestSoftInterruption:
@@ -477,8 +477,8 @@ class TestSoftInterruption:
 
 # %%
 #|export
-from repoyard._utils import enable_soft_interruption, check_interrupted
-import repoyard._utils.base as base_module
+from boxyard._utils import enable_soft_interruption, check_interrupted
+import boxyard._utils.base as base_module
 
 
 class TestSoftInterruptionHandling:

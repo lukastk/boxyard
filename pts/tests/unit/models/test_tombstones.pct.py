@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
 
-from repoyard._tombstones import (
+from boxyard._tombstones import (
     Tombstone,
     get_tombstone_path,
 )
@@ -37,19 +37,19 @@ class TestTombstoneModel:
     def test_tombstone_construction(self):
         """Tombstone can be constructed with all required fields."""
         tombstone = Tombstone(
-            repo_id="20251122_143022_a7kx9",
+            box_id="20251122_143022_a7kx9",
             deleted_at_utc=datetime(2025, 11, 22, 14, 30, 22, tzinfo=timezone.utc),
             deleted_by_hostname="myhost",
             last_known_name="myproject",
         )
-        assert tombstone.repo_id == "20251122_143022_a7kx9"
+        assert tombstone.box_id == "20251122_143022_a7kx9"
         assert tombstone.deleted_by_hostname == "myhost"
         assert tombstone.last_known_name == "myproject"
 
     def test_tombstone_serialization(self):
         """Tombstone can be serialized to JSON."""
         tombstone = Tombstone(
-            repo_id="20251122_143022_a7kx9",
+            box_id="20251122_143022_a7kx9",
             deleted_at_utc=datetime(2025, 11, 22, 14, 30, 22, tzinfo=timezone.utc),
             deleted_by_hostname="myhost",
             last_known_name="myproject",
@@ -61,23 +61,23 @@ class TestTombstoneModel:
 
     def test_tombstone_deserialization(self):
         """Tombstone can be deserialized from JSON."""
-        json_str = '{"repo_id": "20251122_143022_a7kx9", "deleted_at_utc": "2025-11-22T14:30:22Z", "deleted_by_hostname": "myhost", "last_known_name": "myproject"}'
+        json_str = '{"box_id": "20251122_143022_a7kx9", "deleted_at_utc": "2025-11-22T14:30:22Z", "deleted_by_hostname": "myhost", "last_known_name": "myproject"}'
         tombstone = Tombstone.model_validate_json(json_str)
-        assert tombstone.repo_id == "20251122_143022_a7kx9"
+        assert tombstone.box_id == "20251122_143022_a7kx9"
         assert tombstone.deleted_by_hostname == "myhost"
         assert tombstone.last_known_name == "myproject"
 
     def test_tombstone_roundtrip(self):
         """Tombstone survives serialization roundtrip."""
         original = Tombstone(
-            repo_id="20251122_143022_a7kx9",
+            box_id="20251122_143022_a7kx9",
             deleted_at_utc=datetime(2025, 11, 22, 14, 30, 22, tzinfo=timezone.utc),
             deleted_by_hostname="myhost",
             last_known_name="myproject",
         )
         json_str = original.model_dump_json()
         restored = Tombstone.model_validate_json(json_str)
-        assert restored.repo_id == original.repo_id
+        assert restored.box_id == original.box_id
         assert restored.deleted_by_hostname == original.deleted_by_hostname
         assert restored.last_known_name == original.last_known_name
 
@@ -97,98 +97,98 @@ class TestGetTombstonePath:
         assert path == "tombstones/20251122_143022_a7kx9.json"
 
     def test_tombstone_path_different_ids(self):
-        """Different repo IDs produce different paths."""
+        """Different box IDs produce different paths."""
         path1 = get_tombstone_path("20251122_143022_a7kx9")
         path2 = get_tombstone_path("20251122_143022_b8ly0")
         assert path1 != path2
 
     def test_tombstone_path_date_only_format(self):
-        """get_tombstone_path works with date-only repo IDs."""
+        """get_tombstone_path works with date-only box IDs."""
         path = get_tombstone_path("20251122_a7kx9")
         assert path == "tombstones/20251122_a7kx9.json"
 
 
 # ============================================================================
-# Tests for parse_index_name and extract_repo_id (from _models)
+# Tests for parse_index_name and extract_box_id (from _models)
 # ============================================================================
 
 # %%
 #|export
-from repoyard._models import RepoMeta
+from boxyard._models import BoxMeta
 
 
 class TestParseIndexName:
-    """Tests for RepoMeta.parse_index_name method."""
+    """Tests for BoxMeta.parse_index_name method."""
 
     def test_parse_valid_index_name(self):
-        """parse_index_name correctly splits repo_id and name."""
-        repo_id, name = RepoMeta.parse_index_name("20251122_143022_a7kx9__myproject")
-        assert repo_id == "20251122_143022_a7kx9"
+        """parse_index_name correctly splits box_id and name."""
+        box_id, name = BoxMeta.parse_index_name("20251122_143022_a7kx9__myproject")
+        assert box_id == "20251122_143022_a7kx9"
         assert name == "myproject"
 
     def test_parse_index_name_with_underscores_in_name(self):
         """parse_index_name handles underscores in the name portion."""
-        repo_id, name = RepoMeta.parse_index_name("20251122_143022_a7kx9__my_project_name")
-        assert repo_id == "20251122_143022_a7kx9"
+        box_id, name = BoxMeta.parse_index_name("20251122_143022_a7kx9__my_project_name")
+        assert box_id == "20251122_143022_a7kx9"
         assert name == "my_project_name"
 
     def test_parse_index_name_with_double_underscores_in_name(self):
         """parse_index_name handles double underscores in the name portion."""
-        repo_id, name = RepoMeta.parse_index_name("20251122_143022_a7kx9__my__project")
-        assert repo_id == "20251122_143022_a7kx9"
+        box_id, name = BoxMeta.parse_index_name("20251122_143022_a7kx9__my__project")
+        assert box_id == "20251122_143022_a7kx9"
         assert name == "my__project"
 
     def test_parse_invalid_index_name_no_separator(self):
         """parse_index_name raises ValueError for invalid format."""
         with pytest.raises(ValueError, match="Invalid index_name format"):
-            RepoMeta.parse_index_name("invalid_index_name")
+            BoxMeta.parse_index_name("invalid_index_name")
 
-    def test_extract_repo_id(self):
-        """extract_repo_id returns just the repo_id part."""
-        repo_id = RepoMeta.extract_repo_id("20251122_143022_a7kx9__myproject")
-        assert repo_id == "20251122_143022_a7kx9"
+    def test_extract_box_id(self):
+        """extract_box_id returns just the box_id part."""
+        box_id = BoxMeta.extract_box_id("20251122_143022_a7kx9__myproject")
+        assert box_id == "20251122_143022_a7kx9"
 
-    def test_extract_repo_id_date_only(self):
-        """extract_repo_id works with date-only format."""
-        repo_id = RepoMeta.extract_repo_id("20251122_a7kx9__myproject")
-        assert repo_id == "20251122_a7kx9"
+    def test_extract_box_id_date_only(self):
+        """extract_box_id works with date-only format."""
+        box_id = BoxMeta.extract_box_id("20251122_a7kx9__myproject")
+        assert box_id == "20251122_a7kx9"
 
 
 # ============================================================================
-# Tests for generate_unique_repo_id
+# Tests for generate_unique_box_id
 # ============================================================================
 
 # %%
 #|export
-from repoyard._models import generate_unique_repo_id
-from repoyard.config import RepoTimestampFormat
+from boxyard._models import generate_unique_box_id
+from boxyard.config import BoxTimestampFormat
 
 
-class TestGenerateUniqueRepoId:
-    """Tests for the generate_unique_repo_id function."""
+class TestGenerateUniqueBoxId:
+    """Tests for the generate_unique_box_id function."""
 
     def test_generates_non_colliding_id(self):
-        """generate_unique_repo_id avoids existing IDs."""
+        """generate_unique_box_id avoids existing IDs."""
         mock_config = MagicMock()
-        mock_config.repo_timestamp_format = RepoTimestampFormat.DATE_ONLY
-        mock_config.repo_subid_character_set = "abcdefghijklmnopqrstuvwxyz0123456789"
-        mock_config.repo_subid_length = 5
+        mock_config.box_timestamp_format = BoxTimestampFormat.DATE_ONLY
+        mock_config.box_subid_character_set = "abcdefghijklmnopqrstuvwxyz0123456789"
+        mock_config.box_subid_length = 5
 
         existing_ids = {"20251122_abcde", "20251122_fghij"}
 
-        timestamp, subid = generate_unique_repo_id(mock_config, existing_ids)
+        timestamp, subid = generate_unique_box_id(mock_config, existing_ids)
         new_id = f"{timestamp}_{subid}"
 
         assert new_id not in existing_ids
 
     def test_generates_valid_format(self):
-        """generate_unique_repo_id produces valid timestamp and subid."""
+        """generate_unique_box_id produces valid timestamp and subid."""
         mock_config = MagicMock()
-        mock_config.repo_timestamp_format = RepoTimestampFormat.DATE_ONLY
-        mock_config.repo_subid_character_set = "abcdefghijklmnopqrstuvwxyz0123456789"
-        mock_config.repo_subid_length = 5
+        mock_config.box_timestamp_format = BoxTimestampFormat.DATE_ONLY
+        mock_config.box_subid_character_set = "abcdefghijklmnopqrstuvwxyz0123456789"
+        mock_config.box_subid_length = 5
 
-        timestamp, subid = generate_unique_repo_id(mock_config, set())
+        timestamp, subid = generate_unique_box_id(mock_config, set())
 
         # Timestamp should be 8 chars (YYYYMMDD)
         assert len(timestamp) == 8
@@ -196,17 +196,17 @@ class TestGenerateUniqueRepoId:
         assert len(subid) == 5
 
     def test_raises_on_exhaustion(self):
-        """generate_unique_repo_id raises after max attempts."""
+        """generate_unique_box_id raises after max attempts."""
         mock_config = MagicMock()
-        mock_config.repo_timestamp_format = RepoTimestampFormat.DATE_ONLY
-        mock_config.repo_subid_character_set = "a"  # Only one character
-        mock_config.repo_subid_length = 1
+        mock_config.box_timestamp_format = BoxTimestampFormat.DATE_ONLY
+        mock_config.box_subid_character_set = "a"  # Only one character
+        mock_config.box_subid_length = 1
 
         # Create existing IDs that include the only possible ID
         # Since we use current date, we need to mock that too
-        with patch('repoyard._models.datetime') as mock_datetime:
+        with patch('boxyard._models.datetime') as mock_datetime:
             mock_datetime.now.return_value.strftime.return_value = "20251122"
             existing_ids = {"20251122_a"}
 
-            with pytest.raises(RuntimeError, match="Failed to generate unique repo ID"):
-                generate_unique_repo_id(mock_config, existing_ids, max_attempts=10)
+            with pytest.raises(RuntimeError, match="Failed to generate unique box ID"):
+                generate_unique_box_id(mock_config, existing_ids, max_attempts=10)

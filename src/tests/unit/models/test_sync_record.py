@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from pydantic import ValidationError
 from ulid import ULID
 
-from repoyard._models import SyncRecord, SyncCondition, SyncStatus
+from boxyard._models import SyncRecord, SyncCondition, SyncStatus
 
 
 # ============================================================================
@@ -94,7 +94,7 @@ class TestSyncRecordCreate:
         """create() generates a new SyncRecord with ULID."""
         # get_hostname is imported via from ._utils import get_hostname
         # which re-exports from base via from .base import *
-        with patch("repoyard._utils.get_hostname", return_value="autohost"):
+        with patch("boxyard._utils.get_hostname", return_value="autohost"):
             record = SyncRecord.create(sync_complete=True)
 
         assert record.ulid is not None

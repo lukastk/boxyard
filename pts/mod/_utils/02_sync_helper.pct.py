@@ -31,14 +31,14 @@ from nblite import nbl_export, show_doc; nbl_export();
 #|top_export
 from pathlib import Path
 import textwrap
-from repoyard._utils import check_interrupted, SoftInterruption
-from repoyard._enums import SyncSetting, SyncDirection
+from boxyard._utils import check_interrupted, SoftInterruption
+from boxyard._enums import SyncSetting, SyncDirection
 
-from repoyard import const
+from boxyard import const
 
 # %%
 #|top_export
-from repoyard._models import SyncStatus
+from boxyard._models import SyncStatus
 
 # %%
 #|top_export
@@ -95,7 +95,7 @@ import tempfile
 tests_working_dir = const.pkg_path.parent / "tmp_tests"
 test_folder_path = Path(tempfile.mkdtemp(prefix="sync_helper", dir="/tmp"))
 test_folder_path.mkdir(parents=True, exist_ok=True)
-data_path = test_folder_path / ".repoyard"
+data_path = test_folder_path / ".boxyard"
 
 # %%
 my_local_path = test_folder_path / "my_local"
@@ -159,7 +159,7 @@ if sync_direction is None and sync_setting != SyncSetting.CAREFUL:
 
 # %%
 #|export
-from repoyard._models import get_sync_status, SyncCondition
+from boxyard._models import get_sync_status, SyncCondition
 
 sync_status = await get_sync_status(
     rclone_config_path=rclone_config_path,
@@ -245,7 +245,7 @@ if sync_direction is None:  # auto
         sync_direction = SyncDirection.PULL
     elif sync_condition == SyncCondition.EXCLUDED:
         if verbose:
-            print("Sync not needed as the repo is excluded.")
+            print("Sync not needed as the box is excluded.")
         sync_status, False  #|func_return_line
     elif sync_condition == SyncCondition.SYNC_FROM_REMOTE_INCOMPLETE:
         # Local is incomplete from interrupted pull - this machine can safely retry pull
@@ -307,7 +307,7 @@ if allow_missing_source:
 
 # %%
 #|export
-from repoyard._utils import rclone_sync, BisyncResult, rclone_mkdir, rclone_purge
+from boxyard._utils import rclone_sync, BisyncResult, rclone_mkdir, rclone_purge
 
 
 async def _sync(
@@ -360,7 +360,7 @@ async def _sync(
 
 # %%
 #|export
-from repoyard._models import SyncRecord
+from boxyard._models import SyncRecord
 
 if check_interrupted():
     raise SoftInterruption()
@@ -435,7 +435,7 @@ if res and delete_backup:
 # Check that the sync worked
 
 # %%
-from repoyard._utils import rclone_lsjson
+from boxyard._utils import rclone_lsjson
 
 _lsjson = await rclone_lsjson(
     rclone_config_path=rclone_config_path,

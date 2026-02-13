@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from datetime import datetime, timezone
 from ulid import ULID
 
-from repoyard._utils.sync_helper import (
+from boxyard._utils.sync_helper import (
     SyncSetting,
     SyncDirection,
     SyncFailed,
@@ -29,7 +29,7 @@ from repoyard._utils.sync_helper import (
     InvalidRemotePath,
     sync_helper,
 )
-from repoyard._models import SyncCondition, SyncStatus, SyncRecord
+from boxyard._models import SyncCondition, SyncStatus, SyncRecord
 
 
 # ============================================================================
@@ -251,7 +251,7 @@ class TestSyncHelperSyncedState:
             )
 
             with patch(
-                "repoyard._models.get_sync_status",
+                "boxyard._models.get_sync_status",
                 new=AsyncMock(return_value=mock_status),
             ):
                 status, synced = await sync_helper(
@@ -287,7 +287,7 @@ class TestSyncHelperSyncedState:
             )
 
             with patch(
-                "repoyard._models.get_sync_status",
+                "boxyard._models.get_sync_status",
                 new=AsyncMock(return_value=mock_status),
             ):
                 status, synced = await sync_helper(
@@ -327,23 +327,23 @@ class TestSyncHelperAutoDirection:
 
             with (
                 patch(
-                    "repoyard._models.get_sync_status",
+                    "boxyard._models.get_sync_status",
                     new=AsyncMock(return_value=mock_status),
                 ),
                 patch(
-                    "repoyard._utils.sync_helper.check_interrupted",
+                    "boxyard._utils.sync_helper.check_interrupted",
                     return_value=False,
                 ),
                 patch(
-                    "repoyard._utils.rclone_sync",
+                    "boxyard._utils.rclone_sync",
                     new=AsyncMock(return_value=(True, "", "")),
                 ),
                 patch(
-                    "repoyard._utils.rclone_mkdir",
+                    "boxyard._utils.rclone_mkdir",
                     new=AsyncMock(),
                 ),
                 patch(
-                    "repoyard._utils.rclone_purge",
+                    "boxyard._utils.rclone_purge",
                     new=AsyncMock(),
                 ),
                 patch.object(
@@ -389,23 +389,23 @@ class TestSyncHelperAutoDirection:
 
             with (
                 patch(
-                    "repoyard._models.get_sync_status",
+                    "boxyard._models.get_sync_status",
                     new=AsyncMock(return_value=mock_status),
                 ),
                 patch(
-                    "repoyard._utils.sync_helper.check_interrupted",
+                    "boxyard._utils.sync_helper.check_interrupted",
                     return_value=False,
                 ),
                 patch(
-                    "repoyard._utils.rclone_sync",
+                    "boxyard._utils.rclone_sync",
                     new=AsyncMock(return_value=(True, "", "")),
                 ),
                 patch(
-                    "repoyard._utils.rclone_mkdir",
+                    "boxyard._utils.rclone_mkdir",
                     new=AsyncMock(),
                 ),
                 patch(
-                    "repoyard._utils.rclone_purge",
+                    "boxyard._utils.rclone_purge",
                     new=AsyncMock(),
                 ),
                 patch.object(
@@ -453,7 +453,7 @@ class TestSyncHelperAutoDirection:
             )
 
             with patch(
-                "repoyard._models.get_sync_status",
+                "boxyard._models.get_sync_status",
                 new=AsyncMock(return_value=mock_status),
             ):
                 status, synced = await sync_helper(
@@ -497,7 +497,7 @@ class TestSyncHelperAutoDirection:
             )
 
             with patch(
-                "repoyard._models.get_sync_status",
+                "boxyard._models.get_sync_status",
                 new=AsyncMock(return_value=mock_status),
             ):
                 with pytest.raises(SyncUnsafe, match="another machine"):
@@ -543,23 +543,23 @@ class TestSyncHelperAutoDirection:
 
             with (
                 patch(
-                    "repoyard._models.get_sync_status",
+                    "boxyard._models.get_sync_status",
                     new=AsyncMock(return_value=mock_status),
                 ),
                 patch(
-                    "repoyard._utils.sync_helper.check_interrupted",
+                    "boxyard._utils.sync_helper.check_interrupted",
                     return_value=False,
                 ),
                 patch(
-                    "repoyard._utils.rclone_sync",
+                    "boxyard._utils.rclone_sync",
                     new=AsyncMock(return_value=(True, "", "")),
                 ),
                 patch(
-                    "repoyard._utils.rclone_mkdir",
+                    "boxyard._utils.rclone_mkdir",
                     new=AsyncMock(),
                 ),
                 patch(
-                    "repoyard._utils.rclone_purge",
+                    "boxyard._utils.rclone_purge",
                     new=AsyncMock(),
                 ),
                 patch.object(
@@ -613,23 +613,23 @@ class TestSyncHelperAutoDirection:
 
             with (
                 patch(
-                    "repoyard._models.get_sync_status",
+                    "boxyard._models.get_sync_status",
                     new=AsyncMock(return_value=mock_status),
                 ),
                 patch(
-                    "repoyard._utils.sync_helper.check_interrupted",
+                    "boxyard._utils.sync_helper.check_interrupted",
                     return_value=False,
                 ),
                 patch(
-                    "repoyard._utils.rclone_sync",
+                    "boxyard._utils.rclone_sync",
                     new=AsyncMock(return_value=(True, "", "")),
                 ),
                 patch(
-                    "repoyard._utils.rclone_mkdir",
+                    "boxyard._utils.rclone_mkdir",
                     new=AsyncMock(),
                 ),
                 patch(
-                    "repoyard._utils.rclone_purge",
+                    "boxyard._utils.rclone_purge",
                     new=AsyncMock(),
                 ),
                 patch.object(
@@ -677,7 +677,7 @@ class TestSyncHelperAutoDirection:
             )
 
             with patch(
-                "repoyard._models.get_sync_status",
+                "boxyard._models.get_sync_status",
                 new=AsyncMock(return_value=mock_status),
             ):
                 with pytest.raises(SyncUnsafe):
@@ -720,7 +720,7 @@ class TestSyncHelperCarefulMode:
             )
 
             with patch(
-                "repoyard._models.get_sync_status",
+                "boxyard._models.get_sync_status",
                 new=AsyncMock(return_value=mock_status),
             ):
                 with pytest.raises(SyncUnsafe):
@@ -753,7 +753,7 @@ class TestSyncHelperCarefulMode:
             )
 
             with patch(
-                "repoyard._models.get_sync_status",
+                "boxyard._models.get_sync_status",
                 new=AsyncMock(return_value=mock_status),
             ):
                 with pytest.raises(SyncUnsafe):
@@ -786,7 +786,7 @@ class TestSyncHelperCarefulMode:
             )
 
             with patch(
-                "repoyard._models.get_sync_status",
+                "boxyard._models.get_sync_status",
                 new=AsyncMock(return_value=mock_status),
             ):
                 with pytest.raises(SyncUnsafe):
@@ -819,7 +819,7 @@ class TestSyncHelperCarefulMode:
             )
 
             with patch(
-                "repoyard._models.get_sync_status",
+                "boxyard._models.get_sync_status",
                 new=AsyncMock(return_value=mock_status),
             ):
                 with pytest.raises(SyncUnsafe):
@@ -862,7 +862,7 @@ class TestSyncHelperErrorHandling:
             )
 
             with patch(
-                "repoyard._models.get_sync_status",
+                "boxyard._models.get_sync_status",
                 new=AsyncMock(return_value=mock_status),
             ):
                 with pytest.raises(Exception, match="Something went wrong"):
@@ -895,7 +895,7 @@ class TestSyncHelperErrorHandling:
             )
 
             with patch(
-                "repoyard._models.get_sync_status",
+                "boxyard._models.get_sync_status",
                 new=AsyncMock(return_value=mock_status),
             ):
                 with pytest.raises(Exception, match="Error occurred"):
@@ -929,19 +929,19 @@ class TestSyncHelperErrorHandling:
 
             with (
                 patch(
-                    "repoyard._models.get_sync_status",
+                    "boxyard._models.get_sync_status",
                     new=AsyncMock(return_value=mock_status),
                 ),
                 patch(
-                    "repoyard._utils.sync_helper.check_interrupted",
+                    "boxyard._utils.sync_helper.check_interrupted",
                     return_value=False,
                 ),
                 patch(
-                    "repoyard._utils.rclone_sync",
+                    "boxyard._utils.rclone_sync",
                     new=AsyncMock(return_value=(False, "stdout output", "stderr error")),
                 ),
                 patch(
-                    "repoyard._utils.rclone_mkdir",
+                    "boxyard._utils.rclone_mkdir",
                     new=AsyncMock(),
                 ),
                 patch.object(
@@ -982,7 +982,7 @@ class TestSyncHelperInterruption:
     def test_interrupted_raises_soft_interruption(self):
         """When interrupted flag is set, raises SoftInterruption."""
         async def _test():
-            from repoyard._utils import SoftInterruption
+            from boxyard._utils import SoftInterruption
 
             mock_status = SyncStatus(
                 sync_condition=SyncCondition.NEEDS_PUSH,
@@ -996,11 +996,11 @@ class TestSyncHelperInterruption:
 
             with (
                 patch(
-                    "repoyard._models.get_sync_status",
+                    "boxyard._models.get_sync_status",
                     new=AsyncMock(return_value=mock_status),
                 ),
                 patch(
-                    "repoyard._utils.sync_helper.check_interrupted",
+                    "boxyard._utils.sync_helper.check_interrupted",
                     return_value=True,  # Interrupted!
                 ),
             ):
@@ -1047,23 +1047,23 @@ class TestSyncHelperForceMode:
 
             with (
                 patch(
-                    "repoyard._models.get_sync_status",
+                    "boxyard._models.get_sync_status",
                     new=AsyncMock(return_value=mock_status),
                 ),
                 patch(
-                    "repoyard._utils.sync_helper.check_interrupted",
+                    "boxyard._utils.sync_helper.check_interrupted",
                     return_value=False,
                 ),
                 patch(
-                    "repoyard._utils.rclone_sync",
+                    "boxyard._utils.rclone_sync",
                     new=AsyncMock(return_value=(True, "", "")),
                 ),
                 patch(
-                    "repoyard._utils.rclone_mkdir",
+                    "boxyard._utils.rclone_mkdir",
                     new=AsyncMock(),
                 ),
                 patch(
-                    "repoyard._utils.rclone_purge",
+                    "boxyard._utils.rclone_purge",
                     new=AsyncMock(),
                 ),
                 patch.object(
@@ -1109,23 +1109,23 @@ class TestSyncHelperForceMode:
 
             with (
                 patch(
-                    "repoyard._models.get_sync_status",
+                    "boxyard._models.get_sync_status",
                     new=AsyncMock(return_value=mock_status),
                 ),
                 patch(
-                    "repoyard._utils.sync_helper.check_interrupted",
+                    "boxyard._utils.sync_helper.check_interrupted",
                     return_value=False,
                 ),
                 patch(
-                    "repoyard._utils.rclone_sync",
+                    "boxyard._utils.rclone_sync",
                     new=AsyncMock(return_value=(True, "", "")),
                 ),
                 patch(
-                    "repoyard._utils.rclone_mkdir",
+                    "boxyard._utils.rclone_mkdir",
                     new=AsyncMock(),
                 ),
                 patch(
-                    "repoyard._utils.rclone_purge",
+                    "boxyard._utils.rclone_purge",
                     new=AsyncMock(),
                 ),
                 patch.object(

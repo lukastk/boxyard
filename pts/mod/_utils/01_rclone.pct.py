@@ -15,17 +15,17 @@
 # %%
 #|hide
 from nblite import nbl_export, show_doc; nbl_export();
-import repoyard._utils.rclone as this_module
+import boxyard._utils.rclone as this_module
 
 # %%
 #|export
 import shlex
 import json
 from enum import Enum
-from repoyard import const
+from boxyard import const
 from pathlib import Path
 
-from repoyard._utils import run_cmd_async
+from boxyard._utils import run_cmd_async
 
 # %% [markdown]
 # Set up testing environment

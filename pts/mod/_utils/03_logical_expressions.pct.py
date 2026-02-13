@@ -15,7 +15,7 @@
 # %%
 #|hide
 from nblite import nbl_export, show_doc; nbl_export();
-import repoyard._utils.logical_expressions as this_module
+import boxyard._utils.logical_expressions as this_module
 
 # %%
 #|hide
@@ -78,35 +78,35 @@ def _tokenize_expression(expression: str) -> list[str]:
 
 
 def _parse_or_expression(
-    tokens: list[str], pos: list[int], repo_groups: set[str]
+    tokens: list[str], pos: list[int], box_groups: set[str]
 ) -> bool:
     """Parse OR expressions (lowest precedence)."""
-    left = _parse_and_expression(tokens, pos, repo_groups)
+    left = _parse_and_expression(tokens, pos, box_groups)
 
     while pos[0] < len(tokens) and tokens[pos[0]] == "OR":
         pos[0] += 1
-        right = _parse_and_expression(tokens, pos, repo_groups)
+        right = _parse_and_expression(tokens, pos, box_groups)
         left = left or right
 
     return left
 
 
 def _parse_and_expression(
-    tokens: list[str], pos: list[int], repo_groups: set[str]
+    tokens: list[str], pos: list[int], box_groups: set[str]
 ) -> bool:
     """Parse AND expressions (medium precedence)."""
-    left = _parse_not_expression(tokens, pos, repo_groups)
+    left = _parse_not_expression(tokens, pos, box_groups)
 
     while pos[0] < len(tokens) and tokens[pos[0]] == "AND":
         pos[0] += 1
-        right = _parse_not_expression(tokens, pos, repo_groups)
+        right = _parse_not_expression(tokens, pos, box_groups)
         left = left and right
 
     return left
 
 
 def _parse_not_expression(
-    tokens: list[str], pos: list[int], repo_groups: set[str]
+    tokens: list[str], pos: list[int], box_groups: set[str]
 ) -> bool:
     """Parse NOT expressions and atoms (highest precedence)."""
     if pos[0] >= len(tokens):
@@ -115,12 +115,12 @@ def _parse_not_expression(
     # Handle NOT operator
     if tokens[pos[0]] == "NOT":
         pos[0] += 1
-        return not _parse_not_expression(tokens, pos, repo_groups)
+        return not _parse_not_expression(tokens, pos, box_groups)
 
     # Handle parentheses
     if tokens[pos[0]] == "(":
         pos[0] += 1
-        result = _parse_or_expression(tokens, pos, repo_groups)
+        result = _parse_or_expression(tokens, pos, box_groups)
         if pos[0] >= len(tokens) or tokens[pos[0]] != ")":
             raise ValueError("Unmatched opening parenthesis")
         pos[0] += 1
@@ -132,7 +132,7 @@ def _parse_not_expression(
 
     group_name = tokens[pos[0]]
     pos[0] += 1
-    return group_name in repo_groups
+    return group_name in box_groups
 
 # %%
 _tokenize_expression("group1 AND (group2 OR group3)")
@@ -148,7 +148,7 @@ show_doc(this_module.get_group_filter_func)
 #|export
 def get_group_filter_func(expression: str) -> bool:
     """
-    Get a function that evaluates a boolean expression against a set of repository groups.
+    Get a function that evaluates a boolean expression against a set of box groups.
 
     Supports AND, OR, NOT operators and parentheses for grouping.
     Operator precedence: NOT > AND > OR
@@ -164,7 +164,7 @@ def get_group_filter_func(expression: str) -> bool:
         expression: Boolean expression string
 
     Returns:
-        Function that takes a set of repository groups and returns True if the expression evaluates to True for the given groups, False otherwise
+        Function that takes a set of box groups and returns True if the expression evaluates to True for the given groups, False otherwise
 
     Raises:
         ValueError: If the expression is invalid or contains syntax errors
@@ -174,13 +174,13 @@ def get_group_filter_func(expression: str) -> bool:
     if not tokens:
         raise ValueError("Empty expression")
 
-    def _filter_func(repo_groups: set[str] | list[str]) -> bool:
-        if isinstance(repo_groups, list):
-            repo_groups = set(repo_groups)
+    def _filter_func(box_groups: set[str] | list[str]) -> bool:
+        if isinstance(box_groups, list):
+            box_groups = set(box_groups)
 
         # Parse and evaluate
         pos = [0]  # Use list to allow modification in nested calls
-        result = _parse_or_expression(tokens, pos, repo_groups)
+        result = _parse_or_expression(tokens, pos, box_groups)
 
         # Check if we consumed all tokens
         if pos[0] < len(tokens):
@@ -193,26 +193,26 @@ def get_group_filter_func(expression: str) -> bool:
 # %%
 #|exporti
 def _evaluate_group_expression(
-    expression: str, repo_groups: set[str] | list[str]
+    expression: str, box_groups: set[str] | list[str]
 ) -> bool:
     _filter_func = get_group_filter_func(expression)
-    return _filter_func(repo_groups)
+    return _filter_func(box_groups)
 
 # %%
 # Example usage:
-repo_groups = {"group1", "group2"}
+box_groups = {"group1", "group2"}
 
 # Simple expressions
-assert _evaluate_group_expression("group1", repo_groups) == True
-assert _evaluate_group_expression("group3", repo_groups) == False
-assert _evaluate_group_expression("group1 AND group2", repo_groups) == True
-assert _evaluate_group_expression("group1 OR group3", repo_groups) == True
-assert _evaluate_group_expression("NOT group1", repo_groups) == False
+assert _evaluate_group_expression("group1", box_groups) == True
+assert _evaluate_group_expression("group3", box_groups) == False
+assert _evaluate_group_expression("group1 AND group2", box_groups) == True
+assert _evaluate_group_expression("group1 OR group3", box_groups) == True
+assert _evaluate_group_expression("NOT group1", box_groups) == False
 
 # Complex expressions
-assert _evaluate_group_expression("group1 AND (group2 OR group3)", repo_groups) == True
+assert _evaluate_group_expression("group1 AND (group2 OR group3)", box_groups) == True
 assert (
-    _evaluate_group_expression("(group1 OR group2) AND NOT group3", repo_groups) == True
+    _evaluate_group_expression("(group1 OR group2) AND NOT group3", box_groups) == True
 )
-assert _evaluate_group_expression("group1 AND NOT group2", repo_groups) == False
-assert _evaluate_group_expression("group1 AND (NOT group2)", repo_groups) == False
+assert _evaluate_group_expression("group1 AND NOT group2", box_groups) == False
+assert _evaluate_group_expression("group1 AND (NOT group2)", box_groups) == False

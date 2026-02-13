@@ -6,10 +6,10 @@ pts_test -> tests
 """
 
 docs_cl="nbs"
-docs_title="repoyard"
+docs_title="boxyard"
 
 [cl.lib]
-path="src/repoyard"
+path="src/boxyard"
 format="module"
 
 [cl.nbs]

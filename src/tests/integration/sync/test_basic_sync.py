@@ -3,15 +3,15 @@
 import asyncio
 import pytest
 
-from repoyard.cmds import (
-    new_repo,
-    exclude_repo,
-    include_repo,
-    delete_repo,
+from boxyard.cmds import (
+    new_box,
+    exclude_box,
+    include_box,
+    delete_box,
 )
-from repoyard._models import get_repoyard_meta
+from boxyard._models import get_boxyard_meta
 
-from ...integration.conftest import create_repoyards
+from ...integration.conftest import create_boxyards
 
 @pytest.mark.integration
 def test_basic_sync():
@@ -19,51 +19,51 @@ def test_basic_sync():
     asyncio.run(_test_basic_sync())
 
 async def _test_basic_sync():
-    num_test_repos = 5
-    remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
-    repo_index_names = []
-    for i in range(num_test_repos):
-        repo_index_name = new_repo(
+    num_test_boxes = 5
+    remote_name, remote_rclone_path, config, config_path, data_path = create_boxyards()
+    box_index_names = []
+    for i in range(num_test_boxes):
+        box_index_name = new_box(
             config_path=config_path,
-            repo_name=f"test_repo_{i}",
+            box_name=f"test_box_{i}",
             storage_location=remote_name,
         )
-        repo_index_names.append(repo_index_name)
+        box_index_names.append(box_index_name)
     
-    # Verify that the repos are included
-    repoyard_meta = get_repoyard_meta(config, force_create=True)
-    for repo_index_name in repo_index_names:
-        assert repoyard_meta.by_index_name[repo_index_name].check_included(config)
+    # Verify that the boxes are included
+    boxyard_meta = get_boxyard_meta(config, force_create=True)
+    for box_index_name in box_index_names:
+        assert boxyard_meta.by_index_name[box_index_name].check_included(config)
     await asyncio.gather(
         *[
-            exclude_repo(config_path=config_path, repo_index_name=repo_index_name)
-            for repo_index_name in repo_index_names
+            exclude_box(config_path=config_path, box_index_name=box_index_name)
+            for box_index_name in box_index_names
         ]
     )
     
-    # Verify that the repos have been excluded
-    repoyard_meta = get_repoyard_meta(config, force_create=True)
-    for repo_index_name in repo_index_names:
-        assert not repoyard_meta.by_index_name[repo_index_name].check_included(config)
+    # Verify that the boxes have been excluded
+    boxyard_meta = get_boxyard_meta(config, force_create=True)
+    for box_index_name in box_index_names:
+        assert not boxyard_meta.by_index_name[box_index_name].check_included(config)
     await asyncio.gather(
         *[
-            include_repo(config_path=config_path, repo_index_name=repo_index_name)
-            for repo_index_name in repo_index_names
+            include_box(config_path=config_path, box_index_name=box_index_name)
+            for box_index_name in box_index_names
         ]
     )
     
-    # Verify that the repos are included
-    repoyard_meta = get_repoyard_meta(config, force_create=True)
-    for repo_index_name in repo_index_names:
-        assert repoyard_meta.by_index_name[repo_index_name].check_included(config)
+    # Verify that the boxes are included
+    boxyard_meta = get_boxyard_meta(config, force_create=True)
+    for box_index_name in box_index_names:
+        assert boxyard_meta.by_index_name[box_index_name].check_included(config)
     await asyncio.gather(
         *[
-            delete_repo(config_path=config_path, repo_index_name=repo_index_name)
-            for repo_index_name in repo_index_names
+            delete_box(config_path=config_path, box_index_name=box_index_name)
+            for box_index_name in box_index_names
         ]
     )
     
-    # Verify that the repos have been deleted
-    for repo_meta in repoyard_meta.by_index_name.values():
-        assert not repo_meta.get_local_path(config).exists()
-        assert not (remote_rclone_path / repo_meta.get_remote_path(config)).exists()
+    # Verify that the boxes have been deleted
+    for box_meta in boxyard_meta.by_index_name.values():
+        assert not box_meta.get_local_path(config).exists()
+        assert not (remote_rclone_path / box_meta.get_remote_path(config)).exists()

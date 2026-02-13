@@ -7,7 +7,7 @@ import pytest
 from pathlib import Path
 from pydantic import ValidationError
 
-from repoyard.config import Config, StorageConfig, StorageType
+from boxyard.config import Config, StorageConfig, StorageType
 
 
 # ============================================================================
@@ -21,21 +21,21 @@ def valid_config_dict():
     return {
         "config_path": "/tmp/config.toml",
         "default_storage_location": "default",
-        "repoyard_data_path": "/tmp/repoyard",
-        "repo_timestamp_format": "date_and_time",
-        "user_repos_path": "/tmp/repos",
-        "user_repo_groups_path": "/tmp/repo-groups",
+        "boxyard_data_path": "/tmp/boxyard",
+        "box_timestamp_format": "date_and_time",
+        "user_boxes_path": "/tmp/boxes",
+        "user_box_groups_path": "/tmp/box-groups",
         "storage_locations": {
             "default": {
                 "storage_type": "local",
                 "store_path": "/tmp/store",
             }
         },
-        "repo_groups": {},
-        "virtual_repo_groups": {},
-        "default_repo_groups": [],
-        "repo_subid_character_set": "abcdefghijklmnopqrstuvwxyz0123456789",
-        "repo_subid_length": 5,
+        "box_groups": {},
+        "virtual_box_groups": {},
+        "default_box_groups": [],
+        "box_subid_character_set": "abcdefghijklmnopqrstuvwxyz0123456789",
+        "box_subid_length": 5,
         "max_concurrent_rclone_ops": 3,
     }
 
@@ -166,11 +166,11 @@ class TestStorageLocationsRequired:
 
 # %% pts/tests/unit/config/test_config_validation.pct.py 7
 class TestGroupNameValidation:
-    """Tests for repo_groups and virtual_repo_groups name validation."""
+    """Tests for box_groups and virtual_box_groups name validation."""
 
     def test_valid_group_names(self, valid_config_dict):
         """Valid group names are accepted."""
-        valid_config_dict["repo_groups"] = {
+        valid_config_dict["box_groups"] = {
             "backend": {},
             "frontend": {},
             "my-group": {},
@@ -179,11 +179,11 @@ class TestGroupNameValidation:
         }
         config = Config(**valid_config_dict)
 
-        assert len(config.repo_groups) == 5
+        assert len(config.box_groups) == 5
 
     def test_invalid_group_name_with_space(self, valid_config_dict):
         """Group names with spaces are invalid."""
-        valid_config_dict["repo_groups"] = {
+        valid_config_dict["box_groups"] = {
             "my group": {},
         }
 
@@ -195,7 +195,7 @@ class TestGroupNameValidation:
         invalid_names = ["group@test", "group#1", "group$"]
 
         for name in invalid_names:
-            valid_config_dict["repo_groups"] = {
+            valid_config_dict["box_groups"] = {
                 name: {},
             }
 
@@ -204,7 +204,7 @@ class TestGroupNameValidation:
 
     def test_virtual_group_names_validated(self, valid_config_dict):
         """Virtual group names are also validated."""
-        valid_config_dict["virtual_repo_groups"] = {
+        valid_config_dict["virtual_box_groups"] = {
             "invalid group": {
                 "filter_expr": "backend",
             },
@@ -215,14 +215,14 @@ class TestGroupNameValidation:
 
     def test_valid_virtual_group_names(self, valid_config_dict):
         """Valid virtual group names are accepted."""
-        valid_config_dict["virtual_repo_groups"] = {
+        valid_config_dict["virtual_box_groups"] = {
             "active-work": {
                 "filter_expr": "backend AND NOT archived",
             },
         }
         config = Config(**valid_config_dict)
 
-        assert "active-work" in config.virtual_repo_groups
+        assert "active-work" in config.virtual_box_groups
 
 
 # ============================================================================
@@ -240,16 +240,16 @@ class TestRequiredFields:
         with pytest.raises(ValidationError):
             Config(**valid_config_dict)
 
-    def test_missing_repoyard_data_path(self, valid_config_dict):
-        """Missing repoyard_data_path raises error."""
-        del valid_config_dict["repoyard_data_path"]
+    def test_missing_boxyard_data_path(self, valid_config_dict):
+        """Missing boxyard_data_path raises error."""
+        del valid_config_dict["boxyard_data_path"]
 
         with pytest.raises(ValidationError):
             Config(**valid_config_dict)
 
-    def test_missing_user_repos_path(self, valid_config_dict):
-        """Missing user_repos_path raises error."""
-        del valid_config_dict["user_repos_path"]
+    def test_missing_user_boxes_path(self, valid_config_dict):
+        """Missing user_boxes_path raises error."""
+        del valid_config_dict["user_boxes_path"]
 
         with pytest.raises(ValidationError):
             Config(**valid_config_dict)

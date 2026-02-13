@@ -18,7 +18,7 @@ import pytest
 from pathlib import Path
 from pydantic import ValidationError
 
-from repoyard.config import StorageConfig, StorageType
+from boxyard.config import StorageConfig, StorageType
 
 
 # ============================================================================
@@ -128,10 +128,10 @@ class TestStorageConfigPathExpansion:
         """rclone remote paths are preserved."""
         config = StorageConfig(
             storage_type="rclone",
-            store_path="myremote:bucket/repoyard",
+            store_path="myremote:bucket/boxyard",
         )
 
-        assert str(config.store_path) == "myremote:bucket/repoyard"
+        assert str(config.store_path) == "myremote:bucket/boxyard"
 
 
 # ============================================================================
@@ -218,10 +218,10 @@ class TestStorageConfigPathFormats:
         """S3-style rclone paths are handled."""
         config = StorageConfig(
             storage_type="rclone",
-            store_path="s3:my-bucket/repoyard/data",
+            store_path="s3:my-bucket/boxyard/data",
         )
 
-        assert str(config.store_path) == "s3:my-bucket/repoyard/data"
+        assert str(config.store_path) == "s3:my-bucket/boxyard/data"
 
     def test_sftp_style_path(self):
         """SFTP-style rclone paths are handled."""
@@ -236,7 +236,7 @@ class TestStorageConfigPathFormats:
         """Google Drive rclone paths are handled."""
         config = StorageConfig(
             storage_type="rclone",
-            store_path="gdrive:MyDrive/Backups/repoyard",
+            store_path="gdrive:MyDrive/Backups/boxyard",
         )
 
         assert "gdrive:" in str(config.store_path)

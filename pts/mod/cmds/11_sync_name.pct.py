@@ -9,8 +9,8 @@
 # %% [markdown]
 # # _sync_name
 #
-# Synchronize the repo name between local and remote.
-# This is useful when local and remote have different names for the same repo.
+# Synchronize the box name between local and remote.
+# This is useful when local and remote have different names for the same box.
 
 # %%
 #|default_exp cmds._sync_name
@@ -24,25 +24,25 @@ from nblite import nbl_export, show_doc; nbl_export();
 #|top_export
 from pathlib import Path
 
-from repoyard.config import get_config, StorageType
-from repoyard._remote_index import find_remote_repo_by_id
-from repoyard._models import RepoMeta
-from repoyard._enums import SyncNameDirection
+from boxyard.config import get_config, StorageType
+from boxyard._remote_index import find_remote_box_by_id
+from boxyard._models import BoxMeta
+from boxyard._enums import SyncNameDirection
 
 # %%
 #|set_func_signature
 async def sync_name(
     config_path: Path,
-    repo_index_name: str,
+    box_index_name: str,
     direction: SyncNameDirection,
     verbose: bool = False,
 ) -> str:
     """
-    Sync the repo name between local and remote.
+    Sync the box name between local and remote.
 
     Args:
-        config_path: Path to the repoyard config file.
-        repo_index_name: Full index name of the local repository.
+        config_path: Path to the boxyard config file.
+        box_index_name: Full index name of the local box.
         direction: Direction to sync - to_local (remote name -> local) or
                   to_remote (local name -> remote).
         verbose: Print verbose output.
@@ -51,8 +51,8 @@ async def sync_name(
         The resulting index name after sync.
 
     Note:
-        - TO_LOCAL: Renames the local repo to match the remote's name.
-        - TO_REMOTE: Renames the remote repo to match the local's name.
+        - TO_LOCAL: Renames the local box to match the remote's name.
+        - TO_REMOTE: Renames the remote box to match the local's name.
     """
     ...
 
@@ -60,19 +60,19 @@ async def sync_name(
 # Set up testing args
 
 # %%
-from tests.integration.conftest import create_repoyards
+from tests.integration.conftest import create_boxyards
 
-remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
+remote_name, remote_rclone_path, config, config_path, data_path = create_boxyards()
 
 # %%
 # Args
-from repoyard.cmds import new_repo, sync_repo
+from boxyard.cmds import new_box, sync_box
 
 config_path = config_path
-repo_index_name = new_repo(
-    config_path=config_path, repo_name="test_repo", storage_location="my_remote"
+box_index_name = new_box(
+    config_path=config_path, box_name="test_box", storage_location="my_remote"
 )
-await sync_repo(config_path=config_path, repo_index_name=repo_index_name)
+await sync_box(config_path=config_path, box_index_name=box_index_name)
 direction = SyncNameDirection.TO_REMOTE
 verbose = True
 
@@ -80,26 +80,26 @@ verbose = True
 # # Function body
 
 # %% [markdown]
-# Process args and get repo info
+# Process args and get box info
 
 # %%
 #|export
 config = get_config(config_path)
 
-from repoyard._models import get_repoyard_meta
+from boxyard._models import get_boxyard_meta
 
-repoyard_meta = get_repoyard_meta(config)
+boxyard_meta = get_boxyard_meta(config)
 
-if repo_index_name not in repoyard_meta.by_index_name:
-    raise ValueError(f"Repo '{repo_index_name}' not found.")
+if box_index_name not in boxyard_meta.by_index_name:
+    raise ValueError(f"Box '{box_index_name}' not found.")
 
-repo_meta = repoyard_meta.by_index_name[repo_index_name]
-repo_id = RepoMeta.extract_repo_id(repo_index_name)
-storage_location = repo_meta.storage_location
-local_name = repo_meta.name
+box_meta = boxyard_meta.by_index_name[box_index_name]
+box_id = BoxMeta.extract_box_id(box_index_name)
+storage_location = box_meta.storage_location
+local_name = box_meta.name
 
 if verbose:
-    print(f"Syncing name for repo ID: {repo_id}")
+    print(f"Syncing name for box ID: {box_id}")
     print(f"Local name: {local_name}")
 
 # %% [markdown]
@@ -107,20 +107,20 @@ if verbose:
 
 # %%
 #|export
-if repo_meta.get_storage_location_config(config).storage_type == StorageType.LOCAL:
+if box_meta.get_storage_location_config(config).storage_type == StorageType.LOCAL:
     raise ValueError("Cannot sync name for local storage locations.")
 
 # %% [markdown]
-# Find remote repo and get its name
+# Find remote box and get its name
 
 # %%
 #|export
-remote_index_name = await find_remote_repo_by_id(config, storage_location, repo_id)
+remote_index_name = await find_remote_box_by_id(config, storage_location, box_id)
 
 if remote_index_name is None:
-    raise ValueError(f"Remote repo not found for ID '{repo_id}'. Cannot sync name.")
+    raise ValueError(f"Remote box not found for ID '{box_id}'. Cannot sync name.")
 
-_, remote_name = RepoMeta.parse_index_name(remote_index_name)
+_, remote_name = BoxMeta.parse_index_name(remote_index_name)
 
 if verbose:
     print(f"Remote name: {remote_name}")
@@ -144,33 +144,33 @@ else:
 if source_name == target_name:
     if verbose:
         print(f"Names already match: '{source_name}'. Nothing to do.")
-    result_index_name = repo_index_name
+    result_index_name = box_index_name
     #|func_return_line
 
 if verbose:
     print(f"Syncing name ({action_desc}): '{target_name}' -> '{source_name}'")
 
 # %% [markdown]
-# Perform the rename using the rename_repo command
+# Perform the rename using the rename_box command
 
 # %%
 #|export
-from repoyard.cmds._rename_repo import rename_repo, RenameScope
+from boxyard.cmds._rename_box import rename_box, RenameScope
 
 if direction == SyncNameDirection.TO_LOCAL:
     # Rename local to match remote
-    result_index_name = await rename_repo(
+    result_index_name = await rename_box(
         config_path=config_path,
-        repo_index_name=repo_index_name,
+        box_index_name=box_index_name,
         new_name=source_name,
         scope=RenameScope.LOCAL,
         verbose=verbose,
     )
 elif direction == SyncNameDirection.TO_REMOTE:
     # Rename remote to match local
-    result_index_name = await rename_repo(
+    result_index_name = await rename_box(
         config_path=config_path,
-        repo_index_name=repo_index_name,
+        box_index_name=box_index_name,
         new_name=source_name,
         scope=RenameScope.REMOTE,
         verbose=verbose,

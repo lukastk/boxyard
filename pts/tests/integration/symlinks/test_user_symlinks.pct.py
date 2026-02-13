@@ -9,13 +9,13 @@
 # %% [markdown]
 # # User Symlink Integration Tests
 #
-# Tests for creating and managing user repo group symlinks.
+# Tests for creating and managing user box group symlinks.
 #
 # Tests:
 # - Creating symlinks for regular groups
 # - Creating symlinks for virtual groups
 # - Different title modes (INDEX_NAME, DATETIME_AND_NAME, NAME)
-# - Symlink cleanup when repos are excluded/deleted
+# - Symlink cleanup when boxes are excluded/deleted
 # - Conflict handling for duplicate names
 
 # %%
@@ -32,23 +32,23 @@ import asyncio
 import pytest
 from pathlib import Path
 
-from repoyard.cmds import (
-    new_repo,
-    exclude_repo,
-    delete_repo,
-    modify_repometa,
+from boxyard.cmds import (
+    new_box,
+    exclude_box,
+    delete_box,
+    modify_boxmeta,
     create_user_symlinks,
 )
-from repoyard._models import get_repoyard_meta, create_user_repo_group_symlinks
-from repoyard.config import get_config
+from boxyard._models import get_boxyard_meta, create_user_box_group_symlinks
+from boxyard.config import get_config
 
-from tests.integration.conftest import create_repoyards
+from tests.integration.conftest import create_boxyards
 
 # %%
 #|top_export
 @pytest.mark.integration
 def test_user_symlinks():
-    """Test user symlink creation for repo groups."""
+    """Test user symlink creation for box groups."""
     asyncio.run(_test_user_symlinks())
 
 # %%
@@ -56,51 +56,51 @@ def test_user_symlinks():
 async def _test_user_symlinks(): ...
 
 # %% [markdown]
-# ## Initialize repoyard
+# ## Initialize boxyard
 
 # %%
 #|export
-remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
+remote_name, remote_rclone_path, config, config_path, data_path = create_boxyards()
 
-# Ensure user_repo_groups_path exists
-config.user_repo_groups_path.mkdir(parents=True, exist_ok=True)
+# Ensure user_box_groups_path exists
+config.user_box_groups_path.mkdir(parents=True, exist_ok=True)
 
 # %% [markdown]
-# ## Create repos with different groups
+# ## Create boxes with different groups
 
 # %%
 #|export
-# Create repos in different groups
-repo1 = new_repo(
+# Create boxes in different groups
+box1 = new_box(
     config_path=config_path,
-    repo_name="backend-api",
+    box_name="backend-api",
     storage_location=remote_name,
 )
-repo2 = new_repo(
+box2 = new_box(
     config_path=config_path,
-    repo_name="backend-worker",
+    box_name="backend-worker",
     storage_location=remote_name,
 )
-repo3 = new_repo(
+box3 = new_box(
     config_path=config_path,
-    repo_name="frontend-app",
+    box_name="frontend-app",
     storage_location=remote_name,
 )
 
-# Add repos to groups
-modify_repometa(
+# Add boxes to groups
+modify_boxmeta(
     config_path=config_path,
-    repo_index_name=repo1,
+    box_index_name=box1,
     modifications={"groups": ["backend", "api"]},
 )
-modify_repometa(
+modify_boxmeta(
     config_path=config_path,
-    repo_index_name=repo2,
+    box_index_name=box2,
     modifications={"groups": ["backend", "worker"]},
 )
-modify_repometa(
+modify_boxmeta(
     config_path=config_path,
-    repo_index_name=repo3,
+    box_index_name=box3,
     modifications={"groups": ["frontend"]},
 )
 
@@ -109,27 +109,27 @@ modify_repometa(
 
 # %%
 #|export
-# Refresh config to get updated repo metas
+# Refresh config to get updated box metas
 config = get_config(config_path)
 
 # Create symlinks
-create_user_repo_group_symlinks(config)
+create_user_box_group_symlinks(config)
 
 # Verify symlinks were created
-assert (config.user_repo_groups_path / "backend").exists()
-assert (config.user_repo_groups_path / "frontend").exists()
-assert (config.user_repo_groups_path / "api").exists()
-assert (config.user_repo_groups_path / "worker").exists()
+assert (config.user_box_groups_path / "backend").exists()
+assert (config.user_box_groups_path / "frontend").exists()
+assert (config.user_box_groups_path / "api").exists()
+assert (config.user_box_groups_path / "worker").exists()
 
 # %% [markdown]
 # ## Verify symlink targets
 
 # %%
 #|export
-repoyard_meta = get_repoyard_meta(config, force_create=True)
+boxyard_meta = get_boxyard_meta(config, force_create=True)
 
-# Check backend group has both backend repos
-backend_symlinks = list((config.user_repo_groups_path / "backend").iterdir())
+# Check backend group has both backend boxes
+backend_symlinks = list((config.user_box_groups_path / "backend").iterdir())
 assert len(backend_symlinks) == 2
 
 # Check that symlinks point to correct locations
@@ -137,46 +137,46 @@ for symlink in backend_symlinks:
     assert symlink.is_symlink()
     target = symlink.resolve()
     assert target.exists()
-    # Target should be in user_repos_path (resolve both to handle /tmp vs /private/tmp on macOS)
-    resolved_repos_path = config.user_repos_path.resolve()
-    assert resolved_repos_path in target.parents or target.parent == resolved_repos_path
+    # Target should be in user_boxes_path (resolve both to handle /tmp vs /private/tmp on macOS)
+    resolved_boxes_path = config.user_boxes_path.resolve()
+    assert resolved_boxes_path in target.parents or target.parent == resolved_boxes_path
 
 # %% [markdown]
-# ## Test symlink cleanup when repo is excluded
+# ## Test symlink cleanup when box is excluded
 
 # %%
 #|export
-# Exclude one backend repo
-await exclude_repo(config_path=config_path, repo_index_name=repo2)
+# Exclude one backend box
+await exclude_box(config_path=config_path, box_index_name=box2)
 
 # Recreate symlinks
 config = get_config(config_path)
-create_user_repo_group_symlinks(config)
+create_user_box_group_symlinks(config)
 
 # Backend group should now have only 1 symlink
-backend_symlinks = list((config.user_repo_groups_path / "backend").iterdir())
+backend_symlinks = list((config.user_box_groups_path / "backend").iterdir())
 assert len(backend_symlinks) == 1
 
 # Worker group should be empty or removed
-worker_path = config.user_repo_groups_path / "worker"
+worker_path = config.user_box_groups_path / "worker"
 if worker_path.exists():
     worker_symlinks = list(worker_path.iterdir())
     assert len(worker_symlinks) == 0
 
 # %% [markdown]
-# ## Test symlink cleanup when repo is deleted
+# ## Test symlink cleanup when box is deleted
 
 # %%
 #|export
-# Delete frontend repo
-await delete_repo(config_path=config_path, repo_index_name=repo3)
+# Delete frontend box
+await delete_box(config_path=config_path, box_index_name=box3)
 
 # Recreate symlinks
 config = get_config(config_path)
-create_user_repo_group_symlinks(config)
+create_user_box_group_symlinks(config)
 
 # Frontend group should be empty or removed
-frontend_path = config.user_repo_groups_path / "frontend"
+frontend_path = config.user_box_groups_path / "frontend"
 if frontend_path.exists():
     frontend_symlinks = list(frontend_path.iterdir())
     assert len(frontend_symlinks) == 0
@@ -186,9 +186,9 @@ if frontend_path.exists():
 
 # %%
 #|export
-# Delete remaining repos
-await delete_repo(config_path=config_path, repo_index_name=repo1)
+# Delete remaining boxes
+await delete_box(config_path=config_path, box_index_name=box1)
 
 # Final symlink cleanup
 config = get_config(config_path)
-create_user_repo_group_symlinks(config)
+create_user_box_group_symlinks(config)

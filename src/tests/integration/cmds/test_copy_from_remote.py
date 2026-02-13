@@ -6,37 +6,37 @@ import tempfile
 import shutil
 from pathlib import Path
 
-from repoyard.cmds import (
-    new_repo,
-    sync_repo,
+from boxyard.cmds import (
+    new_box,
+    sync_box,
 )
-from repoyard.cmds._copy_from_remote import copy_from_remote
-from repoyard._models import get_repoyard_meta, RepoPart
-from repoyard.config import get_config
-from repoyard import const
+from boxyard.cmds._copy_from_remote import copy_from_remote
+from boxyard._models import get_boxyard_meta, BoxPart
+from boxyard.config import get_config
+from boxyard import const
 
-from ...integration.conftest import create_repoyards
+from ...integration.conftest import create_boxyards
 
 @pytest.mark.integration
 def test_copy_from_remote():
-    """Test copy command for downloading remote repos without tracking."""
+    """Test copy command for downloading remote boxes without tracking."""
     asyncio.run(_test_copy_from_remote())
 
 async def _test_copy_from_remote():
-    remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
-    repo_index_name = new_repo(
+    remote_name, remote_rclone_path, config, config_path, data_path = create_boxyards()
+    box_index_name = new_box(
         config_path=config_path,
-        repo_name="test-copy-repo",
+        box_name="test-copy-box",
         storage_location=remote_name,
     )
     
-    # Refresh config and get repo meta
+    # Refresh config and get box meta
     config = get_config(config_path)
-    repoyard_meta = get_repoyard_meta(config, force_create=True)
-    repo_meta = repoyard_meta.by_index_name[repo_index_name]
+    boxyard_meta = get_boxyard_meta(config, force_create=True)
+    box_meta = boxyard_meta.by_index_name[box_index_name]
     
     # Add some test data
-    local_data_path = repo_meta.get_local_part_path(config, RepoPart.DATA)
+    local_data_path = box_meta.get_local_part_path(config, BoxPart.DATA)
     test_file = local_data_path / "test_data.txt"
     test_file.write_text("Hello from copy test!")
     
@@ -46,14 +46,14 @@ async def _test_copy_from_remote():
     (nested_dir / "nested_file.txt").write_text("Nested content")
     
     # Sync to remote
-    await sync_repo(config_path=config_path, repo_index_name=repo_index_name)
+    await sync_box(config_path=config_path, box_index_name=box_index_name)
     # Create temp directory for copy destination
     with tempfile.TemporaryDirectory() as temp_dir:
         dest_path = Path(temp_dir) / "my_copy"
     
         result_path = await copy_from_remote(
             config_path=config_path,
-            repo_index_name=repo_index_name,
+            box_index_name=box_index_name,
             dest_path=dest_path,
             verbose=True,
         )
@@ -65,17 +65,17 @@ async def _test_copy_from_remote():
         assert (dest_path / "nested" / "subdir" / "nested_file.txt").exists()
         assert (dest_path / "nested" / "subdir" / "nested_file.txt").read_text() == "Nested content"
     
-        # Verify no repometa.toml by default
-        assert not (dest_path / const.REPO_METAFILE_REL_PATH).exists()
+        # Verify no boxmeta.toml by default
+        assert not (dest_path / const.BOX_METAFILE_REL_PATH).exists()
     
         # Verify no conf folder by default
-        assert not (dest_path / const.REPO_CONF_REL_PATH).exists()
+        assert not (dest_path / const.BOX_CONF_REL_PATH).exists()
     with tempfile.TemporaryDirectory() as temp_dir:
         dest_path = Path(temp_dir) / "my_copy_with_meta"
     
         result_path = await copy_from_remote(
             config_path=config_path,
-            repo_index_name=repo_index_name,
+            box_index_name=box_index_name,
             dest_path=dest_path,
             copy_meta=True,
             verbose=True,
@@ -84,8 +84,8 @@ async def _test_copy_from_remote():
         assert dest_path.exists()
         assert (dest_path / "test_data.txt").exists()
     
-        # Verify repometa.toml was copied
-        assert (dest_path / const.REPO_METAFILE_REL_PATH).exists()
+        # Verify boxmeta.toml was copied
+        assert (dest_path / const.BOX_METAFILE_REL_PATH).exists()
     with tempfile.TemporaryDirectory() as temp_dir:
         dest_path = Path(temp_dir) / "existing_dest"
         dest_path.mkdir(parents=True)
@@ -94,7 +94,7 @@ async def _test_copy_from_remote():
         try:
             await copy_from_remote(
                 config_path=config_path,
-                repo_index_name=repo_index_name,
+                box_index_name=box_index_name,
                 dest_path=dest_path,
             )
             assert False, "Should have raised ValueError"
@@ -108,7 +108,7 @@ async def _test_copy_from_remote():
     
         result_path = await copy_from_remote(
             config_path=config_path,
-            repo_index_name=repo_index_name,
+            box_index_name=box_index_name,
             dest_path=dest_path,
             overwrite=True,
             verbose=True,
@@ -117,43 +117,43 @@ async def _test_copy_from_remote():
         assert dest_path.exists()
         assert (dest_path / "test_data.txt").exists()
         assert (dest_path / "test_data.txt").read_text() == "Hello from copy test!"
-    # Try to copy to within repoyard data path
-    bad_dest = config.repoyard_data_path / "bad_copy_dest"
+    # Try to copy to within boxyard data path
+    bad_dest = config.boxyard_data_path / "bad_copy_dest"
     
     try:
         await copy_from_remote(
             config_path=config_path,
-            repo_index_name=repo_index_name,
+            box_index_name=box_index_name,
             dest_path=bad_dest,
         )
         assert False, "Should have raised ValueError"
     except ValueError as e:
-        assert "is within the repoyard data path" in str(e)
-    # Try to copy to within user repos path
-    bad_dest = config.user_repos_path / "bad_copy_dest"
+        assert "is within the boxyard data path" in str(e)
+    # Try to copy to within user boxes path
+    bad_dest = config.user_boxes_path / "bad_copy_dest"
     
     try:
         await copy_from_remote(
             config_path=config_path,
-            repo_index_name=repo_index_name,
+            box_index_name=box_index_name,
             dest_path=bad_dest,
         )
         assert False, "Should have raised ValueError"
     except ValueError as e:
-        assert "is within the user repos path" in str(e)
+        assert "is within the user boxes path" in str(e)
     with tempfile.TemporaryDirectory() as temp_dir:
         dest_path = Path(temp_dir) / "no_sync_record_copy"
     
         await copy_from_remote(
             config_path=config_path,
-            repo_index_name=repo_index_name,
+            box_index_name=box_index_name,
             dest_path=dest_path,
         )
     
         # Verify no sync record was created in the destination
         # (This is implicit - there's nowhere for a sync record to be in an arbitrary path)
         assert dest_path.exists()
-        assert not (dest_path / ".repoyard").exists()
-    from repoyard.cmds import delete_repo
+        assert not (dest_path / ".boxyard").exists()
+    from boxyard.cmds import delete_box
     
-    await delete_repo(config_path=config_path, repo_index_name=repo_index_name)
+    await delete_box(config_path=config_path, box_index_name=box_index_name)

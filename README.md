@@ -1,4 +1,4 @@
-# repoyard
+# boxyard
 
 <!-- #region -->
 # Usage
@@ -6,13 +6,13 @@
 To run all all scripts in `core` in sequence, run
 
 ```python
-repoyard.core.run_all()
+boxyard.core.run_all()
 ```
 
 from within Python, or
 
 ```
-repoyard run-core
+boxyard run-core
 ```
 
 from the terminal.
@@ -33,7 +33,7 @@ from the terminal.
 Run the following:
 
 ```bash
-# In the root of the repo folder
+# In the root of the project folder
 uv sync # Installs the virtual environment at './.venv'
 direnv allow # Allows the automatic running of the script './.envrc'
 nbl install-hooks # Installs a git hooks that ensures that notebooks are added properly

@@ -19,7 +19,7 @@ import asyncio
 from pathlib import Path
 from unittest.mock import patch, AsyncMock
 
-from repoyard._utils.rclone import (
+from boxyard._utils.rclone import (
     BisyncResult,
     rclone_copy,
     rclone_copyto,
@@ -430,7 +430,7 @@ class TestRcloneCommandExecution:
         """rclone_copy returns True on success."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "", "")),
             ):
                 success, stdout, stderr = await rclone_copy(
@@ -448,7 +448,7 @@ class TestRcloneCommandExecution:
         """rclone_copy returns False on failure."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(1, "", "error")),
             ):
                 success, stdout, stderr = await rclone_copy(
@@ -466,7 +466,7 @@ class TestRcloneCommandExecution:
         """rclone_mkdir raises exception on failure."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(1, "", "mkdir failed")),
             ):
                 with pytest.raises(Exception, match="mkdir failed"):
@@ -483,7 +483,7 @@ class TestRcloneCommandExecution:
         async def _test():
             mock_output = '[{"Name": "file.txt", "Size": 100}]'
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, mock_output, "")),
             ):
                 result = await rclone_lsjson(
@@ -499,7 +499,7 @@ class TestRcloneCommandExecution:
         """rclone_lsjson returns None on failure."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(1, "", "error")),
             ):
                 result = await rclone_lsjson(
@@ -528,7 +528,7 @@ class TestRcloneCommandExecution:
         async def _test():
             mock_output = '[{"Name": "mydir", "IsDir": true}]'
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, mock_output, "")),
             ):
                 result = await rclone_path_exists(
@@ -545,7 +545,7 @@ class TestRcloneCommandExecution:
         async def _test():
             mock_output = '[{"Name": "other", "IsDir": false}]'
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, mock_output, "")),
             ):
                 result = await rclone_path_exists(
@@ -561,7 +561,7 @@ class TestRcloneCommandExecution:
         """rclone_purge returns True on success."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "", "")),
             ):
                 result = await rclone_purge(
@@ -577,7 +577,7 @@ class TestRcloneCommandExecution:
         """rclone_purge returns False on failure."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(1, "", "error")),
             ):
                 result = await rclone_purge(
@@ -593,7 +593,7 @@ class TestRcloneCommandExecution:
         """rclone_cat returns content on success."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "file content", "")),
             ):
                 success, content = await rclone_cat(
@@ -610,7 +610,7 @@ class TestRcloneCommandExecution:
         """rclone_cat returns None on failure."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(1, "", "error")),
             ):
                 success, content = await rclone_cat(
@@ -627,7 +627,7 @@ class TestRcloneCommandExecution:
         """rclone_move returns True on success."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "", "")),
             ):
                 success, output = await rclone_move(
@@ -655,7 +655,7 @@ class TestBisyncResultParsing:
         """Bisync returns SUCCESS on successful sync."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "", "")),
             ):
                 result, stdout, stderr = await rclone_bisync(
@@ -675,7 +675,7 @@ class TestBisyncResultParsing:
         """Bisync returns ERROR_NEEDS_RESYNC on resync error."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(
                     return_value=(
                         1,
@@ -701,7 +701,7 @@ class TestBisyncResultParsing:
         """Bisync returns ERROR_ALL_FILES_CHANGED on safety abort."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(
                     return_value=(
                         1,
@@ -727,7 +727,7 @@ class TestBisyncResultParsing:
         """Bisync returns CONFLICTS when conflicts detected."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(
                     return_value=(
                         0,
@@ -753,7 +753,7 @@ class TestBisyncResultParsing:
         """Bisync returns ERROR_OTHER on other errors."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(1, "", "Some other error")),
             ):
                 result, stdout, stderr = await rclone_bisync(
@@ -784,7 +784,7 @@ class TestRcloneLsjsonOptions:
         async def _test():
             mock_output = "[]"
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, mock_output, "")),
             ):
                 # Test dirs_only
@@ -841,7 +841,7 @@ class TestRcloneLsjsonOptions:
 
 # %%
 #|export
-from repoyard._utils import rclone_mkdir
+from boxyard._utils import rclone_mkdir
 
 
 class TestRcloneMkdir:
@@ -851,7 +851,7 @@ class TestRcloneMkdir:
         """rclone_mkdir builds correct command."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "", "")),
             ) as mock_run:
                 await rclone_mkdir(
@@ -874,7 +874,7 @@ class TestRcloneMkdir:
         """rclone_mkdir handles local paths (no source)."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "", "")),
             ) as mock_run:
                 await rclone_mkdir(
@@ -893,7 +893,7 @@ class TestRcloneMkdir:
         """rclone_mkdir raises exception on failure."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(1, "", "Permission denied")),
             ):
                 with pytest.raises(Exception, match="Permission denied"):
@@ -912,7 +912,7 @@ class TestRcloneMkdir:
 
 # %%
 #|export
-from repoyard._utils import rclone_path_exists
+from boxyard._utils import rclone_path_exists
 
 
 class TestRclonePathExists:
@@ -940,7 +940,7 @@ class TestRclonePathExists:
             ]
 
             with patch(
-                "repoyard._utils.rclone.rclone_lsjson",
+                "boxyard._utils.rclone.rclone_lsjson",
                 new=AsyncMock(return_value=mock_ls_result),
             ):
                 result = await rclone_path_exists(
@@ -962,7 +962,7 @@ class TestRclonePathExists:
             ]
 
             with patch(
-                "repoyard._utils.rclone.rclone_lsjson",
+                "boxyard._utils.rclone.rclone_lsjson",
                 new=AsyncMock(return_value=mock_ls_result),
             ):
                 result = await rclone_path_exists(
@@ -983,7 +983,7 @@ class TestRclonePathExists:
             ]
 
             with patch(
-                "repoyard._utils.rclone.rclone_lsjson",
+                "boxyard._utils.rclone.rclone_lsjson",
                 new=AsyncMock(return_value=mock_ls_result),
             ):
                 result = await rclone_path_exists(
@@ -1000,7 +1000,7 @@ class TestRclonePathExists:
         """Returns (False, False) when parent directory doesn't exist."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.rclone_lsjson",
+                "boxyard._utils.rclone.rclone_lsjson",
                 new=AsyncMock(return_value=None),
             ):
                 result = await rclone_path_exists(
@@ -1020,7 +1020,7 @@ class TestRclonePathExists:
 
 # %%
 #|export
-from repoyard._utils import rclone_purge
+from boxyard._utils import rclone_purge
 
 
 class TestRclonePurge:
@@ -1030,7 +1030,7 @@ class TestRclonePurge:
         """rclone_purge builds correct command."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "", "")),
             ) as mock_run:
                 result = await rclone_purge(
@@ -1053,7 +1053,7 @@ class TestRclonePurge:
         """rclone_purge handles local paths."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "", "")),
             ) as mock_run:
                 result = await rclone_purge(
@@ -1072,7 +1072,7 @@ class TestRclonePurge:
         """rclone_purge returns False on failure."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(1, "", "Directory not found")),
             ):
                 result = await rclone_purge(
@@ -1092,7 +1092,7 @@ class TestRclonePurge:
 
 # %%
 #|export
-from repoyard._utils import rclone_cat
+from boxyard._utils import rclone_cat
 
 
 class TestRcloneCat:
@@ -1102,7 +1102,7 @@ class TestRcloneCat:
         """rclone_cat builds correct command."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "file contents", "")),
             ) as mock_run:
                 success, content = await rclone_cat(
@@ -1125,7 +1125,7 @@ class TestRcloneCat:
         """rclone_cat handles local files."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "local content", "")),
             ) as mock_run:
                 success, content = await rclone_cat(
@@ -1145,7 +1145,7 @@ class TestRcloneCat:
         """rclone_cat returns (False, None) on failure."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(1, "", "File not found")),
             ):
                 success, content = await rclone_cat(
@@ -1166,7 +1166,7 @@ class TestRcloneCat:
 
 # %%
 #|export
-from repoyard._utils import rclone_move
+from boxyard._utils import rclone_move
 
 
 class TestRcloneMove:
@@ -1176,7 +1176,7 @@ class TestRcloneMove:
         """rclone_move builds correct command."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "", "")),
             ) as mock_run:
                 success, output = await rclone_move(
@@ -1201,7 +1201,7 @@ class TestRcloneMove:
         """rclone_move handles local to remote move."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "", "")),
             ) as mock_run:
                 success, output = await rclone_move(
@@ -1223,7 +1223,7 @@ class TestRcloneMove:
         """rclone_move handles remote to local move."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(0, "", "")),
             ) as mock_run:
                 success, output = await rclone_move(
@@ -1245,7 +1245,7 @@ class TestRcloneMove:
         """rclone_move returns (False, stderr) on failure."""
         async def _test():
             with patch(
-                "repoyard._utils.rclone.run_cmd_async",
+                "boxyard._utils.rclone.run_cmd_async",
                 new=AsyncMock(return_value=(1, "", "Permission denied")),
             ):
                 success, output = await rclone_move(

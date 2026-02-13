@@ -23,7 +23,7 @@ from pathlib import Path
 import toml
 from enum import Enum
 
-from repoyard import const
+from boxyard import const
 
 # %% [markdown]
 # # `config.json`
@@ -46,32 +46,32 @@ class StorageConfig(const.StrictModel):
         return self
 
 
-class RepoGroupTitleMode(Enum):
+class BoxGroupTitleMode(Enum):
     INDEX_NAME = "index_name"
     DATETIME_AND_NAME = "datetime_and_name"
     NAME = "name"
 
 
-class RepoGroupConfig(const.StrictModel):
+class BoxGroupConfig(const.StrictModel):
     symlink_name: str | None = None
-    repo_title_mode: RepoGroupTitleMode = RepoGroupTitleMode.INDEX_NAME
-    unique_repo_names: bool = False
+    box_title_mode: BoxGroupTitleMode = BoxGroupTitleMode.INDEX_NAME
+    unique_box_names: bool = False
 
 
-class VirtualRepoGroupConfig(const.StrictModel):
+class VirtualBoxGroupConfig(const.StrictModel):
     symlink_name: str | None = None
-    repo_title_mode: RepoGroupTitleMode = RepoGroupTitleMode.INDEX_NAME
+    box_title_mode: BoxGroupTitleMode = BoxGroupTitleMode.INDEX_NAME
     filter_expr: str
 
     def is_in_group(self, groups: list[str]) -> bool:
         if not hasattr(self, "_filter_func"):
-            from repoyard._utils.logical_expressions import get_group_filter_func
+            from boxyard._utils.logical_expressions import get_group_filter_func
 
             self._filter_func = get_group_filter_func(self.filter_expr)
         return self._filter_func(groups)
 
 
-class RepoTimestampFormat(Enum):
+class BoxTimestampFormat(Enum):
     DATE_AND_TIME = "date_and_time"
     DATE_ONLY = "date_only"
 
@@ -80,36 +80,36 @@ class Config(const.StrictModel):
     config_path: Path  # Path to the config file. Will not be saved to the config file.
 
     default_storage_location: str
-    repoyard_data_path: Path
-    repo_timestamp_format: RepoTimestampFormat
-    user_repos_path: Path
-    user_repo_groups_path: Path
+    boxyard_data_path: Path
+    box_timestamp_format: BoxTimestampFormat
+    user_boxes_path: Path
+    user_box_groups_path: Path
     storage_locations: dict[str, StorageConfig]
-    repo_groups: dict[str, RepoGroupConfig]
-    virtual_repo_groups: dict[str, VirtualRepoGroupConfig]
-    default_repo_groups: list[str]
-    repo_subid_character_set: str
-    repo_subid_length: int
+    box_groups: dict[str, BoxGroupConfig]
+    virtual_box_groups: dict[str, VirtualBoxGroupConfig]
+    default_box_groups: list[str]
+    box_subid_character_set: str
+    box_subid_length: int
     max_concurrent_rclone_ops: int
 
-    # New repo creation settings
-    sync_before_new_repo: bool = False  # If True, sync repometas before creating new repo to check for ID collisions on remote
+    # New box creation settings
+    sync_before_new_box: bool = False  # If True, sync boxmetas before creating new box to check for ID collisions on remote
 
     @property
     def local_store_path(self) -> Path:
-        return self.repoyard_data_path / "local_store"
+        return self.boxyard_data_path / "local_store"
 
     @property
     def local_sync_backups_path(self) -> Path:
-        return self.repoyard_data_path / "sync_backups"
+        return self.boxyard_data_path / "sync_backups"
 
     @property
-    def repoyard_meta_path(self) -> Path:
-        return self.repoyard_data_path / "repoyard_meta.json"
+    def boxyard_meta_path(self) -> Path:
+        return self.boxyard_data_path / "boxyard_meta.json"
 
     @property
     def rclone_config_path(self) -> Path:
-        return Path(self.config_path).parent / "repoyard_rclone.conf"
+        return Path(self.config_path).parent / "boxyard_rclone.conf"
 
     @property
     def default_rclone_exclude_path(self) -> Path:
@@ -117,16 +117,16 @@ class Config(const.StrictModel):
 
     @property
     def remote_indexes_path(self) -> Path:
-        """Path to cached remote index lookups (repo_id -> remote index_name)."""
-        return self.repoyard_data_path / "remote_indexes"
+        """Path to cached remote index lookups (box_id -> remote index_name)."""
+        return self.boxyard_data_path / "remote_indexes"
 
     @model_validator(mode="after")
     def validate_config(self):
         # Expand all paths
         self.config_path = Path(self.config_path).expanduser()
-        self.repoyard_data_path = Path(self.repoyard_data_path).expanduser()
-        self.user_repos_path = Path(self.user_repos_path).expanduser()
-        self.user_repo_groups_path = Path(self.user_repo_groups_path).expanduser()
+        self.boxyard_data_path = Path(self.boxyard_data_path).expanduser()
+        self.user_boxes_path = Path(self.user_boxes_path).expanduser()
+        self.user_box_groups_path = Path(self.user_box_groups_path).expanduser()
 
         import re
 
@@ -147,12 +147,12 @@ class Config(const.StrictModel):
                 f"default_storage_location '{self.default_storage_location}' not found in storage_locations"
             )
 
-        from repoyard._models import RepoMeta
+        from boxyard._models import BoxMeta
 
-        for group_name in list(self.repo_groups.keys()) + list(
-            self.virtual_repo_groups.keys()
+        for group_name in list(self.box_groups.keys()) + list(
+            self.virtual_box_groups.keys()
         ):
-            RepoMeta.validate_group_name(group_name)
+            BoxMeta.validate_group_name(group_name)
 
         return self
 
@@ -177,23 +177,23 @@ def _get_default_config_dict(config_path=None, data_path=None) -> Config:
     config_dict = dict(
         config_path=config_path.as_posix(),
         default_storage_location="fake",
-        repoyard_data_path=data_path.as_posix(),
-        repo_timestamp_format=RepoTimestampFormat.DATE_ONLY.value,
-        user_repos_path=const.DEFAULT_USER_REPOS_PATH.as_posix(),
-        user_repo_groups_path=const.DEFAULT_USER_REPO_GROUPS_PATH.as_posix(),
+        boxyard_data_path=data_path.as_posix(),
+        box_timestamp_format=BoxTimestampFormat.DATE_ONLY.value,
+        user_boxes_path=const.DEFAULT_USER_BOXES_PATH.as_posix(),
+        user_box_groups_path=const.DEFAULT_USER_BOX_GROUPS_PATH.as_posix(),
         storage_locations={
             "fake": dict(
                 storage_type=StorageType.LOCAL.value,
                 store_path=(data_path / const.DEFAULT_FAKE_STORE_REL_PATH).as_posix(),
             )
         },
-        repo_groups={},
-        virtual_repo_groups={},
-        default_repo_groups=[],
-        repo_subid_character_set=const.DEFAULT_REPO_SUBID_CHARACTER_SET,
-        repo_subid_length=const.DEFAULT_REPO_SUBID_LENGTH,
+        box_groups={},
+        virtual_box_groups={},
+        default_box_groups=[],
+        box_subid_character_set=const.DEFAULT_BOX_SUBID_CHARACTER_SET,
+        box_subid_length=const.DEFAULT_BOX_SUBID_LENGTH,
         max_concurrent_rclone_ops=const.DEFAULT_MAX_CONCURRENT_RCLONE_OPS,
-        sync_before_new_repo=False,
+        sync_before_new_box=False,
     )
     return config_dict
 

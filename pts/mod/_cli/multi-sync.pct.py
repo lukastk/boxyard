@@ -22,13 +22,13 @@ from nblite import nbl_export, show_doc; nbl_export();
 import typer
 from typer import Option
 
-from repoyard._enums import SyncSetting, SyncDirection, RepoPart
-from repoyard._cli.app import app, app_state
+from boxyard._enums import SyncSetting, SyncDirection, BoxPart
+from boxyard._cli.app import app, app_state
 
 # %%
 #|export
-from repoyard._models import get_repoyard_meta
-from repoyard.cmds import sync_repo
+from boxyard._models import get_boxyard_meta
+from boxyard.cmds import sync_box
 from rich.live import Live
 from rich.text import Text
 from rich.console import Console
@@ -39,8 +39,8 @@ import shutil
 #|set_func_signature
 @app.command(name="multi-sync")
 def cli_multi_sync(
-    repo_index_names: list[str] | None = Option(
-        None, "--repo", "-r", help="The index names of the repository, in the form."
+    box_index_names: list[str] | None = Option(
+        None, "--box", "-r", help="The index names of the box, in the form."
     ),
     storage_locations: list[str] | None = Option(
         None, "--storage-location", "-s", help="The storage locations to sync."
@@ -59,24 +59,24 @@ def cli_multi_sync(
     sync_setting: SyncSetting = Option(
         SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."
     ),
-    sync_choices: list[RepoPart] | None = Option(
+    sync_choices: list[BoxPart] | None = Option(
         None,
         "--sync-choices",
         "-c",
-        help="The parts of the repository to sync. If not provided, all parts will be synced. By default, all parts are synced.",
+        help="The parts of the box to sync. If not provided, all parts will be synced. By default, all parts are synced.",
     ),
     sync_recently_modified_first: bool = Option(
-        False, help="Sync repositories that have been recently modified first."
+        False, help="Sync boxes that have been recently modified first."
     ),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
     show_progress: bool = Option(True, help="Show the progress of the sync."),
     no_print_skipped: bool = Option(
-        True, help="Do not print repositories for which no syncs happened."
+        True, help="Do not print boxes for which no syncs happened."
     ),
     soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
-    Sync multiple repositories.
+    Sync multiple boxes.
     """
     ...
 
@@ -85,17 +85,17 @@ def cli_multi_sync(
 
 # %%
 # Set up test environment
-from tests.integration.conftest import create_repoyards
+from tests.integration.conftest import create_boxyards
 
-remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
+remote_name, remote_rclone_path, config, config_path, data_path = create_boxyards()
 
-# Create some repos
-from repoyard.cmds import new_repo
+# Create some boxes
+from boxyard.cmds import new_box
 
 for i in range(3):
-    new_repo(
+    new_box(
         config_path=config_path,
-        repo_name=f"test_repo_{i}",
+        box_name=f"test_box_{i}",
         storage_location=remote_name,
     )
 
@@ -103,7 +103,7 @@ for i in range(3):
 # Args
 app_state = {"config_path": config_path}
 
-repo_index_names = None
+box_index_names = None
 storage_locations = None
 max_concurrent_rclone_ops = None
 sync_direction = None
@@ -123,19 +123,19 @@ soft_interruption_enabled = True
 
 # %%
 #|export
-from repoyard._utils import enable_soft_interruption, SoftInterruption
-from repoyard.config import get_config
+from boxyard._utils import enable_soft_interruption, SoftInterruption
+from boxyard.config import get_config
 
 if soft_interruption_enabled:
     enable_soft_interruption()
 
-if repo_index_names is not None and storage_locations is not None:
-    typer.echo("Cannot provide both `--repo` and `--storage-location`.", err=True)
+if box_index_names is not None and storage_locations is not None:
+    typer.echo("Cannot provide both `--box` and `--storage-location`.", err=True)
     raise typer.Exit(code=1)
 
 config = get_config(app_state["config_path"])
 
-if storage_locations is None and repo_index_names is None:
+if storage_locations is None and box_index_names is None:
     storage_locations = list(config.storage_locations.keys())
 if storage_locations is not None and any(
     sl not in config.storage_locations for sl in storage_locations
@@ -147,25 +147,25 @@ if max_concurrent_rclone_ops is None:
     max_concurrent_rclone_ops = config.max_concurrent_rclone_ops
 
 if sync_choices is None:
-    sync_choices = [part for part in RepoPart]
+    sync_choices = [part for part in BoxPart]
 
-repoyard_meta = get_repoyard_meta(config)
-if repo_index_names is None:
-    repo_metas = [
-        repo_meta
-        for repo_meta in repoyard_meta.repo_metas
-        if repo_meta.storage_location in storage_locations
+boxyard_meta = get_boxyard_meta(config)
+if box_index_names is None:
+    box_metas = [
+        box_meta
+        for box_meta in boxyard_meta.box_metas
+        if box_meta.storage_location in storage_locations
     ]
 else:
     if any(
-        repo_index_name not in repoyard_meta.by_index_name
-        for repo_index_name in repo_index_names
+        box_index_name not in boxyard_meta.by_index_name
+        for box_index_name in box_index_names
     ):
-        typer.echo(f"Non-existent repository: {repo_index_names}")
+        typer.echo(f"Non-existent box: {box_index_names}")
         raise typer.Exit(code=1)
-    repo_metas = [
-        repoyard_meta.by_index_name[repo_index_name]
-        for repo_index_name in repo_index_names
+    box_metas = [
+        boxyard_meta.by_index_name[box_index_name]
+        for box_index_name in box_index_names
     ]
 
 # %% [markdown]
@@ -173,18 +173,18 @@ else:
 
 # %%
 #|export
-async def _task(num, repo_meta):
-    sync_stats[repo_meta.index_name] = (num, "Syncing...", None, datetime.now(), None)
+async def _task(num, box_meta):
+    sync_stats[box_meta.index_name] = (num, "Syncing...", None, datetime.now(), None)
     try:
-        sync_results = await sync_repo(
+        sync_results = await sync_box(
             config_path=app_state["config_path"],
-            repo_index_name=repo_meta.index_name,
+            box_index_name=box_meta.index_name,
             sync_direction=sync_direction,
             sync_setting=sync_setting,
             sync_choices=sync_choices,
             verbose=False,
         )
-        sync_stats[repo_meta.index_name] = (
+        sync_stats[box_meta.index_name] = (
             num,
             "Success",
             None,
@@ -192,7 +192,7 @@ async def _task(num, repo_meta):
             sync_results,
         )
     except SoftInterruption:
-        sync_stats[repo_meta.index_name] = (
+        sync_stats[box_meta.index_name] = (
             num,
             "Interrupted",
             None,
@@ -200,10 +200,10 @@ async def _task(num, repo_meta):
             None,
         )
     except Exception as e:
-        sync_stats[repo_meta.index_name] = (num, "Error", str(e), datetime.now(), None)
+        sync_stats[box_meta.index_name] = (num, "Error", str(e), datetime.now(), None)
 
     if show_progress:
-        print_finished(repo_meta.index_name)
+        print_finished(box_meta.index_name)
 
 # %% [markdown]
 # Set up the progress printing (shown if `show_progress == True`)
@@ -218,8 +218,8 @@ sync_stats = {}
 finish_monitoring_event = asyncio.Event()
 
 
-def get_status_lines(repo_index_name):
-    num, sync_stat, e, timestamp, sync_results = sync_stats[repo_index_name]
+def get_status_lines(box_index_name):
+    num, sync_stat, e, timestamp, sync_results = sync_stats[box_index_name]
     lines = []
 
     console_width = shutil.get_terminal_size((80, 20)).columns
@@ -237,7 +237,7 @@ def get_status_lines(repo_index_name):
         "Error": "red",
     }.get(sync_stat, "")
 
-    left = f"({num + 1}/{len(repo_metas)}) [bold {name_color}]{repo_index_name}[/bold {name_color}]"
+    left = f"({num + 1}/{len(box_metas)}) [bold {name_color}]{box_index_name}[/bold {name_color}]"
     right = f"[bold {status_color}]{sync_stat}[/bold {status_color}]"
 
     # Strip markup to compute the real visible lengths
@@ -253,8 +253,8 @@ def get_status_lines(repo_index_name):
 
     line = f"{left} {'.' * dots} {right}"
     syncs_happened = [
-        False if sync_results is None else sync_results[repo_part][1]
-        for repo_part in sync_choices
+        False if sync_results is None else sync_results[box_part][1]
+        for box_part in sync_choices
     ]
     lines.append(line)
 
@@ -263,9 +263,9 @@ def get_status_lines(repo_index_name):
         lines.append(f"{indent}[red]{e}[/red]")
     elif sync_stat == "Success":
         line = []
-        for repo_part, synced in zip(sync_choices, syncs_happened):
+        for box_part, synced in zip(sync_choices, syncs_happened):
             line.append(
-                f"[bold]{repo_part.value}:[/bold] {'[green]Synced[/green]' if synced else '[blue]Skipped[/blue]'}"
+                f"[bold]{box_part.value}:[/bold] {'[green]Synced[/green]' if synced else '[blue]Skipped[/blue]'}"
             )
         lines.append(indent + f",{indent}".join(line))
     else:
@@ -277,7 +277,7 @@ def get_status_lines(repo_index_name):
 def get_sync_stat_board(finished: bool):
     console_width = shutil.get_terminal_size((80, 20)).columns
     lines = []
-    for repo_index_name, (
+    for box_index_name, (
         num,
         sync_stat,
         e,
@@ -286,19 +286,19 @@ def get_sync_stat_board(finished: bool):
     ) in sync_stats.items():
         if sync_stat != "Syncing...":
             continue
-        lines.extend(get_status_lines(repo_index_name))
+        lines.extend(get_status_lines(box_index_name))
     return "\n".join(lines).strip()
 
 
-def print_finished(repo_index_name: str):
-    num, sync_stat, e, timestamp, sync_results = sync_stats[repo_index_name]
+def print_finished(box_index_name: str):
+    num, sync_stat, e, timestamp, sync_results = sync_stats[box_index_name]
     syncs_happened = [
-        False if sync_results is None else sync_results[repo_part][1]
-        for repo_part in sync_choices
+        False if sync_results is None else sync_results[box_part][1]
+        for box_part in sync_choices
     ]
     if no_print_skipped and sync_stat == "Success" and not any(syncs_happened):
         return
-    lines = get_status_lines(repo_index_name)
+    lines = get_status_lines(box_index_name)
     console.print(Text.from_markup("\n".join(lines).strip()))
 
 
@@ -322,19 +322,19 @@ async def _progress_monitor_task():
 
 # %%
 #|export
-_repo_metas = repo_metas
+_box_metas = box_metas
 if sync_recently_modified_first:
-    from repoyard._utils import check_last_time_modified
+    from boxyard._utils import check_last_time_modified
 
-    def get_last_modified(repo_meta):
-        last_modified = check_last_time_modified(repo_meta.get_local_path(config))
+    def get_last_modified(box_meta):
+        last_modified = check_last_time_modified(box_meta.get_local_path(config))
         return last_modified.timestamp() if last_modified else 0
 
-    _repo_metas = sorted(_repo_metas, key=get_last_modified, reverse=True)
+    _box_metas = sorted(_box_metas, key=get_last_modified, reverse=True)
 
-from repoyard._utils import async_throttler
+from boxyard._utils import async_throttler
 sync_task = async_throttler(
-    [_task(num, repo_meta) for num, repo_meta in enumerate(_repo_metas)],
+    [_task(num, box_meta) for num, box_meta in enumerate(_box_metas)],
     max_concurrency=max_concurrent_rclone_ops,
 )
 
@@ -353,7 +353,7 @@ await _runner()
 
 # %%
 #|export
-from repoyard._utils import is_in_event_loop
+from boxyard._utils import is_in_event_loop
 
 if not is_in_event_loop():
     asyncio.run(_runner())
@@ -363,6 +363,6 @@ console = Console()
 console.print(final_sync_stat_board, markup=True)
 
 if refresh_user_symlinks:
-    from repoyard.cmds import create_user_symlinks
+    from boxyard.cmds import create_user_symlinks
 
     create_user_symlinks(config_path=app_state["config_path"])

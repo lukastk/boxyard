@@ -4,7 +4,7 @@ __all__ = ['test_and_both_missing', 'test_and_both_present', 'test_and_chained',
 
 # %% pts/tests/unit/_utils/test_logical_expressions.pct.py 2
 import pytest
-from repoyard._utils.logical_expressions import get_group_filter_func
+from boxyard._utils.logical_expressions import get_group_filter_func
 
 # %% pts/tests/unit/_utils/test_logical_expressions.pct.py 4
 def test_single_group_match():

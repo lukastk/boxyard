@@ -1,3 +1,3 @@
 # Ignore actual rclone config with credentials
 # Only the template should be committed
-repoyard_rclone.conf
+boxyard_rclone.conf

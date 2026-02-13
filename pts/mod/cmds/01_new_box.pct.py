@@ -1,0 +1,329 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # _new_box
+
+# %%
+#|default_exp cmds._new_box
+#|export_as_func true
+
+# %%
+#|hide
+from nblite import nbl_export, show_doc; nbl_export();
+
+# %%
+#|top_export
+from pathlib import Path
+import subprocess
+import re
+from datetime import datetime
+import asyncio
+
+from boxyard._utils.locking import BoxyardLockManager, LockAcquisitionError, GLOBAL_LOCK_TIMEOUT
+from filelock import Timeout
+from boxyard._models import generate_unique_box_id
+
+
+def _extract_box_name_from_git_url(url: str) -> str:
+    """Extract box name from a git URL (SSH or HTTPS)."""
+    # Remove trailing .git if present
+    url = url.rstrip("/")
+    if url.endswith(".git"):
+        url = url[:-4]
+
+    # Handle SSH format: git@host:user/box
+    ssh_match = re.match(r"^git@[^:]+:(.+)$", url)
+    if ssh_match:
+        path = ssh_match.group(1)
+        return path.split("/")[-1]
+
+    # Handle HTTPS/HTTP format: https://host/user/box
+    https_match = re.match(r"^https?://[^/]+/(.+)$", url)
+    if https_match:
+        path = https_match.group(1)
+        return path.split("/")[-1]
+
+    # Fallback: just take the last path component
+    return url.split("/")[-1]
+
+# %%
+#|set_func_signature
+def new_box(
+    config_path: Path,
+    storage_location: str | None = None,
+    box_name: str | None = None,
+    from_path: Path | None = None,
+    copy_from_path: bool = False,
+    creator_hostname: str | None = None,
+    creation_timestamp_utc: datetime | None = None,
+    initialise_git: bool = True,
+    verbose: bool = False,
+    git_clone_url: str | None = None,
+    sync_first: bool | None = None,
+):
+    """
+    Create a new boxyard box.
+
+    Args:
+        config_path: The path to the boxyard config file.
+        storage_location: The storage location to create the new box in.
+        box_name: The name of the new box.
+        from_path: The path to a local directory to move into boxyard as a new box.
+        copy_from_path: Whether to copy the contents of the from_path into the new box.
+        creator_hostname: The hostname of the creator of the new box.
+        creation_timestamp_utc: The timestamp of the new box. If not provided, the current UTC timestamp will be used.
+        initialise_git: Whether to initialise a git box in the new box.
+        verbose: Whether to print verbose output.
+        git_clone_url: Git URL (SSH or HTTPS) to clone as the new box.
+        sync_first: If True, sync all boxmetas before creating to check for ID collisions
+                   on remote. If None, uses config.sync_before_new_box setting.
+
+    Returns:
+        The index name of the new box.
+    """
+    ...
+
+# %% [markdown]
+# Set up testing args
+
+# %%
+from tests.integration.conftest import create_boxyards
+
+remote_name, remote_rclone_path, config, config_path, data_path = create_boxyards()
+
+# %%
+# Args
+config_path = config_path
+storage_location = None
+box_name = "test_box"
+from_path = None
+copy_from_path = False
+creator_hostname = None
+add_rclone_exclude = True
+creation_timestamp_utc = None
+initialise_git = True
+verbose = True
+git_clone_url = None
+sync_first = None
+
+# %% [markdown]
+# # Function body
+
+# %% [markdown]
+# Process args
+
+# %%
+#|export
+from boxyard.config import get_config
+
+config = get_config(config_path)
+
+if storage_location is None:
+    storage_location = config.default_storage_location
+
+if storage_location not in config.storage_locations:
+    raise ValueError(
+        f"Invalid storage location: {storage_location}. Must be one of: {', '.join(config.storage_locations)}."
+    )
+
+if git_clone_url is not None and from_path is not None:
+    raise ValueError("`git_clone_url` and `from_path` are mutually exclusive.")
+
+if box_name is None and from_path is None and git_clone_url is None:
+    raise ValueError("Either `box_name`, `from_path`, or `git_clone_url` must be provided.")
+
+if from_path is not None:
+    from_path = Path(from_path).expanduser().resolve()
+
+if from_path is not None and box_name is None:
+    box_name = from_path.name
+
+if git_clone_url is not None and box_name is None:
+    box_name = _extract_box_name_from_git_url(git_clone_url)
+
+if from_path is None and copy_from_path:
+    raise ValueError("`from_path` must be provided if `copy_from_path` is True.")
+
+from boxyard._utils import get_hostname
+
+if creator_hostname is None:
+    creator_hostname = get_hostname()
+
+# Resolve sync_first from config if not specified
+if sync_first is None:
+    sync_first = config.sync_before_new_box
+
+# %% [markdown]
+# Optionally sync all boxmetas first to check for remote ID collisions
+
+# %%
+#|export
+if sync_first:
+    from boxyard.cmds import sync_boxmetas
+    if verbose:
+        print("Syncing boxmetas before creating new box...")
+    asyncio.get_event_loop().run_until_complete(
+        sync_boxmetas(config_path=config_path, verbose=verbose)
+    )
+
+# %% [markdown]
+# Check if the `from_path` is a box within the boxyard
+
+# %%
+#|export
+from boxyard._models import get_boxyard_meta, BoxPart
+
+boxyard_meta = get_boxyard_meta(config)
+
+if from_path is not None:
+    from_path = Path(from_path).expanduser().resolve()
+    box_paths = [
+        box_meta.get_local_part_path(config, BoxPart.DATA)
+        for box_meta in boxyard_meta.box_metas
+    ]
+
+    if from_path in box_paths and not copy_from_path:
+        raise ValueError(
+            f"'{from_path}' is already a boxyard box. Use `copy_from_path=True` to copy the contents of this box into a new box."
+        )
+
+# %% [markdown]
+# Acquire global lock for box creation
+
+# %%
+#|export
+_lock_manager = BoxyardLockManager(config.boxyard_data_path)
+_lock_path = _lock_manager.global_lock_path
+_lock_manager._ensure_lock_dir(_lock_path)
+_global_lock = __import__('filelock').FileLock(_lock_path, timeout=GLOBAL_LOCK_TIMEOUT)
+try:
+    _global_lock.acquire()
+except Timeout:
+    raise LockAcquisitionError(
+        "global",
+        _lock_path,
+        GLOBAL_LOCK_TIMEOUT,
+        message=(
+            f"Could not acquire global lock within {GLOBAL_LOCK_TIMEOUT}s. "
+            f"Another boxyard operation may be in progress."
+        )
+    )
+
+# %% [markdown]
+# Create meta file with unique ID
+
+# %%
+#|export
+from boxyard._models import BoxMeta
+
+# Collect all existing box IDs to prevent collisions
+existing_ids = {rm.box_id for rm in boxyard_meta.box_metas}
+
+# Generate unique timestamp and subid
+creation_timestamp, box_subid = generate_unique_box_id(config, existing_ids)
+
+# If user provided a timestamp, use it (but still use the unique subid)
+if creation_timestamp_utc is not None:
+    from boxyard.config import BoxTimestampFormat
+    from boxyard import const
+    if config.box_timestamp_format == BoxTimestampFormat.DATE_AND_TIME:
+        creation_timestamp = creation_timestamp_utc.strftime(const.BOX_TIMESTAMP_FORMAT)
+    else:
+        creation_timestamp = creation_timestamp_utc.strftime(const.BOX_TIMESTAMP_FORMAT_DATE_ONLY)
+
+box_meta = BoxMeta(
+    creation_timestamp_utc=creation_timestamp,
+    box_subid=box_subid,
+    name=box_name,
+    storage_location=storage_location,
+    creator_hostname=creator_hostname,
+    groups=config.default_box_groups,
+)
+
+box_meta.save(config)
+
+# %% [markdown]
+# Create the box folder
+
+# %%
+#|export
+from boxyard._models import BoxPart
+
+box_path = box_meta.get_local_path(config)
+box_data_path = box_meta.get_local_part_path(config, BoxPart.DATA)
+box_conf_path = box_meta.get_local_part_path(config, BoxPart.CONF)
+box_path.mkdir(parents=True, exist_ok=True)
+box_conf_path.mkdir(parents=True, exist_ok=True)
+
+if git_clone_url is not None:
+    if verbose:
+        print(f"Cloning {git_clone_url}")
+    res = subprocess.run(
+        ["git", "clone", git_clone_url, str(box_data_path)],
+        check=True,
+        stdout=subprocess.DEVNULL if not verbose else None,
+        stderr=subprocess.DEVNULL if not verbose else None,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(f"Failed to clone box from {git_clone_url}")
+elif from_path is not None:
+    if copy_from_path:
+        import shutil
+
+        shutil.copytree(
+            from_path, box_data_path
+        )  # TESTREF: test_new_box_copy_from_path
+    else:
+        from_path.rename(box_data_path)
+else:
+    box_data_path.mkdir(parents=True, exist_ok=True)
+
+# %% [markdown]
+# Run `git init`
+
+# %%
+#|export
+# Skip git init when cloning (already a git box) or when .git exists
+if initialise_git and git_clone_url is None and not (box_data_path / ".git").exists():
+    if verbose:
+        print("Initialising git box")
+    res = subprocess.run(
+        ["git", "init"],
+        check=True,
+        cwd=box_data_path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if res.returncode != 0:
+        if verbose:
+            print("Warning: Failed to initialise git box")
+
+# %% [markdown]
+# Refresh the boxyard meta file
+
+# %%
+#|export
+from boxyard._models import refresh_boxyard_meta
+
+refresh_boxyard_meta(config, _skip_lock=True)
+
+# %% [markdown]
+# Release the global lock
+
+# %%
+#|export
+if _global_lock.is_locked:
+    _global_lock.release()
+
+# %% [markdown]
+# Return box index name
+
+# %%
+#|func_return
+box_meta.index_name

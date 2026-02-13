@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 import asyncio
 
-from repoyard.cmds import *
-from repoyard._models import get_repoyard_meta, RepoPart
-from repoyard.config import get_config
+from boxyard.cmds import *
+from boxyard._models import get_boxyard_meta, BoxPart
+from boxyard.config import get_config
 
 from ...integration.conftest import run_cmd, run_cmd_in_background, CmdFailed
 
@@ -36,86 +36,86 @@ async def _test_cli_remote():
         sl_name = os.environ["TEST_STORAGE_LOCATION_NAME"]
         sl_store_path = os.environ["TEST_STORAGE_LOCATION_STORE_PATH"]
     try:
-        run_cmd("repoyard")
+        run_cmd("boxyard")
     except CmdFailed:
-        pytest.skip("repoyard not installed")
-    repo_index_name1 = run_cmd(
-        f"repoyard new -n test-repo-1 -g repoyard-unit-tests -s {sl_name}"
+        pytest.skip("boxyard not installed")
+    box_index_name1 = run_cmd(
+        f"boxyard new -n test-box-1 -g boxyard-unit-tests -s {sl_name}"
     ).strip()
-    run_cmd(f"repoyard sync -r {repo_index_name1}", capture_output=True)
-    repo_index_name2 = run_cmd(
-        f"repoyard new -n test-repo-2 -g repoyard-unit-tests -s {sl_name}"
+    run_cmd(f"boxyard sync -r {box_index_name1}", capture_output=True)
+    box_index_name2 = run_cmd(
+        f"boxyard new -n test-box-2 -g boxyard-unit-tests -s {sl_name}"
     ).strip()
-    repo_index_name3 = run_cmd(
-        f"repoyard new -n test-repo-3 -g repoyard-unit-tests -s {sl_name}"
+    box_index_name3 = run_cmd(
+        f"boxyard new -n test-box-3 -g boxyard-unit-tests -s {sl_name}"
     ).strip()
     
-    p1 = run_cmd_in_background(f"repoyard sync -r {repo_index_name2}", print_output=False)
-    p2 = run_cmd_in_background(f"repoyard sync -r {repo_index_name3}", print_output=False)
+    p1 = run_cmd_in_background(f"boxyard sync -r {box_index_name2}", print_output=False)
+    p2 = run_cmd_in_background(f"boxyard sync -r {box_index_name3}", print_output=False)
     
     p1.wait()
     p2.wait()
-    repoyard_meta = get_repoyard_meta(config, force_create=True)
-    repo_meta1 = repoyard_meta.by_index_name[repo_index_name1]
-    repo_meta2 = repoyard_meta.by_index_name[repo_index_name2]
-    repo_meta3 = repoyard_meta.by_index_name[repo_index_name3]
+    boxyard_meta = get_boxyard_meta(config, force_create=True)
+    box_meta1 = boxyard_meta.by_index_name[box_index_name1]
+    box_meta2 = boxyard_meta.by_index_name[box_index_name2]
+    box_meta3 = boxyard_meta.by_index_name[box_index_name3]
     
-    from repoyard._utils import rclone_lsjson
+    from boxyard._utils import rclone_lsjson
     
-    for repo_meta in [repo_meta1, repo_meta2, repo_meta3]:
+    for box_meta in [box_meta1, box_meta2, box_meta3]:
         assert (
             await rclone_lsjson(
                 config.rclone_config_path,
                 source=sl_name,
-                source_path=repo_meta.get_remote_path(config),
+                source_path=box_meta.get_remote_path(config),
             )
             is not None
         )
-    for repo_meta in [repo_meta1, repo_meta2, repo_meta3]:
-        run_cmd(f"repoyard exclude -r {repo_meta.index_name}")
-    async def _task(repo_meta):
+    for box_meta in [box_meta1, box_meta2, box_meta3]:
+        run_cmd(f"boxyard exclude -r {box_meta.index_name}")
+    async def _task(box_meta):
         assert (
             await rclone_lsjson(
                 config.rclone_config_path,
                 source="",
-                source_path=repo_meta.get_local_part_path(config, RepoPart.DATA),
+                source_path=box_meta.get_local_part_path(config, BoxPart.DATA),
             )
             is None
         )
     
     
     await asyncio.gather(
-        *[_task(repo_meta) for repo_meta in [repo_meta1, repo_meta2, repo_meta3]]
+        *[_task(box_meta) for box_meta in [box_meta1, box_meta2, box_meta3]]
     )
-    for repo_meta in [repo_meta1, repo_meta2, repo_meta3]:
-        run_cmd(f"repoyard include -r {repo_meta.index_name}")
-    async def _task(repo_meta):
+    for box_meta in [box_meta1, box_meta2, box_meta3]:
+        run_cmd(f"boxyard include -r {box_meta.index_name}")
+    async def _task(box_meta):
         assert (
             await rclone_lsjson(
                 config.rclone_config_path,
                 source="",
-                source_path=repo_meta.get_local_part_path(config, RepoPart.DATA),
+                source_path=box_meta.get_local_part_path(config, BoxPart.DATA),
             )
             is not None
         )
     
     
     await asyncio.gather(
-        *[_task(repo_meta) for repo_meta in [repo_meta1, repo_meta2, repo_meta3]]
+        *[_task(box_meta) for box_meta in [box_meta1, box_meta2, box_meta3]]
     )
-    for repo_meta in [repo_meta1, repo_meta2, repo_meta3]:
-        run_cmd(f"repoyard delete -r {repo_meta.index_name}")
-    async def _task(repo_meta):
+    for box_meta in [box_meta1, box_meta2, box_meta3]:
+        run_cmd(f"boxyard delete -r {box_meta.index_name}")
+    async def _task(box_meta):
         assert (
             await rclone_lsjson(
                 config.rclone_config_path,
                 source=sl_name,
-                source_path=repo_meta.get_remote_path(config),
+                source_path=box_meta.get_remote_path(config),
             )
             is None
         )
     
     
     await asyncio.gather(
-        *[_task(repo_meta) for repo_meta in [repo_meta1, repo_meta2, repo_meta3]]
+        *[_task(box_meta) for box_meta in [box_meta1, box_meta2, box_meta3]]
     )

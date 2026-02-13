@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 from pydantic import ValidationError
 
-from repoyard.config import Config, get_config, StorageType, RepoTimestampFormat
+from boxyard.config import Config, get_config, StorageType, BoxTimestampFormat
 
 
 # ============================================================================
@@ -34,21 +34,21 @@ def minimal_config_dict():
     return {
         "config_path": "/tmp/config.toml",
         "default_storage_location": "default",
-        "repoyard_data_path": "/tmp/repoyard",
-        "repo_timestamp_format": "date_and_time",
-        "user_repos_path": "/tmp/repos",
-        "user_repo_groups_path": "/tmp/repo-groups",
+        "boxyard_data_path": "/tmp/boxyard",
+        "box_timestamp_format": "date_and_time",
+        "user_boxes_path": "/tmp/boxes",
+        "user_box_groups_path": "/tmp/box-groups",
         "storage_locations": {
             "default": {
                 "storage_type": "local",
                 "store_path": "/tmp/store",
             }
         },
-        "repo_groups": {},
-        "virtual_repo_groups": {},
-        "default_repo_groups": [],
-        "repo_subid_character_set": "abcdefghijklmnopqrstuvwxyz0123456789",
-        "repo_subid_length": 5,
+        "box_groups": {},
+        "virtual_box_groups": {},
+        "default_box_groups": [],
+        "box_subid_character_set": "abcdefghijklmnopqrstuvwxyz0123456789",
+        "box_subid_length": 5,
         "max_concurrent_rclone_ops": 3,
     }
 
@@ -57,38 +57,38 @@ def minimal_config_dict():
 def full_config_dict():
     """Create a full config dictionary with all options."""
     return {
-        "config_path": "/home/user/.config/repoyard/config.toml",
+        "config_path": "/home/user/.config/boxyard/config.toml",
         "default_storage_location": "main",
-        "repoyard_data_path": "/home/user/.repoyard",
-        "repo_timestamp_format": "date_only",
-        "user_repos_path": "/home/user/repos",
-        "user_repo_groups_path": "/home/user/repo-groups",
+        "boxyard_data_path": "/home/user/.boxyard",
+        "box_timestamp_format": "date_only",
+        "user_boxes_path": "/home/user/boxes",
+        "user_box_groups_path": "/home/user/box-groups",
         "storage_locations": {
             "main": {
                 "storage_type": "rclone",
-                "store_path": "remote:bucket/repoyard",
+                "store_path": "remote:bucket/boxyard",
             },
             "backup": {
                 "storage_type": "local",
-                "store_path": "/mnt/backup/repoyard",
+                "store_path": "/mnt/backup/boxyard",
             },
         },
-        "repo_groups": {
+        "box_groups": {
             "work": {
                 "symlink_name": "work-projects",
-                "repo_title_mode": "name",
+                "box_title_mode": "name",
             },
             "personal": {},
         },
-        "virtual_repo_groups": {
+        "virtual_box_groups": {
             "active": {
                 "filter_expr": "work AND NOT archived",
-                "repo_title_mode": "datetime_and_name",
+                "box_title_mode": "datetime_and_name",
             },
         },
-        "default_repo_groups": ["personal"],
-        "repo_subid_character_set": "abcdefghijklmnopqrstuvwxyz",
-        "repo_subid_length": 6,
+        "default_box_groups": ["personal"],
+        "box_subid_character_set": "abcdefghijklmnopqrstuvwxyz",
+        "box_subid_length": 6,
         "max_concurrent_rclone_ops": 5,
     }
 
@@ -107,7 +107,7 @@ class TestConfigConstruction:
         config = Config(**minimal_config_dict)
 
         assert config.default_storage_location == "default"
-        assert config.repo_timestamp_format == RepoTimestampFormat.DATE_AND_TIME
+        assert config.box_timestamp_format == BoxTimestampFormat.DATE_AND_TIME
         assert len(config.storage_locations) == 1
         assert "default" in config.storage_locations
 
@@ -116,23 +116,23 @@ class TestConfigConstruction:
         config = Config(**full_config_dict)
 
         assert config.default_storage_location == "main"
-        assert config.repo_timestamp_format == RepoTimestampFormat.DATE_ONLY
+        assert config.box_timestamp_format == BoxTimestampFormat.DATE_ONLY
         assert len(config.storage_locations) == 2
         assert "main" in config.storage_locations
         assert "backup" in config.storage_locations
-        assert len(config.repo_groups) == 2
-        assert len(config.virtual_repo_groups) == 1
-        assert config.default_repo_groups == ["personal"]
-        assert config.repo_subid_length == 6
+        assert len(config.box_groups) == 2
+        assert len(config.virtual_box_groups) == 1
+        assert config.default_box_groups == ["personal"]
+        assert config.box_subid_length == 6
         assert config.max_concurrent_rclone_ops == 5
 
     def test_config_with_empty_groups(self, minimal_config_dict):
         """Config with empty groups is valid."""
         config = Config(**minimal_config_dict)
 
-        assert config.repo_groups == {}
-        assert config.virtual_repo_groups == {}
-        assert config.default_repo_groups == []
+        assert config.box_groups == {}
+        assert config.virtual_box_groups == {}
+        assert config.default_box_groups == []
 
 
 # ============================================================================
@@ -144,33 +144,33 @@ class TestConfigConstruction:
 class TestPathExpansion:
     """Tests for path expansion in Config."""
 
-    def test_tilde_expansion_repoyard_data_path(self, minimal_config_dict):
-        """Tilde is expanded in repoyard_data_path."""
-        minimal_config_dict["repoyard_data_path"] = "~/.repoyard"
+    def test_tilde_expansion_boxyard_data_path(self, minimal_config_dict):
+        """Tilde is expanded in boxyard_data_path."""
+        minimal_config_dict["boxyard_data_path"] = "~/.boxyard"
         config = Config(**minimal_config_dict)
 
-        assert "~" not in str(config.repoyard_data_path)
-        assert config.repoyard_data_path.is_absolute()
+        assert "~" not in str(config.boxyard_data_path)
+        assert config.boxyard_data_path.is_absolute()
 
-    def test_tilde_expansion_user_repos_path(self, minimal_config_dict):
-        """Tilde is expanded in user_repos_path."""
-        minimal_config_dict["user_repos_path"] = "~/repos"
+    def test_tilde_expansion_user_boxes_path(self, minimal_config_dict):
+        """Tilde is expanded in user_boxes_path."""
+        minimal_config_dict["user_boxes_path"] = "~/boxes"
         config = Config(**minimal_config_dict)
 
-        assert "~" not in str(config.user_repos_path)
-        assert config.user_repos_path.is_absolute()
+        assert "~" not in str(config.user_boxes_path)
+        assert config.user_boxes_path.is_absolute()
 
-    def test_tilde_expansion_user_repo_groups_path(self, minimal_config_dict):
-        """Tilde is expanded in user_repo_groups_path."""
-        minimal_config_dict["user_repo_groups_path"] = "~/repo-groups"
+    def test_tilde_expansion_user_box_groups_path(self, minimal_config_dict):
+        """Tilde is expanded in user_box_groups_path."""
+        minimal_config_dict["user_box_groups_path"] = "~/box-groups"
         config = Config(**minimal_config_dict)
 
-        assert "~" not in str(config.user_repo_groups_path)
-        assert config.user_repo_groups_path.is_absolute()
+        assert "~" not in str(config.user_box_groups_path)
+        assert config.user_box_groups_path.is_absolute()
 
     def test_tilde_expansion_config_path(self, minimal_config_dict):
         """Tilde is expanded in config_path."""
-        minimal_config_dict["config_path"] = "~/.config/repoyard/config.toml"
+        minimal_config_dict["config_path"] = "~/.config/boxyard/config.toml"
         config = Config(**minimal_config_dict)
 
         assert "~" not in str(config.config_path)
@@ -188,38 +188,38 @@ class TestDerivedPaths:
 
     def test_local_store_path(self, minimal_config_dict):
         """local_store_path is derived correctly."""
-        minimal_config_dict["repoyard_data_path"] = "/home/user/.repoyard"
+        minimal_config_dict["boxyard_data_path"] = "/home/user/.boxyard"
         config = Config(**minimal_config_dict)
 
-        assert config.local_store_path == Path("/home/user/.repoyard/local_store")
+        assert config.local_store_path == Path("/home/user/.boxyard/local_store")
 
     def test_local_sync_backups_path(self, minimal_config_dict):
         """local_sync_backups_path is derived correctly."""
-        minimal_config_dict["repoyard_data_path"] = "/home/user/.repoyard"
+        minimal_config_dict["boxyard_data_path"] = "/home/user/.boxyard"
         config = Config(**minimal_config_dict)
 
-        assert config.local_sync_backups_path == Path("/home/user/.repoyard/sync_backups")
+        assert config.local_sync_backups_path == Path("/home/user/.boxyard/sync_backups")
 
-    def test_repoyard_meta_path(self, minimal_config_dict):
-        """repoyard_meta_path is derived correctly."""
-        minimal_config_dict["repoyard_data_path"] = "/home/user/.repoyard"
+    def test_boxyard_meta_path(self, minimal_config_dict):
+        """boxyard_meta_path is derived correctly."""
+        minimal_config_dict["boxyard_data_path"] = "/home/user/.boxyard"
         config = Config(**minimal_config_dict)
 
-        assert config.repoyard_meta_path == Path("/home/user/.repoyard/repoyard_meta.json")
+        assert config.boxyard_meta_path == Path("/home/user/.boxyard/boxyard_meta.json")
 
     def test_rclone_config_path(self, minimal_config_dict):
         """rclone_config_path is derived correctly."""
-        minimal_config_dict["config_path"] = "/home/user/.config/repoyard/config.toml"
+        minimal_config_dict["config_path"] = "/home/user/.config/boxyard/config.toml"
         config = Config(**minimal_config_dict)
 
-        assert config.rclone_config_path == Path("/home/user/.config/repoyard/repoyard_rclone.conf")
+        assert config.rclone_config_path == Path("/home/user/.config/boxyard/boxyard_rclone.conf")
 
     def test_default_rclone_exclude_path(self, minimal_config_dict):
         """default_rclone_exclude_path is derived correctly."""
-        minimal_config_dict["config_path"] = "/home/user/.config/repoyard/config.toml"
+        minimal_config_dict["config_path"] = "/home/user/.config/boxyard/config.toml"
         config = Config(**minimal_config_dict)
 
-        assert config.default_rclone_exclude_path == Path("/home/user/.config/repoyard/default.rclone_exclude")
+        assert config.default_rclone_exclude_path == Path("/home/user/.config/boxyard/default.rclone_exclude")
 
 
 # ============================================================================
@@ -236,22 +236,22 @@ class TestGetConfig:
         config_file = tmp_path / "config.toml"
         config_content = """
 default_storage_location = "default"
-repoyard_data_path = "/tmp/repoyard"
-repo_timestamp_format = "date_and_time"
-user_repos_path = "/tmp/repos"
-user_repo_groups_path = "/tmp/repo-groups"
-repo_subid_character_set = "abcdefghijklmnopqrstuvwxyz0123456789"
-repo_subid_length = 5
+boxyard_data_path = "/tmp/boxyard"
+box_timestamp_format = "date_and_time"
+user_boxes_path = "/tmp/boxes"
+user_box_groups_path = "/tmp/box-groups"
+box_subid_character_set = "abcdefghijklmnopqrstuvwxyz0123456789"
+box_subid_length = 5
 max_concurrent_rclone_ops = 3
-default_repo_groups = []
+default_box_groups = []
 
 [storage_locations.default]
 storage_type = "local"
 store_path = "/tmp/store"
 
-[repo_groups]
+[box_groups]
 
-[virtual_repo_groups]
+[virtual_box_groups]
 """
         config_file.write_text(config_content)
 
@@ -281,22 +281,22 @@ store_path = "/tmp/store"
         config_file = tmp_path / "config.toml"
         config_content = """
 default_storage_location = "default"
-repoyard_data_path = "/tmp/repoyard"
-repo_timestamp_format = "date_and_time"
-user_repos_path = "/tmp/repos"
-user_repo_groups_path = "/tmp/repo-groups"
-repo_subid_character_set = "abcdefghijklmnopqrstuvwxyz0123456789"
-repo_subid_length = 5
+boxyard_data_path = "/tmp/boxyard"
+box_timestamp_format = "date_and_time"
+user_boxes_path = "/tmp/boxes"
+user_box_groups_path = "/tmp/box-groups"
+box_subid_character_set = "abcdefghijklmnopqrstuvwxyz0123456789"
+box_subid_length = 5
 max_concurrent_rclone_ops = 3
-default_repo_groups = []
+default_box_groups = []
 
 [storage_locations.default]
 storage_type = "local"
 store_path = "/tmp/store"
 
-[repo_groups]
+[box_groups]
 
-[virtual_repo_groups]
+[virtual_box_groups]
 """
         config_file.write_text(config_content)
 
@@ -312,25 +312,25 @@ store_path = "/tmp/store"
 # %%
 #|export
 class TestTimestampFormat:
-    """Tests for repo_timestamp_format configuration."""
+    """Tests for box_timestamp_format configuration."""
 
     def test_date_and_time_format(self, minimal_config_dict):
         """DATE_AND_TIME format is parsed correctly."""
-        minimal_config_dict["repo_timestamp_format"] = "date_and_time"
+        minimal_config_dict["box_timestamp_format"] = "date_and_time"
         config = Config(**minimal_config_dict)
 
-        assert config.repo_timestamp_format == RepoTimestampFormat.DATE_AND_TIME
+        assert config.box_timestamp_format == BoxTimestampFormat.DATE_AND_TIME
 
     def test_date_only_format(self, minimal_config_dict):
         """DATE_ONLY format is parsed correctly."""
-        minimal_config_dict["repo_timestamp_format"] = "date_only"
+        minimal_config_dict["box_timestamp_format"] = "date_only"
         config = Config(**minimal_config_dict)
 
-        assert config.repo_timestamp_format == RepoTimestampFormat.DATE_ONLY
+        assert config.box_timestamp_format == BoxTimestampFormat.DATE_ONLY
 
     def test_invalid_format_raises(self, minimal_config_dict):
         """Invalid timestamp format raises error."""
-        minimal_config_dict["repo_timestamp_format"] = "invalid"
+        minimal_config_dict["box_timestamp_format"] = "invalid"
 
         with pytest.raises(ValidationError):
             Config(**minimal_config_dict)

@@ -9,11 +9,11 @@
 # %% [markdown]
 # # Multi-Machine Sync Integration Tests
 #
-# Tests for syncing repositories across multiple machines (simulated with
-# multiple local repoyards sharing the same remote storage).
+# Tests for syncing boxes across multiple machines (simulated with
+# multiple local boxyards sharing the same remote storage).
 #
 # Tests:
-# - Syncing repos between two repoyards
+# - Syncing boxes between two boxyards
 # - Conflict detection when both machines have changes
 
 # %%
@@ -29,16 +29,16 @@ from nblite import nbl_export, show_doc; nbl_export();
 import pytest
 import asyncio
 
-from repoyard.cmds import (
-    new_repo,
-    sync_repo,
-    sync_missing_repometas,
-    include_repo,
+from boxyard.cmds import (
+    new_box,
+    sync_box,
+    sync_missing_boxmetas,
+    include_box,
 )
-from repoyard._models import get_repoyard_meta, RepoPart
-from repoyard._utils.sync_helper import SyncUnsafe
+from boxyard._models import get_boxyard_meta, BoxPart
+from boxyard._utils.sync_helper import SyncUnsafe
 
-from tests.integration.conftest import create_repoyards
+from tests.integration.conftest import create_boxyards
 
 # %%
 #|top_export
@@ -56,10 +56,10 @@ async def _test_multi_machine_sync(): ...
 
 # %%
 #|export
-num_repos = 5
+num_boxes = 5
 
 # %% [markdown]
-# ## Initialize two repoyards to simulate syncing between machines
+# ## Initialize two boxyards to simulate syncing between machines
 
 # %%
 #|export
@@ -67,92 +67,92 @@ num_repos = 5
     sl_name,
     sl_rclone_path,
     [(config1, config_path1, data_path1), (config2, config_path2, data_path2)],
-) = create_repoyards(num_repoyards=2)
+) = create_boxyards(num_boxyards=2)
 
 # %% [markdown]
-# ## Create repos on repoyard 1 and sync them
+# ## Create boxes on boxyard 1 and sync them
 
 # %%
 #|export
-repo_index_names = []
+box_index_names = []
 
 
 async def _task(i):
-    repo_index_name = new_repo(
-        config_path=config_path1, repo_name=f"test_repo_{i}", storage_location=sl_name
+    box_index_name = new_box(
+        config_path=config_path1, box_name=f"test_box_{i}", storage_location=sl_name
     )
-    await sync_repo(config_path=config_path1, repo_index_name=repo_index_name)
-    repo_index_names.append(repo_index_name)
+    await sync_box(config_path=config_path1, box_index_name=box_index_name)
+    box_index_names.append(box_index_name)
 
 
-await asyncio.gather(*[_task(i) for i in range(num_repos)])
+await asyncio.gather(*[_task(i) for i in range(num_boxes)])
 
 # %% [markdown]
-# ## Sync repometas into repoyard 2
+# ## Sync boxmetas into boxyard 2
 
 # %%
 #|export
-await sync_missing_repometas(config_path=config_path2)
+await sync_missing_boxmetas(config_path=config_path2)
 
-repoyard_meta2 = get_repoyard_meta(config2)
-assert len(repoyard_meta2.repo_metas) == num_repos
+boxyard_meta2 = get_boxyard_meta(config2)
+assert len(boxyard_meta2.box_metas) == num_boxes
 
 # %% [markdown]
-# ## Verify that repometa sync only synced metadata (not data)
+# ## Verify that boxmeta sync only synced metadata (not data)
 
 # %%
-async def _task(repo_meta):
-    assert repo_meta.get_local_sync_record_path(config2, RepoPart.META).exists()
-    assert not repo_meta.check_included(config2)
+async def _task(box_meta):
+    assert box_meta.get_local_sync_record_path(config2, BoxPart.META).exists()
+    assert not box_meta.check_included(config2)
 
 
-await asyncio.gather(*[_task(repo_meta) for repo_meta in repoyard_meta2.repo_metas])
+await asyncio.gather(*[_task(box_meta) for box_meta in boxyard_meta2.box_metas])
 
 # %% [markdown]
-# ## Include repos into repoyard 2
+# ## Include boxes into boxyard 2
 
 # %%
 #|export
-async def _task(repo_meta):
-    await include_repo(
+async def _task(box_meta):
+    await include_box(
         config_path=config_path2,
-        repo_index_name=repo_meta.index_name,
+        box_index_name=box_meta.index_name,
     )
 
 
-await asyncio.gather(*[_task(repo_meta) for repo_meta in repoyard_meta2.repo_metas])
+await asyncio.gather(*[_task(box_meta) for box_meta in boxyard_meta2.box_metas])
 
 # %% [markdown]
-# ## Modify repos in repoyard 2 and sync
+# ## Modify boxes in boxyard 2 and sync
 
 # %%
 #|export
-async def _task(repo_meta):
-    (repo_meta.get_local_part_path(config2, RepoPart.DATA) / "hello.txt").write_text(
+async def _task(box_meta):
+    (box_meta.get_local_part_path(config2, BoxPart.DATA) / "hello.txt").write_text(
         "Hello, world!"
     )
-    await sync_repo(
+    await sync_box(
         config_path=config_path2,
-        repo_index_name=repo_meta.index_name,
+        box_index_name=box_meta.index_name,
     )
 
 
-await asyncio.gather(*[_task(repo_meta) for repo_meta in repoyard_meta2.repo_metas])
+await asyncio.gather(*[_task(box_meta) for box_meta in boxyard_meta2.box_metas])
 
 # %% [markdown]
-# ## Sync changes into repoyard 1
+# ## Sync changes into boxyard 1
 
 # %%
 #|export
-repoyard_meta1 = get_repoyard_meta(config1)
+boxyard_meta1 = get_boxyard_meta(config1)
 
 await asyncio.gather(
     *[
-        sync_repo(
+        sync_box(
             config_path=config_path1,
-            repo_index_name=repo_meta.index_name,
+            box_index_name=box_meta.index_name,
         )
-        for repo_meta in repoyard_meta1.repo_metas
+        for box_meta in boxyard_meta1.box_metas
     ]
 )
 
@@ -160,9 +160,9 @@ await asyncio.gather(
 # ## Verify that the sync worked
 
 # %%
-for repo_meta in repoyard_meta1.repo_metas:
+for box_meta in boxyard_meta1.box_metas:
     assert (
-        repo_meta.get_local_part_path(config1, RepoPart.DATA) / "hello.txt"
+        box_meta.get_local_part_path(config1, BoxPart.DATA) / "hello.txt"
     ).exists()
 
 # %% [markdown]
@@ -170,25 +170,25 @@ for repo_meta in repoyard_meta1.repo_metas:
 
 # %%
 #|export
-async def _task(repo_meta):
+async def _task(box_meta):
     # Create a change on machine 1 and sync
-    (repo_meta.get_local_part_path(config1, RepoPart.DATA) / "goodbye.txt").write_text(
+    (box_meta.get_local_part_path(config1, BoxPart.DATA) / "goodbye.txt").write_text(
         "Goodbye, world!"
     )
-    await sync_repo(
+    await sync_box(
         config_path=config_path1,
-        repo_index_name=repo_meta.index_name,
+        box_index_name=box_meta.index_name,
     )
 
     # Try to create a conflicting change on machine 2 and sync - should raise
     with pytest.raises(SyncUnsafe):
         (
-            repo_meta.get_local_part_path(config2, RepoPart.DATA) / "goodbye.txt"
+            box_meta.get_local_part_path(config2, BoxPart.DATA) / "goodbye.txt"
         ).write_text("I'm sorry, world!")
-        await sync_repo(
+        await sync_box(
             config_path=config_path2,
-            repo_index_name=repo_meta.index_name,
+            box_index_name=box_meta.index_name,
         )
 
 
-await asyncio.gather(*[_task(repo_meta) for repo_meta in repoyard_meta1.repo_metas])
+await asyncio.gather(*[_task(box_meta) for box_meta in boxyard_meta1.box_metas])

@@ -4,14 +4,14 @@ import asyncio
 import pytest
 from pathlib import Path
 
-from repoyard.cmds import new_repo, delete_repo, sync_repo
-from repoyard.cmds._rename_repo import rename_repo, RenameScope
-from repoyard._models import get_repoyard_meta, RepoPart, RepoMeta, SyncCondition
-from repoyard._tombstones import is_tombstoned, get_tombstone, list_tombstones, remove_tombstone
-from repoyard._remote_index import find_remote_repo_by_id, load_remote_index_cache
-from repoyard.config import get_config
+from boxyard.cmds import new_box, delete_box, sync_box
+from boxyard.cmds._rename_box import rename_box, RenameScope
+from boxyard._models import get_boxyard_meta, BoxPart, BoxMeta, SyncCondition
+from boxyard._tombstones import is_tombstoned, get_tombstone, list_tombstones, remove_tombstone
+from boxyard._remote_index import find_remote_box_by_id, load_remote_index_cache
+from boxyard.config import get_config
 
-from ...integration.conftest import create_repoyards
+from ...integration.conftest import create_boxyards
 
 @pytest.mark.integration
 def test_tombstones_and_id_sync():
@@ -19,130 +19,130 @@ def test_tombstones_and_id_sync():
     asyncio.run(_test_tombstones_and_id_sync())
 
 async def _test_tombstones_and_id_sync():
-    remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
-    # Create and sync a repo
-    repo1 = new_repo(
+    remote_name, remote_rclone_path, config, config_path, data_path = create_boxyards()
+    # Create and sync a box
+    box1 = new_box(
         config_path=config_path,
-        repo_name="tombstone-test",
+        box_name="tombstone-test",
         storage_location=remote_name,
     )
-    await sync_repo(config_path=config_path, repo_index_name=repo1)
+    await sync_box(config_path=config_path, box_index_name=box1)
     
     config = get_config(config_path)
-    repo_meta1 = get_repoyard_meta(config).by_index_name[repo1]
-    repo_id1 = repo_meta1.repo_id
+    box_meta1 = get_boxyard_meta(config).by_index_name[box1]
+    box_id1 = box_meta1.box_id
     
-    # Verify repo exists on remote
-    remote_index = await find_remote_repo_by_id(config, remote_name, repo_id1)
+    # Verify box exists on remote
+    remote_index = await find_remote_box_by_id(config, remote_name, box_id1)
     assert remote_index is not None
     
-    # Delete the repo
-    await delete_repo(config_path=config_path, repo_index_name=repo1)
+    # Delete the box
+    await delete_box(config_path=config_path, box_index_name=box1)
     
     # Verify tombstone was created
     config = get_config(config_path)
-    tombstoned = await is_tombstoned(config, remote_name, repo_id1)
+    tombstoned = await is_tombstoned(config, remote_name, box_id1)
     assert tombstoned, "Tombstone should be created on delete"
     
     # Verify tombstone contains correct info
-    tombstone = await get_tombstone(config, remote_name, repo_id1)
+    tombstone = await get_tombstone(config, remote_name, box_id1)
     assert tombstone is not None
-    assert tombstone.repo_id == repo_id1
+    assert tombstone.box_id == box_id1
     assert tombstone.last_known_name == "tombstone-test"
-    # Create another repo and delete it to have multiple tombstones
-    repo2 = new_repo(
+    # Create another box and delete it to have multiple tombstones
+    box2 = new_box(
         config_path=config_path,
-        repo_name="tombstone-test-2",
+        box_name="tombstone-test-2",
         storage_location=remote_name,
     )
-    await sync_repo(config_path=config_path, repo_index_name=repo2)
+    await sync_box(config_path=config_path, box_index_name=box2)
     
     config = get_config(config_path)
-    repo_meta2 = get_repoyard_meta(config).by_index_name[repo2]
-    repo_id2 = repo_meta2.repo_id
+    box_meta2 = get_boxyard_meta(config).by_index_name[box2]
+    box_id2 = box_meta2.box_id
     
-    await delete_repo(config_path=config_path, repo_index_name=repo2)
+    await delete_box(config_path=config_path, box_index_name=box2)
     
     # List all tombstones
     config = get_config(config_path)
     tombstones = await list_tombstones(config, remote_name)
-    tombstone_ids = {t.repo_id for t in tombstones}
+    tombstone_ids = {t.box_id for t in tombstones}
     
-    assert repo_id1 in tombstone_ids
-    assert repo_id2 in tombstone_ids
+    assert box_id1 in tombstone_ids
+    assert box_id2 in tombstone_ids
     # Remove the second tombstone
-    await remove_tombstone(config, remote_name, repo_id2)
+    await remove_tombstone(config, remote_name, box_id2)
     
     # Verify it's no longer tombstoned
     config = get_config(config_path)
-    tombstoned = await is_tombstoned(config, remote_name, repo_id2)
+    tombstoned = await is_tombstoned(config, remote_name, box_id2)
     assert not tombstoned, "Tombstone should be removed"
     
     # First one should still be tombstoned
-    tombstoned1 = await is_tombstoned(config, remote_name, repo_id1)
+    tombstoned1 = await is_tombstoned(config, remote_name, box_id1)
     assert tombstoned1, "First tombstone should still exist"
-    # Create a repo
-    repo3 = new_repo(
+    # Create a box
+    box3 = new_box(
         config_path=config_path,
-        repo_name="id-sync-test",
+        box_name="id-sync-test",
         storage_location=remote_name,
     )
-    await sync_repo(config_path=config_path, repo_index_name=repo3)
+    await sync_box(config_path=config_path, box_index_name=box3)
     
     config = get_config(config_path)
-    repo_meta3 = get_repoyard_meta(config).by_index_name[repo3]
-    repo_id3 = repo_meta3.repo_id
+    box_meta3 = get_boxyard_meta(config).by_index_name[box3]
+    box_id3 = box_meta3.box_id
     
     # Rename local only so names differ
-    renamed_repo3 = await rename_repo(
+    renamed_box3 = await rename_box(
         config_path=config_path,
-        repo_index_name=repo3,
+        box_index_name=box3,
         new_name="id-sync-test-renamed",
         scope=RenameScope.LOCAL,
     )
     
     # Verify names differ
     config = get_config(config_path)
-    local_meta = get_repoyard_meta(config).by_index_name[renamed_repo3]
+    local_meta = get_boxyard_meta(config).by_index_name[renamed_box3]
     assert local_meta.name == "id-sync-test-renamed"
     
-    remote_index = await find_remote_repo_by_id(config, remote_name, repo_id3)
-    _, remote_name_part = RepoMeta.parse_index_name(remote_index)
+    remote_index = await find_remote_box_by_id(config, remote_name, box_id3)
+    _, remote_name_part = BoxMeta.parse_index_name(remote_index)
     assert remote_name_part == "id-sync-test"  # Different from local
     
     # Add a file to local data to create something to sync
-    local_data_path = local_meta.get_local_part_path(config, RepoPart.DATA)
+    local_data_path = local_meta.get_local_part_path(config, BoxPart.DATA)
     (local_data_path / "new_file.txt").write_text("Test content")
     
     # Sync should work despite name mismatch (using ID-based lookup)
-    sync_result = await sync_repo(config_path=config_path, repo_index_name=renamed_repo3)
+    sync_result = await sync_box(config_path=config_path, box_index_name=renamed_box3)
     
     # Verify sync succeeded (not an error)
     for part, (status, _synced) in sync_result.items():
         assert status.sync_condition != SyncCondition.ERROR, f"Sync failed for {part}: {status}"
-    # Create a new repo that will be "orphaned" (we'll manually create its tombstone)
-    repo4 = new_repo(
+    # Create a new box that will be "orphaned" (we'll manually create its tombstone)
+    box4 = new_box(
         config_path=config_path,
-        repo_name="orphan-test",
+        box_name="orphan-test",
         storage_location=remote_name,
     )
-    await sync_repo(config_path=config_path, repo_index_name=repo4)
+    await sync_box(config_path=config_path, box_index_name=box4)
     
     config = get_config(config_path)
-    repo_meta4 = get_repoyard_meta(config).by_index_name[repo4]
-    repo_id4 = repo_meta4.repo_id
+    box_meta4 = get_boxyard_meta(config).by_index_name[box4]
+    box_id4 = box_meta4.box_id
     
-    # Manually create a tombstone for this repo (simulating deletion by another machine)
-    from repoyard._tombstones import create_tombstone
+    # Manually create a tombstone for this box (simulating deletion by another machine)
+    from boxyard._tombstones import create_tombstone
     await create_tombstone(
         config=config,
         storage_location=remote_name,
-        repo_id=repo_id4,
+        box_id=box_id4,
         last_known_name="orphan-test",
     )
     
     # Now try to sync - should return TOMBSTONED status
-    sync_result = await sync_repo(config_path=config_path, repo_index_name=repo4)
+    sync_result = await sync_box(config_path=config_path, box_index_name=box4)
     
     # Verify all parts return TOMBSTONED
     for part, (status, _synced) in sync_result.items():
@@ -153,7 +153,7 @@ async def _test_tombstones_and_id_sync():
     config = get_config(config_path)
     cache = load_remote_index_cache(config, remote_name)
     
-    # Our renamed repo should have a cache entry
-    assert repo_id3 in cache, "Remote index cache should contain repo ID"
+    # Our renamed box should have a cache entry
+    assert box_id3 in cache, "Remote index cache should contain box ID"
     
     print("All tombstone and ID-based sync tests passed!")

@@ -47,38 +47,38 @@ class LockAcquisitionError(Exception):
         if message is None:
             message = (
                 f"Could not acquire {lock_type} lock within {timeout}s. "
-                f"Another repoyard operation may be in progress. "
+                f"Another boxyard operation may be in progress. "
                 f"Lock file: {lock_path}"
             )
         super().__init__(message)
 
 # %% [markdown]
-# # `RepoyardLockManager`
+# # `BoxyardLockManager`
 
 # %%
 #|export
-class RepoyardLockManager:
+class BoxyardLockManager:
     """
-    Manages file-based locks for repoyard operations.
+    Manages file-based locks for boxyard operations.
 
     Lock Directory Structure:
-        ~/.repoyard/locks/
-            global.lock                    # Protects repoyard_meta.json
-            repos/{index_name}/
-                sync.lock                  # Per-repo sync operations
+        ~/.boxyard/locks/
+            global.lock                    # Protects boxyard_meta.json
+            boxes/{index_name}/
+                sync.lock                  # Per-box sync operations
     """
 
-    def __init__(self, repoyard_data_path: Path):
-        self.repoyard_data_path = Path(repoyard_data_path)
-        self.locks_path = self.repoyard_data_path / "locks"
+    def __init__(self, boxyard_data_path: Path):
+        self.boxyard_data_path = Path(boxyard_data_path)
+        self.locks_path = self.boxyard_data_path / "locks"
         self._active_locks: dict[Path, FileLock] = {}
 
     @property
     def global_lock_path(self) -> Path:
         return self.locks_path / "global.lock"
 
-    def repo_sync_lock_path(self, index_name: str) -> Path:
-        return self.locks_path / "repos" / index_name / "sync.lock"
+    def box_sync_lock_path(self, index_name: str) -> Path:
+        return self.locks_path / "boxes" / index_name / "sync.lock"
 
     def _ensure_lock_dir(self, lock_path: Path) -> None:
         """Ensure the parent directory for a lock file exists."""
@@ -89,7 +89,7 @@ class RepoyardLockManager:
         """
         Context manager for acquiring the global lock.
 
-        Use this when modifying repoyard_meta.json or performing operations
+        Use this when modifying boxyard_meta.json or performing operations
         that affect the global state.
 
         Args:
@@ -110,24 +110,24 @@ class RepoyardLockManager:
                 lock.release()
 
     @contextmanager
-    def repo_sync_lock(
+    def box_sync_lock(
         self,
         index_name: str,
         timeout: float = REPO_SYNC_LOCK_TIMEOUT
     ) -> Iterator[None]:
         """
-        Context manager for acquiring a per-repository sync lock.
+        Context manager for acquiring a per-box sync lock.
 
-        Use this for sync, include, exclude, and delete operations on a specific repo.
+        Use this for sync, include, exclude, and delete operations on a specific box.
 
         Args:
-            index_name: The repository index name.
+            index_name: The box index name.
             timeout: Maximum time to wait for the lock in seconds.
 
         Raises:
             LockAcquisitionError: If the lock cannot be acquired within the timeout.
         """
-        lock_path = self.repo_sync_lock_path(index_name)
+        lock_path = self.box_sync_lock_path(index_name)
         self._ensure_lock_dir(lock_path)
         lock = FileLock(lock_path, timeout=timeout)
         try:
@@ -135,12 +135,12 @@ class RepoyardLockManager:
             yield
         except Timeout:
             raise LockAcquisitionError(
-                f"repo sync ({index_name})",
+                f"box sync ({index_name})",
                 lock_path,
                 timeout,
                 message=(
-                    f"Could not acquire sync lock for repo '{index_name}' within {timeout}s. "
-                    f"Another sync, include, exclude, or delete operation may be in progress on this repo."
+                    f"Could not acquire sync lock for box '{index_name}' within {timeout}s. "
+                    f"Another sync, include, exclude, or delete operation may be in progress on this box."
                 )
             )
         finally:
@@ -148,18 +148,18 @@ class RepoyardLockManager:
                 lock.release()
 
     @contextmanager
-    def multiple_repo_sync_locks(
+    def multiple_box_sync_locks(
         self,
         index_names: list[str],
         timeout: float = REPO_SYNC_LOCK_TIMEOUT
     ) -> Iterator[None]:
         """
-        Context manager for acquiring locks on multiple repositories.
+        Context manager for acquiring locks on multiple boxes.
 
         Acquires locks in alphabetical order to prevent deadlocks.
 
         Args:
-            index_names: List of repository index names.
+            index_names: List of box index names.
             timeout: Maximum time to wait for each lock in seconds.
 
         Raises:
@@ -171,7 +171,7 @@ class RepoyardLockManager:
 
         try:
             for name in sorted_names:
-                lock_path = self.repo_sync_lock_path(name)
+                lock_path = self.box_sync_lock_path(name)
                 self._ensure_lock_dir(lock_path)
                 lock = FileLock(lock_path, timeout=timeout)
                 try:
@@ -179,12 +179,12 @@ class RepoyardLockManager:
                     acquired_locks.append(lock)
                 except Timeout:
                     raise LockAcquisitionError(
-                        f"repo sync ({name})",
+                        f"box sync ({name})",
                         lock_path,
                         timeout,
                         message=(
-                            f"Could not acquire sync lock for repo '{name}' within {timeout}s. "
-                            f"Another operation may be in progress on this repo."
+                            f"Could not acquire sync lock for box '{name}' within {timeout}s. "
+                            f"Another operation may be in progress on this box."
                         )
                     )
             yield
@@ -201,7 +201,7 @@ class RepoyardLockManager:
 #|export
 @asynccontextmanager
 async def async_global_lock(
-    lock_manager: RepoyardLockManager,
+    lock_manager: BoxyardLockManager,
     timeout: float = GLOBAL_LOCK_TIMEOUT
 ):
     """
@@ -222,24 +222,24 @@ async def async_global_lock(
 
 
 @asynccontextmanager
-async def async_repo_sync_lock(
-    lock_manager: RepoyardLockManager,
+async def async_box_sync_lock(
+    lock_manager: BoxyardLockManager,
     index_name: str,
     timeout: float = REPO_SYNC_LOCK_TIMEOUT
 ):
     """
-    Async context manager for acquiring a per-repository sync lock.
+    Async context manager for acquiring a per-box sync lock.
 
     Uses polling-based acquisition to keep lock in main thread,
     avoiding thread-local state issues with filelock.
     """
-    lock_path = lock_manager.repo_sync_lock_path(index_name)
+    lock_path = lock_manager.box_sync_lock_path(index_name)
     lock_manager._ensure_lock_dir(lock_path)
     lock = FileLock(lock_path, timeout=0)
 
     await acquire_lock_async(
         lock,
-        f"repo sync ({index_name})",
+        f"box sync ({index_name})",
         lock_path,
         timeout,
     )
@@ -254,7 +254,7 @@ async def async_repo_sync_lock(
 # %%
 #|export
 def cleanup_stale_locks(
-    repoyard_data_path: Path,
+    boxyard_data_path: Path,
     max_age_hours: float = 24
 ) -> list[Path]:
     """
@@ -264,7 +264,7 @@ def cleanup_stale_locks(
     long-running operations that legitimately hold locks.
 
     Args:
-        repoyard_data_path: Path to the repoyard data directory.
+        boxyard_data_path: Path to the boxyard data directory.
         max_age_hours: Maximum age of lock files in hours before they're considered stale.
 
     Returns:
@@ -272,7 +272,7 @@ def cleanup_stale_locks(
     """
     import time
 
-    locks_path = Path(repoyard_data_path) / "locks"
+    locks_path = Path(boxyard_data_path) / "locks"
     if not locks_path.exists():
         return []
 
@@ -303,7 +303,7 @@ def cleanup_stale_locks(
 
 
 def auto_cleanup_stale_locks(
-    repoyard_data_path: Path,
+    boxyard_data_path: Path,
     max_age_hours: float = 1.0,
     verbose: bool = False
 ) -> list[Path]:
@@ -314,14 +314,14 @@ def auto_cleanup_stale_locks(
     locks older than 1 hour by default (vs 24 hours).
 
     Args:
-        repoyard_data_path: Path to the repoyard data directory.
+        boxyard_data_path: Path to the boxyard data directory.
         max_age_hours: Maximum age of lock files in hours before they're considered stale.
         verbose: If True, print a message when locks are cleaned up.
 
     Returns:
         List of paths to removed lock files.
     """
-    removed = cleanup_stale_locks(repoyard_data_path, max_age_hours)
+    removed = cleanup_stale_locks(boxyard_data_path, max_age_hours)
     if removed and verbose:
         print(f"Cleaned up {len(removed)} stale lock file(s):")
         for path in removed:
@@ -367,13 +367,13 @@ async def acquire_lock_async(
 # # Tests
 
 # %%
-from tests.integration.conftest import create_repoyards
+from tests.integration.conftest import create_boxyards
 
-sl_name, _, config, config_path, data_path = create_repoyards()
+sl_name, _, config, config_path, data_path = create_boxyards()
 
 # %%
 # Test basic global lock
-lock_manager = RepoyardLockManager(data_path)
+lock_manager = BoxyardLockManager(data_path)
 
 with lock_manager.global_lock():
     assert lock_manager.global_lock_path.exists()
@@ -382,16 +382,16 @@ with lock_manager.global_lock():
 print("Global lock released")
 
 # %%
-# Test repo sync lock
-with lock_manager.repo_sync_lock("test_repo__index"):
-    assert lock_manager.repo_sync_lock_path("test_repo__index").exists()
-    print("Repo sync lock acquired")
+# Test box sync lock
+with lock_manager.box_sync_lock("test_box__index"):
+    assert lock_manager.box_sync_lock_path("test_box__index").exists()
+    print("Box sync lock acquired")
 
-print("Repo sync lock released")
+print("Box sync lock released")
 
 # %%
-# Test multiple repo sync locks (should acquire in alphabetical order)
-with lock_manager.multiple_repo_sync_locks(["z_repo", "a_repo", "m_repo"]):
+# Test multiple box sync locks (should acquire in alphabetical order)
+with lock_manager.multiple_box_sync_locks(["z_box", "a_box", "m_box"]):
     print("Multiple locks acquired")
 
 print("Multiple locks released")
@@ -403,8 +403,8 @@ async def test_async_locks():
         print("Async global lock acquired")
     print("Async global lock released")
 
-    async with async_repo_sync_lock(lock_manager, "async_test_repo"):
-        print("Async repo sync lock acquired")
-    print("Async repo sync lock released")
+    async with async_box_sync_lock(lock_manager, "async_test_box"):
+        print("Async box sync lock acquired")
+    print("Async box sync lock released")
 
 await test_async_locks()

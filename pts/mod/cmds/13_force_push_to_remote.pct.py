@@ -22,18 +22,18 @@ from nblite import nbl_export, show_doc; nbl_export();
 from pathlib import Path
 import asyncio
 
-from repoyard.config import get_config
-from repoyard._models import get_repoyard_meta, RepoPart, SyncRecord
-from repoyard._remote_index import find_remote_repo_by_id
-from repoyard._utils.rclone import rclone_sync, rclone_mkdir, rclone_purge
-from repoyard._utils.locking import RepoyardLockManager, REPO_SYNC_LOCK_TIMEOUT, acquire_lock_async
-from repoyard._utils import check_interrupted, SoftInterruption
+from boxyard.config import get_config
+from boxyard._models import get_boxyard_meta, BoxPart, SyncRecord
+from boxyard._remote_index import find_remote_box_by_id
+from boxyard._utils.rclone import rclone_sync, rclone_mkdir, rclone_purge
+from boxyard._utils.locking import BoxyardLockManager, REPO_SYNC_LOCK_TIMEOUT, acquire_lock_async
+from boxyard._utils import check_interrupted, SoftInterruption
 
 # %%
 #|set_func_signature
 async def force_push_to_remote(
     config_path: Path,
-    repo_index_name: str,
+    box_index_name: str,
     source_path: Path,
     force: bool = False,
     show_rclone_progress: bool = False,
@@ -41,14 +41,14 @@ async def force_push_to_remote(
     verbose: bool = False,
 ) -> None:
     """
-    Force push a local folder to a repo's remote DATA location.
+    Force push a local folder to a box's remote DATA location.
 
     This is a destructive operation that overwrites the remote DATA with the
     contents of source_path. It properly manages sync records for consistency.
 
     Args:
-        config_path: Path to the repoyard config file
-        repo_index_name: The index name of the repository (local)
+        config_path: Path to the boxyard config file
+        box_index_name: The index name of the box (local)
         source_path: Source folder to push
         force: Required safety flag - must be True to proceed
         show_rclone_progress: Show rclone progress output
@@ -64,18 +64,18 @@ async def force_push_to_remote(
 # Set up testing args
 
 # %%
-from tests.integration.conftest import create_repoyards
+from tests.integration.conftest import create_boxyards
 
-remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
+remote_name, remote_rclone_path, config, config_path, data_path = create_boxyards()
 
 # %%
 # Args
-from repoyard.cmds import new_repo, sync_repo
+from boxyard.cmds import new_box, sync_box
 import tempfile
 
 config_path = config_path
-repo_index_name = new_repo(
-    config_path=config_path, repo_name="test_repo", storage_location="my_remote"
+box_index_name = new_box(
+    config_path=config_path, box_name="test_box", storage_location="my_remote"
 )
 # Create a temp source directory with some test content
 source_path = Path(tempfile.mkdtemp()) / "force_push_source"
@@ -88,8 +88,8 @@ soft_interruption_enabled = True
 verbose = False
 
 # %%
-# Sync the repo first so there's something on remote
-await sync_repo(config_path=config_path, repo_index_name=repo_index_name)
+# Sync the box first so there's something on remote
+await sync_box(config_path=config_path, box_index_name=box_index_name)
 
 # %% [markdown]
 # # Function body
@@ -121,77 +121,77 @@ if not source_path.is_dir():
 
 # %%
 #|export
-repoyard_meta = get_repoyard_meta(config)
+boxyard_meta = get_boxyard_meta(config)
 
-if repo_index_name not in repoyard_meta.by_index_name:
-    raise ValueError(f"Repo '{repo_index_name}' does not exist locally.")
+if box_index_name not in boxyard_meta.by_index_name:
+    raise ValueError(f"Box '{box_index_name}' does not exist locally.")
 
-repo_meta = repoyard_meta.by_index_name[repo_index_name]
+box_meta = boxyard_meta.by_index_name[box_index_name]
 
 # %% [markdown]
 # Find the remote index name (may differ from local due to renames)
 
 # %%
 #|export
-storage_location = repo_meta.storage_location
+storage_location = box_meta.storage_location
 sl_config = config.storage_locations[storage_location]
 
-# Find remote index name by repo_id (handles renames)
-remote_index_name = await find_remote_repo_by_id(
+# Find remote index name by box_id (handles renames)
+remote_index_name = await find_remote_box_by_id(
     config=config,
     storage_location=storage_location,
-    repo_id=repo_meta.repo_id,
+    box_id=box_meta.box_id,
 )
 
 if remote_index_name is None:
     raise ValueError(
-        f"Repo '{repo_index_name}' not found on remote storage '{storage_location}'. "
-        f"The repo may have been deleted or the remote is not accessible."
+        f"Box '{box_index_name}' not found on remote storage '{storage_location}'. "
+        f"The box may have been deleted or the remote is not accessible."
     )
 
 if verbose:
-    print(f"Found remote repo: {remote_index_name}")
+    print(f"Found remote box: {remote_index_name}")
 
 # %% [markdown]
 # Build remote paths
 
 # %%
 #|export
-from repoyard import const
+from boxyard import const
 
-remote_repo_path = sl_config.store_path / const.REMOTE_REPOS_REL_PATH / remote_index_name
-remote_data_path = remote_repo_path / const.REPO_DATA_REL_PATH
+remote_box_path = sl_config.store_path / const.REMOTE_BOXES_REL_PATH / remote_index_name
+remote_data_path = remote_box_path / const.BOX_DATA_REL_PATH
 
 # Sync record paths
-local_sync_record_path = repo_meta.get_local_sync_record_path(config, RepoPart.DATA)
+local_sync_record_path = box_meta.get_local_sync_record_path(config, BoxPart.DATA)
 remote_sync_record_path = (
     sl_config.store_path
     / const.SYNC_RECORDS_REL_PATH
     / remote_index_name  # Use remote index name for remote sync record
-    / f"{RepoPart.DATA.value}.rec"
+    / f"{BoxPart.DATA.value}.rec"
 )
 
 # Backup paths
-local_sync_backups_path = config.local_sync_backups_path / repo_meta.index_name / RepoPart.DATA.value
+local_sync_backups_path = config.local_sync_backups_path / box_meta.index_name / BoxPart.DATA.value
 remote_sync_backups_path = (
     sl_config.store_path
     / const.REMOTE_BACKUP_REL_PATH
     / remote_index_name  # Use remote index name for remote backups
-    / RepoPart.DATA.value
+    / BoxPart.DATA.value
 )
 
 # %% [markdown]
-# Acquire per-repo sync lock
+# Acquire per-box sync lock
 
 # %%
 #|export
-_lock_manager = RepoyardLockManager(config.repoyard_data_path)
-_lock_path = _lock_manager.repo_sync_lock_path(repo_index_name)
+_lock_manager = BoxyardLockManager(config.boxyard_data_path)
+_lock_path = _lock_manager.box_sync_lock_path(box_index_name)
 _lock_manager._ensure_lock_dir(_lock_path)
 _sync_lock = __import__('filelock').FileLock(_lock_path, timeout=0)
 await acquire_lock_async(
     _sync_lock,
-    f"repo sync ({repo_index_name})",
+    f"box sync ({box_index_name})",
     _lock_path,
     REPO_SYNC_LOCK_TIMEOUT,
 )

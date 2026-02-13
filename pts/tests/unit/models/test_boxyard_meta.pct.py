@@ -1,0 +1,366 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # Unit Tests for BoxyardMeta
+
+# %%
+#|default_exp unit.models.test_boxyard_meta
+
+# %%
+#|export
+import pytest
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from boxyard._models import BoxMeta, BoxyardMeta
+
+
+# ============================================================================
+# Fixtures
+# ============================================================================
+
+# %%
+#|export
+@pytest.fixture
+def sample_box_metas():
+    """Create sample BoxMeta instances for testing."""
+    return [
+        BoxMeta(
+            creation_timestamp_utc="20251120_100000",
+            box_subid="abc12",
+            name="project-alpha",
+            storage_location="default",
+            creator_hostname="host1",
+            groups=["backend", "python"],
+        ),
+        BoxMeta(
+            creation_timestamp_utc="20251121_110000",
+            box_subid="def34",
+            name="project-beta",
+            storage_location="default",
+            creator_hostname="host1",
+            groups=["frontend"],
+        ),
+        BoxMeta(
+            creation_timestamp_utc="20251122_120000",
+            box_subid="ghi56",
+            name="project-gamma",
+            storage_location="backup",
+            creator_hostname="host2",
+            groups=["backend"],
+        ),
+        BoxMeta(
+            creation_timestamp_utc="20251123",
+            box_subid="jkl78",
+            name="project-delta",
+            storage_location="backup",
+            creator_hostname="host2",
+            groups=[],
+        ),
+    ]
+
+
+# ============================================================================
+# Tests for BoxyardMeta construction
+# ============================================================================
+
+# %%
+#|export
+class TestBoxyardMetaConstruction:
+    """Tests for BoxyardMeta basic construction."""
+
+    def test_construction_with_empty_list(self):
+        """BoxyardMeta can be created with an empty list."""
+        meta = BoxyardMeta(box_metas=[])
+        assert meta.box_metas == []
+
+    def test_construction_with_box_metas(self, sample_box_metas):
+        """BoxyardMeta stores box_metas correctly."""
+        meta = BoxyardMeta(box_metas=sample_box_metas)
+        assert len(meta.box_metas) == 4
+        assert meta.box_metas[0].name == "project-alpha"
+        assert meta.box_metas[3].name == "project-delta"
+
+
+# ============================================================================
+# Tests for by_storage_location property
+# ============================================================================
+
+# %%
+#|export
+class TestByStorageLocation:
+    """Tests for the by_storage_location cached property."""
+
+    def test_by_storage_location_groups_correctly(self, sample_box_metas):
+        """Repos are grouped by storage location."""
+        meta = BoxyardMeta(box_metas=sample_box_metas)
+        by_sl = meta.by_storage_location
+
+        assert "default" in by_sl
+        assert "backup" in by_sl
+        assert len(by_sl) == 2
+
+    def test_by_storage_location_contains_correct_boxes(self, sample_box_metas):
+        """Each storage location contains the correct boxes."""
+        meta = BoxyardMeta(box_metas=sample_box_metas)
+        by_sl = meta.by_storage_location
+
+        # Default storage should have alpha and beta
+        assert len(by_sl["default"]) == 2
+        assert "20251120_100000_abc12__project-alpha" in by_sl["default"]
+        assert "20251121_110000_def34__project-beta" in by_sl["default"]
+
+        # Backup storage should have gamma and delta
+        assert len(by_sl["backup"]) == 2
+        assert "20251122_120000_ghi56__project-gamma" in by_sl["backup"]
+        assert "20251123_jkl78__project-delta" in by_sl["backup"]
+
+    def test_by_storage_location_indexed_by_index_name(self, sample_box_metas):
+        """Repos are indexed by index_name within storage location."""
+        meta = BoxyardMeta(box_metas=sample_box_metas)
+        by_sl = meta.by_storage_location
+
+        box = by_sl["default"]["20251120_100000_abc12__project-alpha"]
+        assert box.name == "project-alpha"
+        assert box.box_subid == "abc12"
+
+    def test_by_storage_location_empty_boxyard(self):
+        """Empty BoxyardMeta returns empty dict."""
+        meta = BoxyardMeta(box_metas=[])
+        assert meta.by_storage_location == {}
+
+    def test_by_storage_location_returns_consistent_results(self, sample_box_metas):
+        """by_storage_location returns consistent results on multiple calls."""
+        meta = BoxyardMeta(box_metas=sample_box_metas)
+
+        first_call = meta.by_storage_location
+        second_call = meta.by_storage_location
+
+        # Results should be equal (same content)
+        assert first_call == second_call
+
+
+# ============================================================================
+# Tests for by_id property
+# ============================================================================
+
+# %%
+#|export
+class TestById:
+    """Tests for the by_id cached property."""
+
+    def test_by_id_contains_all_boxes(self, sample_box_metas):
+        """All boxes are accessible by their box_id."""
+        meta = BoxyardMeta(box_metas=sample_box_metas)
+        by_id = meta.by_id
+
+        assert len(by_id) == 4
+        assert "20251120_100000_abc12" in by_id
+        assert "20251121_110000_def34" in by_id
+        assert "20251122_120000_ghi56" in by_id
+        assert "20251123_jkl78" in by_id
+
+    def test_by_id_returns_correct_box(self, sample_box_metas):
+        """Correct BoxMeta is returned for each box_id."""
+        meta = BoxyardMeta(box_metas=sample_box_metas)
+        by_id = meta.by_id
+
+        box = by_id["20251120_100000_abc12"]
+        assert box.name == "project-alpha"
+        assert box.storage_location == "default"
+
+        box = by_id["20251123_jkl78"]
+        assert box.name == "project-delta"
+        assert box.storage_location == "backup"
+
+    def test_by_id_empty_boxyard(self):
+        """Empty BoxyardMeta returns empty dict."""
+        meta = BoxyardMeta(box_metas=[])
+        assert meta.by_id == {}
+
+    def test_by_id_returns_consistent_results(self, sample_box_metas):
+        """by_id returns consistent results on multiple calls."""
+        meta = BoxyardMeta(box_metas=sample_box_metas)
+
+        first_call = meta.by_id
+        second_call = meta.by_id
+
+        # Results should be equal (same content)
+        assert first_call == second_call
+
+
+# ============================================================================
+# Tests for by_index_name property
+# ============================================================================
+
+# %%
+#|export
+class TestByIndexName:
+    """Tests for the by_index_name cached property."""
+
+    def test_by_index_name_contains_all_boxes(self, sample_box_metas):
+        """All boxes are accessible by their index_name."""
+        meta = BoxyardMeta(box_metas=sample_box_metas)
+        by_name = meta.by_index_name
+
+        assert len(by_name) == 4
+        assert "20251120_100000_abc12__project-alpha" in by_name
+        assert "20251121_110000_def34__project-beta" in by_name
+        assert "20251122_120000_ghi56__project-gamma" in by_name
+        assert "20251123_jkl78__project-delta" in by_name
+
+    def test_by_index_name_returns_correct_box(self, sample_box_metas):
+        """Correct BoxMeta is returned for each index_name."""
+        meta = BoxyardMeta(box_metas=sample_box_metas)
+        by_name = meta.by_index_name
+
+        box = by_name["20251120_100000_abc12__project-alpha"]
+        assert box.name == "project-alpha"
+        assert box.box_subid == "abc12"
+        assert box.groups == ["backend", "python"]
+
+    def test_by_index_name_empty_boxyard(self):
+        """Empty BoxyardMeta returns empty dict."""
+        meta = BoxyardMeta(box_metas=[])
+        assert meta.by_index_name == {}
+
+    def test_by_index_name_returns_consistent_results(self, sample_box_metas):
+        """by_index_name returns consistent results on multiple calls."""
+        meta = BoxyardMeta(box_metas=sample_box_metas)
+
+        first_call = meta.by_index_name
+        second_call = meta.by_index_name
+
+        # Results should be equal (same content)
+        assert first_call == second_call
+
+
+# ============================================================================
+# Tests for index consistency
+# ============================================================================
+
+# %%
+#|export
+class TestIndexConsistency:
+    """Tests that all indexes refer to the same BoxMeta objects."""
+
+    def test_all_indexes_refer_to_same_objects(self, sample_box_metas):
+        """All index lookups return the same BoxMeta instance."""
+        meta = BoxyardMeta(box_metas=sample_box_metas)
+
+        # Get the same box through different indexes
+        box_alpha = sample_box_metas[0]
+
+        by_sl_box = meta.by_storage_location["default"]["20251120_100000_abc12__project-alpha"]
+        by_id_box = meta.by_id["20251120_100000_abc12"]
+        by_name_box = meta.by_index_name["20251120_100000_abc12__project-alpha"]
+
+        # All should be the exact same object
+        assert by_sl_box is by_id_box
+        assert by_id_box is by_name_box
+        assert by_name_box is box_alpha
+
+    def test_indexes_work_with_date_only_timestamp(self, sample_box_metas):
+        """Indexes work correctly with date-only timestamp format."""
+        meta = BoxyardMeta(box_metas=sample_box_metas)
+
+        # project-delta uses date-only format
+        box = meta.by_id["20251123_jkl78"]
+        assert box.name == "project-delta"
+
+        box_by_name = meta.by_index_name["20251123_jkl78__project-delta"]
+        assert box_by_name is box
+
+
+# ============================================================================
+# Tests for edge cases
+# ============================================================================
+
+# %%
+#|export
+class TestBoxyardMetaEdgeCases:
+    """Tests for edge cases in BoxyardMeta."""
+
+    def test_single_box(self):
+        """BoxyardMeta works with a single box."""
+        box = BoxMeta(
+            creation_timestamp_utc="20251122_143022",
+            box_subid="a7kx9",
+            name="single",
+            storage_location="default",
+            creator_hostname="host",
+            groups=[],
+        )
+        meta = BoxyardMeta(box_metas=[box])
+
+        assert len(meta.by_storage_location) == 1
+        assert len(meta.by_storage_location["default"]) == 1
+        assert len(meta.by_id) == 1
+        assert len(meta.by_index_name) == 1
+
+    def test_multiple_boxes_same_name_different_ids(self):
+        """Multiple boxes can have the same name but different IDs."""
+        box1 = BoxMeta(
+            creation_timestamp_utc="20251122_143022",
+            box_subid="abc12",
+            name="duplicate-name",
+            storage_location="default",
+            creator_hostname="host",
+            groups=[],
+        )
+        box2 = BoxMeta(
+            creation_timestamp_utc="20251123_143022",
+            box_subid="def34",
+            name="duplicate-name",
+            storage_location="default",
+            creator_hostname="host",
+            groups=[],
+        )
+        meta = BoxyardMeta(box_metas=[box1, box2])
+
+        # Both should be in indexes
+        assert len(meta.by_id) == 2
+        assert len(meta.by_index_name) == 2
+
+        # Should be accessible by their unique IDs
+        assert meta.by_id["20251122_143022_abc12"].name == "duplicate-name"
+        assert meta.by_id["20251123_143022_def34"].name == "duplicate-name"
+
+    def test_all_storage_locations_listed(self):
+        """All unique storage locations appear in by_storage_location keys."""
+        boxes = [
+            BoxMeta(
+                creation_timestamp_utc="20251122_143022",
+                box_subid="abc12",
+                name="box1",
+                storage_location="loc1",
+                creator_hostname="host",
+                groups=[],
+            ),
+            BoxMeta(
+                creation_timestamp_utc="20251123_143022",
+                box_subid="def34",
+                name="box2",
+                storage_location="loc2",
+                creator_hostname="host",
+                groups=[],
+            ),
+            BoxMeta(
+                creation_timestamp_utc="20251124_143022",
+                box_subid="ghi56",
+                name="box3",
+                storage_location="loc3",
+                creator_hostname="host",
+                groups=[],
+            ),
+        ]
+        meta = BoxyardMeta(box_metas=boxes)
+
+        assert set(meta.by_storage_location.keys()) == {"loc1", "loc2", "loc3"}

@@ -1,0 +1,40 @@
+# Template for remote rclone configuration
+#
+# To run remote sync tests:
+# 1. Copy this file to boxyard_rclone.conf in this directory
+# 2. Fill in your actual remote storage credentials
+# 3. The boxyard_rclone.conf file is gitignored and will not be committed
+#
+# Example configurations:
+
+# SFTP (e.g., Hetzner Storage Box)
+# [test_remote]
+# type = sftp
+# host = your-host.example.com
+# user = your-username
+# port = 22
+# pass = your-password-here
+# shell_type = unix
+# md5sum_command = md5sum
+# sha1sum_command = sha1sum
+
+# S3-compatible storage
+# [test_remote]
+# type = s3
+# provider = AWS
+# access_key_id = YOUR_ACCESS_KEY
+# secret_access_key = YOUR_SECRET_KEY
+# region = us-east-1
+# endpoint = https://s3.amazonaws.com
+
+# Google Cloud Storage
+# [test_remote]
+# type = gcs
+# project_number = your-project-number
+# service_account_file = /path/to/service-account.json
+
+# Backblaze B2
+# [test_remote]
+# type = b2
+# account = your-account-id
+# key = your-application-key

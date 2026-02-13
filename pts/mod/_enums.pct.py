@@ -24,7 +24,7 @@ from nblite import nbl_export, show_doc; nbl_export();
 from enum import Enum
 
 
-class RepoPart(str, Enum):
+class BoxPart(str, Enum):
     DATA = "data"
     META = "meta"
     CONF = "conf"

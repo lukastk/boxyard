@@ -9,7 +9,7 @@
 # %% [markdown]
 # # Unit Tests for Symlink Helpers
 #
-# Tests for get_repo_group_configs and symlink title generation logic.
+# Tests for get_box_group_configs and symlink title generation logic.
 
 # %%
 #|default_exp unit.models.test_symlink_helpers
@@ -20,8 +20,8 @@ import pytest
 from unittest.mock import MagicMock
 from pathlib import Path
 
-from repoyard._models import RepoMeta, get_repo_group_configs
-from repoyard.config import RepoGroupConfig, VirtualRepoGroupConfig, RepoGroupTitleMode
+from boxyard._models import BoxMeta, get_box_group_configs
+from boxyard.config import BoxGroupConfig, VirtualBoxGroupConfig, BoxGroupTitleMode
 
 
 # ============================================================================
@@ -32,33 +32,33 @@ from repoyard.config import RepoGroupConfig, VirtualRepoGroupConfig, RepoGroupTi
 #|export
 @pytest.fixture
 def mock_config():
-    """Create a mock config with repo groups and virtual groups."""
+    """Create a mock config with box groups and virtual groups."""
     config = MagicMock()
-    config.repo_groups = {
-        "backend": RepoGroupConfig(symlink_name="backend-projects"),
-        "frontend": RepoGroupConfig(repo_title_mode=RepoGroupTitleMode.NAME),
+    config.box_groups = {
+        "backend": BoxGroupConfig(symlink_name="backend-projects"),
+        "frontend": BoxGroupConfig(box_title_mode=BoxGroupTitleMode.NAME),
     }
-    config.virtual_repo_groups = {
-        "active": VirtualRepoGroupConfig(filter_expr="NOT archived"),
+    config.virtual_box_groups = {
+        "active": VirtualBoxGroupConfig(filter_expr="NOT archived"),
     }
     return config
 
 
 @pytest.fixture
-def sample_repo_metas():
-    """Create sample RepoMeta instances for testing."""
+def sample_box_metas():
+    """Create sample BoxMeta instances for testing."""
     return [
-        RepoMeta(
+        BoxMeta(
             creation_timestamp_utc="20251120_100000",
-            repo_subid="abc12",
+            box_subid="abc12",
             name="project-alpha",
             storage_location="default",
             creator_hostname="host1",
             groups=["backend", "python"],
         ),
-        RepoMeta(
+        BoxMeta(
             creation_timestamp_utc="20251121_110000",
-            repo_subid="def34",
+            box_subid="def34",
             name="project-beta",
             storage_location="default",
             creator_hostname="host1",
@@ -68,127 +68,127 @@ def sample_repo_metas():
 
 
 # ============================================================================
-# Tests for get_repo_group_configs
+# Tests for get_box_group_configs
 # ============================================================================
 
 # %%
 #|export
-class TestGetRepoGroupConfigs:
-    """Tests for the get_repo_group_configs function."""
+class TestGetBoxGroupConfigs:
+    """Tests for the get_box_group_configs function."""
 
-    def test_returns_config_groups(self, mock_config, sample_repo_metas):
+    def test_returns_config_groups(self, mock_config, sample_box_metas):
         """Config groups are included in result."""
-        groups, virtual_groups = get_repo_group_configs(mock_config, sample_repo_metas)
+        groups, virtual_groups = get_box_group_configs(mock_config, sample_box_metas)
 
         assert "backend" in groups
         assert "frontend" in groups
 
-    def test_returns_virtual_groups(self, mock_config, sample_repo_metas):
+    def test_returns_virtual_groups(self, mock_config, sample_box_metas):
         """Virtual groups are returned separately."""
-        groups, virtual_groups = get_repo_group_configs(mock_config, sample_repo_metas)
+        groups, virtual_groups = get_box_group_configs(mock_config, sample_box_metas)
 
         assert "active" in virtual_groups
-        assert isinstance(virtual_groups["active"], VirtualRepoGroupConfig)
+        assert isinstance(virtual_groups["active"], VirtualBoxGroupConfig)
 
-    def test_adds_groups_from_repo_metas(self, mock_config, sample_repo_metas):
-        """Groups from repo metas that aren't in config are added."""
-        groups, virtual_groups = get_repo_group_configs(mock_config, sample_repo_metas)
+    def test_adds_groups_from_box_metas(self, mock_config, sample_box_metas):
+        """Groups from box metas that aren't in config are added."""
+        groups, virtual_groups = get_box_group_configs(mock_config, sample_box_metas)
 
-        # "python" and "custom-group" are not in config but are in repo metas
+        # "python" and "custom-group" are not in config but are in box metas
         assert "python" in groups
         assert "custom-group" in groups
 
-    def test_new_groups_have_default_config(self, mock_config, sample_repo_metas):
-        """Groups not in config get default RepoGroupConfig."""
-        groups, virtual_groups = get_repo_group_configs(mock_config, sample_repo_metas)
+    def test_new_groups_have_default_config(self, mock_config, sample_box_metas):
+        """Groups not in config get default BoxGroupConfig."""
+        groups, virtual_groups = get_box_group_configs(mock_config, sample_box_metas)
 
         # "python" should have default config
-        assert isinstance(groups["python"], RepoGroupConfig)
+        assert isinstance(groups["python"], BoxGroupConfig)
         assert groups["python"].symlink_name is None
-        assert groups["python"].repo_title_mode == RepoGroupTitleMode.INDEX_NAME
+        assert groups["python"].box_title_mode == BoxGroupTitleMode.INDEX_NAME
 
-    def test_preserves_config_group_settings(self, mock_config, sample_repo_metas):
+    def test_preserves_config_group_settings(self, mock_config, sample_box_metas):
         """Groups from config preserve their settings."""
-        groups, virtual_groups = get_repo_group_configs(mock_config, sample_repo_metas)
+        groups, virtual_groups = get_box_group_configs(mock_config, sample_box_metas)
 
         # "backend" should keep its custom symlink_name
         assert groups["backend"].symlink_name == "backend-projects"
 
         # "frontend" should keep its custom title mode
-        assert groups["frontend"].repo_title_mode == RepoGroupTitleMode.NAME
+        assert groups["frontend"].box_title_mode == BoxGroupTitleMode.NAME
 
-    def test_does_not_modify_original_config(self, mock_config, sample_repo_metas):
-        """Original config.repo_groups is not modified."""
-        original_keys = set(mock_config.repo_groups.keys())
+    def test_does_not_modify_original_config(self, mock_config, sample_box_metas):
+        """Original config.box_groups is not modified."""
+        original_keys = set(mock_config.box_groups.keys())
 
-        get_repo_group_configs(mock_config, sample_repo_metas)
+        get_box_group_configs(mock_config, sample_box_metas)
 
         # Original config should not have new groups
-        assert set(mock_config.repo_groups.keys()) == original_keys
+        assert set(mock_config.box_groups.keys()) == original_keys
 
-    def test_empty_repo_metas(self, mock_config):
-        """Works with empty repo metas list."""
-        groups, virtual_groups = get_repo_group_configs(mock_config, [])
+    def test_empty_box_metas(self, mock_config):
+        """Works with empty box metas list."""
+        groups, virtual_groups = get_box_group_configs(mock_config, [])
 
         # Should still have config groups
         assert "backend" in groups
         assert "frontend" in groups
-        # But no groups from repos
+        # But no groups from boxes
         assert "python" not in groups
         assert "custom-group" not in groups
 
-    def test_repo_with_no_groups(self, mock_config):
-        """Handles repos with no groups."""
-        repo = RepoMeta(
+    def test_box_with_no_groups(self, mock_config):
+        """Handles boxes with no groups."""
+        box = BoxMeta(
             creation_timestamp_utc="20251120_100000",
-            repo_subid="xyz99",
-            name="no-groups-repo",
+            box_subid="xyz99",
+            name="no-groups-box",
             storage_location="default",
             creator_hostname="host",
             groups=[],
         )
 
-        groups, virtual_groups = get_repo_group_configs(mock_config, [repo])
+        groups, virtual_groups = get_box_group_configs(mock_config, [box])
 
         # Should only have config groups
         assert set(groups.keys()) == {"backend", "frontend"}
 
-    def test_empty_config_groups(self, sample_repo_metas):
+    def test_empty_config_groups(self, sample_box_metas):
         """Works when config has no predefined groups."""
         config = MagicMock()
-        config.repo_groups = {}
-        config.virtual_repo_groups = {}
+        config.box_groups = {}
+        config.virtual_box_groups = {}
 
-        groups, virtual_groups = get_repo_group_configs(config, sample_repo_metas)
+        groups, virtual_groups = get_box_group_configs(config, sample_box_metas)
 
-        # Should have groups from repo metas
+        # Should have groups from box metas
         assert "backend" in groups
         assert "frontend" in groups
         assert "python" in groups
         assert "custom-group" in groups
 
-    def test_duplicate_groups_in_repos(self, mock_config):
-        """Same group in multiple repos is only added once."""
-        repos = [
-            RepoMeta(
+    def test_duplicate_groups_in_boxes(self, mock_config):
+        """Same group in multiple boxes is only added once."""
+        boxes = [
+            BoxMeta(
                 creation_timestamp_utc="20251120_100000",
-                repo_subid="abc12",
-                name="repo1",
+                box_subid="abc12",
+                name="box1",
                 storage_location="default",
                 creator_hostname="host",
                 groups=["shared-group"],
             ),
-            RepoMeta(
+            BoxMeta(
                 creation_timestamp_utc="20251121_100000",
-                repo_subid="def34",
-                name="repo2",
+                box_subid="def34",
+                name="box2",
                 storage_location="default",
                 creator_hostname="host",
                 groups=["shared-group"],
             ),
         ]
 
-        groups, virtual_groups = get_repo_group_configs(mock_config, repos)
+        groups, virtual_groups = get_box_group_configs(mock_config, boxes)
 
         # "shared-group" should appear once
         assert "shared-group" in groups
@@ -204,97 +204,97 @@ class TestGetRepoGroupConfigs:
 # %%
 #|export
 class TestSymlinkTitleGeneration:
-    """Tests for symlink title generation based on RepoGroupTitleMode.
+    """Tests for symlink title generation based on BoxGroupTitleMode.
 
     These tests verify the title generation logic that would be used
-    in create_user_repo_group_symlinks.
+    in create_user_box_group_symlinks.
     """
 
     @pytest.fixture
-    def repo_meta(self):
-        """Create a sample RepoMeta for title testing."""
-        return RepoMeta(
+    def box_meta(self):
+        """Create a sample BoxMeta for title testing."""
+        return BoxMeta(
             creation_timestamp_utc="20251122_143022",
-            repo_subid="a7kx9",
+            box_subid="a7kx9",
             name="my-project",
             storage_location="default",
             creator_hostname="host",
             groups=["backend"],
         )
 
-    def test_title_mode_index_name(self, repo_meta):
+    def test_title_mode_index_name(self, box_meta):
         """INDEX_NAME mode uses the full index_name."""
-        config = RepoGroupConfig(repo_title_mode=RepoGroupTitleMode.INDEX_NAME)
+        config = BoxGroupConfig(box_title_mode=BoxGroupTitleMode.INDEX_NAME)
 
         # Simulate title generation logic
-        if config.repo_title_mode == RepoGroupTitleMode.INDEX_NAME:
-            title = repo_meta.index_name
-        elif config.repo_title_mode == RepoGroupTitleMode.DATETIME_AND_NAME:
-            title = f"{repo_meta.creation_timestamp_utc}__{repo_meta.name}"
-        elif config.repo_title_mode == RepoGroupTitleMode.NAME:
-            title = repo_meta.name
+        if config.box_title_mode == BoxGroupTitleMode.INDEX_NAME:
+            title = box_meta.index_name
+        elif config.box_title_mode == BoxGroupTitleMode.DATETIME_AND_NAME:
+            title = f"{box_meta.creation_timestamp_utc}__{box_meta.name}"
+        elif config.box_title_mode == BoxGroupTitleMode.NAME:
+            title = box_meta.name
 
         assert title == "20251122_143022_a7kx9__my-project"
 
-    def test_title_mode_datetime_and_name(self, repo_meta):
+    def test_title_mode_datetime_and_name(self, box_meta):
         """DATETIME_AND_NAME mode uses timestamp and name."""
-        config = RepoGroupConfig(repo_title_mode=RepoGroupTitleMode.DATETIME_AND_NAME)
+        config = BoxGroupConfig(box_title_mode=BoxGroupTitleMode.DATETIME_AND_NAME)
 
-        if config.repo_title_mode == RepoGroupTitleMode.INDEX_NAME:
-            title = repo_meta.index_name
-        elif config.repo_title_mode == RepoGroupTitleMode.DATETIME_AND_NAME:
-            title = f"{repo_meta.creation_timestamp_utc}__{repo_meta.name}"
-        elif config.repo_title_mode == RepoGroupTitleMode.NAME:
-            title = repo_meta.name
+        if config.box_title_mode == BoxGroupTitleMode.INDEX_NAME:
+            title = box_meta.index_name
+        elif config.box_title_mode == BoxGroupTitleMode.DATETIME_AND_NAME:
+            title = f"{box_meta.creation_timestamp_utc}__{box_meta.name}"
+        elif config.box_title_mode == BoxGroupTitleMode.NAME:
+            title = box_meta.name
 
         assert title == "20251122_143022__my-project"
 
-    def test_title_mode_name_only(self, repo_meta):
-        """NAME mode uses just the repo name."""
-        config = RepoGroupConfig(repo_title_mode=RepoGroupTitleMode.NAME)
+    def test_title_mode_name_only(self, box_meta):
+        """NAME mode uses just the box name."""
+        config = BoxGroupConfig(box_title_mode=BoxGroupTitleMode.NAME)
 
-        if config.repo_title_mode == RepoGroupTitleMode.INDEX_NAME:
-            title = repo_meta.index_name
-        elif config.repo_title_mode == RepoGroupTitleMode.DATETIME_AND_NAME:
-            title = f"{repo_meta.creation_timestamp_utc}__{repo_meta.name}"
-        elif config.repo_title_mode == RepoGroupTitleMode.NAME:
-            title = repo_meta.name
+        if config.box_title_mode == BoxGroupTitleMode.INDEX_NAME:
+            title = box_meta.index_name
+        elif config.box_title_mode == BoxGroupTitleMode.DATETIME_AND_NAME:
+            title = f"{box_meta.creation_timestamp_utc}__{box_meta.name}"
+        elif config.box_title_mode == BoxGroupTitleMode.NAME:
+            title = box_meta.name
 
         assert title == "my-project"
 
     def test_title_with_date_only_timestamp(self):
         """Title generation works with date-only timestamp."""
-        repo = RepoMeta(
+        box = BoxMeta(
             creation_timestamp_utc="20251122",
-            repo_subid="b8ly0",
-            name="date-only-repo",
+            box_subid="b8ly0",
+            name="date-only-box",
             storage_location="default",
             creator_hostname="host",
             groups=[],
         )
 
-        config = RepoGroupConfig(repo_title_mode=RepoGroupTitleMode.DATETIME_AND_NAME)
+        config = BoxGroupConfig(box_title_mode=BoxGroupTitleMode.DATETIME_AND_NAME)
 
-        if config.repo_title_mode == RepoGroupTitleMode.DATETIME_AND_NAME:
-            title = f"{repo.creation_timestamp_utc}__{repo.name}"
+        if config.box_title_mode == BoxGroupTitleMode.DATETIME_AND_NAME:
+            title = f"{box.creation_timestamp_utc}__{box.name}"
 
-        assert title == "20251122__date-only-repo"
+        assert title == "20251122__date-only-box"
 
     def test_title_with_special_characters_in_name(self):
-        """Title generation handles special characters in repo name."""
-        repo = RepoMeta(
+        """Title generation handles special characters in box name."""
+        box = BoxMeta(
             creation_timestamp_utc="20251122_143022",
-            repo_subid="c9mz1",
+            box_subid="c9mz1",
             name="my-project_v2.0",
             storage_location="default",
             creator_hostname="host",
             groups=[],
         )
 
-        config = RepoGroupConfig(repo_title_mode=RepoGroupTitleMode.NAME)
+        config = BoxGroupConfig(box_title_mode=BoxGroupTitleMode.NAME)
 
-        if config.repo_title_mode == RepoGroupTitleMode.NAME:
-            title = repo.name
+        if config.box_title_mode == BoxGroupTitleMode.NAME:
+            title = box.name
 
         assert title == "my-project_v2.0"
 
@@ -310,7 +310,7 @@ class TestSymlinkNameResolution:
 
     def test_custom_symlink_name(self):
         """Custom symlink_name is used when specified."""
-        config = RepoGroupConfig(symlink_name="custom-folder")
+        config = BoxGroupConfig(symlink_name="custom-folder")
 
         symlink_name = config.symlink_name or "default-group"
 
@@ -318,7 +318,7 @@ class TestSymlinkNameResolution:
 
     def test_none_symlink_name_uses_group_name(self):
         """None symlink_name falls back to group name."""
-        config = RepoGroupConfig(symlink_name=None)
+        config = BoxGroupConfig(symlink_name=None)
         group_name = "backend"
 
         symlink_name = config.symlink_name or group_name
@@ -327,7 +327,7 @@ class TestSymlinkNameResolution:
 
     def test_empty_string_symlink_name(self):
         """Empty string symlink_name is used as-is (truthy check)."""
-        config = RepoGroupConfig(symlink_name="")
+        config = BoxGroupConfig(symlink_name="")
         group_name = "backend"
 
         # Empty string is falsy, so it falls back
@@ -337,7 +337,7 @@ class TestSymlinkNameResolution:
 
     def test_virtual_group_symlink_name(self):
         """Virtual groups also support custom symlink names."""
-        config = VirtualRepoGroupConfig(
+        config = VirtualBoxGroupConfig(
             filter_expr="backend",
             symlink_name="all-backend-projects",
         )
@@ -354,131 +354,131 @@ class TestSymlinkNameResolution:
 # %%
 #|export
 class TestGroupMembershipChecks:
-    """Tests for checking if repos belong to groups."""
+    """Tests for checking if boxes belong to groups."""
 
-    def test_repo_in_regular_group(self):
-        """Repo with group tag is in that group."""
-        repo = RepoMeta(
+    def test_box_in_regular_group(self):
+        """Box with group tag is in that group."""
+        box = BoxMeta(
             creation_timestamp_utc="20251122_143022",
-            repo_subid="abc12",
-            name="test-repo",
+            box_subid="abc12",
+            name="test-box",
             storage_location="default",
             creator_hostname="host",
             groups=["backend", "python"],
         )
 
-        assert "backend" in repo.groups
-        assert "python" in repo.groups
-        assert "frontend" not in repo.groups
+        assert "backend" in box.groups
+        assert "python" in box.groups
+        assert "frontend" not in box.groups
 
-    def test_repo_in_virtual_group_with_match(self):
-        """Repo matching virtual group filter is in that group."""
-        repo = RepoMeta(
+    def test_box_in_virtual_group_with_match(self):
+        """Box matching virtual group filter is in that group."""
+        box = BoxMeta(
             creation_timestamp_utc="20251122_143022",
-            repo_subid="abc12",
-            name="test-repo",
+            box_subid="abc12",
+            name="test-box",
             storage_location="default",
             creator_hostname="host",
             groups=["backend", "active"],
         )
 
-        virtual_config = VirtualRepoGroupConfig(filter_expr="backend AND active")
+        virtual_config = VirtualBoxGroupConfig(filter_expr="backend AND active")
 
-        assert virtual_config.is_in_group(repo.groups) is True
+        assert virtual_config.is_in_group(box.groups) is True
 
-    def test_repo_not_in_virtual_group_without_match(self):
-        """Repo not matching virtual group filter is not in that group."""
-        repo = RepoMeta(
+    def test_box_not_in_virtual_group_without_match(self):
+        """Box not matching virtual group filter is not in that group."""
+        box = BoxMeta(
             creation_timestamp_utc="20251122_143022",
-            repo_subid="abc12",
-            name="test-repo",
+            box_subid="abc12",
+            name="test-box",
             storage_location="default",
             creator_hostname="host",
             groups=["backend"],
         )
 
-        virtual_config = VirtualRepoGroupConfig(filter_expr="backend AND frontend")
+        virtual_config = VirtualBoxGroupConfig(filter_expr="backend AND frontend")
 
-        assert virtual_config.is_in_group(repo.groups) is False
+        assert virtual_config.is_in_group(box.groups) is False
 
-    def test_repo_excluded_by_not_filter(self):
-        """Repo is excluded by NOT filter in virtual group."""
-        repo = RepoMeta(
+    def test_box_excluded_by_not_filter(self):
+        """Box is excluded by NOT filter in virtual group."""
+        box = BoxMeta(
             creation_timestamp_utc="20251122_143022",
-            repo_subid="abc12",
-            name="test-repo",
+            box_subid="abc12",
+            name="test-box",
             storage_location="default",
             creator_hostname="host",
             groups=["backend", "archived"],
         )
 
-        virtual_config = VirtualRepoGroupConfig(filter_expr="backend AND NOT archived")
+        virtual_config = VirtualBoxGroupConfig(filter_expr="backend AND NOT archived")
 
-        assert virtual_config.is_in_group(repo.groups) is False
+        assert virtual_config.is_in_group(box.groups) is False
 
-    def test_repo_with_empty_groups(self):
-        """Repo with no groups is not in any regular group."""
-        repo = RepoMeta(
+    def test_box_with_empty_groups(self):
+        """Box with no groups is not in any regular group."""
+        box = BoxMeta(
             creation_timestamp_utc="20251122_143022",
-            repo_subid="abc12",
-            name="test-repo",
+            box_subid="abc12",
+            name="test-box",
             storage_location="default",
             creator_hostname="host",
             groups=[],
         )
 
-        assert "backend" not in repo.groups
-        assert len(repo.groups) == 0
+        assert "backend" not in box.groups
+        assert len(box.groups) == 0
 
-    def test_repo_with_empty_groups_matches_not_filter(self):
-        """Repo with no groups can match NOT filters."""
-        repo = RepoMeta(
+    def test_box_with_empty_groups_matches_not_filter(self):
+        """Box with no groups can match NOT filters."""
+        box = BoxMeta(
             creation_timestamp_utc="20251122_143022",
-            repo_subid="abc12",
-            name="test-repo",
+            box_subid="abc12",
+            name="test-box",
             storage_location="default",
             creator_hostname="host",
             groups=[],
         )
 
-        virtual_config = VirtualRepoGroupConfig(filter_expr="NOT archived")
+        virtual_config = VirtualBoxGroupConfig(filter_expr="NOT archived")
 
         # Empty groups means "archived" is not present, so NOT archived is True
-        assert virtual_config.is_in_group(repo.groups) is True
+        assert virtual_config.is_in_group(box.groups) is True
 
 
 # ============================================================================
-# Tests for conflict handling (same title for different repos)
+# Tests for conflict handling (same title for different boxes)
 # ============================================================================
 
 # %%
 #|export
 class TestSymlinkConflictHandling:
-    """Tests for handling title conflicts when multiple repos have same title."""
+    """Tests for handling title conflicts when multiple boxes have same title."""
 
     def test_same_name_different_timestamps_index_name_mode(self):
-        """With INDEX_NAME mode, same-name repos have different titles."""
-        repo1 = RepoMeta(
+        """With INDEX_NAME mode, same-name boxes have different titles."""
+        box1 = BoxMeta(
             creation_timestamp_utc="20251122_143022",
-            repo_subid="abc12",
+            box_subid="abc12",
             name="my-project",
             storage_location="default",
             creator_hostname="host",
             groups=[],
         )
-        repo2 = RepoMeta(
+        box2 = BoxMeta(
             creation_timestamp_utc="20251123_143022",
-            repo_subid="def34",
+            box_subid="def34",
             name="my-project",
             storage_location="default",
             creator_hostname="host",
             groups=[],
         )
 
-        config = RepoGroupConfig(repo_title_mode=RepoGroupTitleMode.INDEX_NAME)
+        config = BoxGroupConfig(box_title_mode=BoxGroupTitleMode.INDEX_NAME)
 
-        title1 = repo1.index_name
-        title2 = repo2.index_name
+        title1 = box1.index_name
+        title2 = box2.index_name
 
         # Titles should be different due to different timestamps and subids
         assert title1 != title2
@@ -486,55 +486,55 @@ class TestSymlinkConflictHandling:
         assert title2 == "20251123_143022_def34__my-project"
 
     def test_same_name_name_mode_potential_conflict(self):
-        """With NAME mode, same-name repos would have the same title."""
-        repo1 = RepoMeta(
+        """With NAME mode, same-name boxes would have the same title."""
+        box1 = BoxMeta(
             creation_timestamp_utc="20251122_143022",
-            repo_subid="abc12",
+            box_subid="abc12",
             name="my-project",
             storage_location="default",
             creator_hostname="host",
             groups=[],
         )
-        repo2 = RepoMeta(
+        box2 = BoxMeta(
             creation_timestamp_utc="20251123_143022",
-            repo_subid="def34",
+            box_subid="def34",
             name="my-project",
             storage_location="default",
             creator_hostname="host",
             groups=[],
         )
 
-        config = RepoGroupConfig(repo_title_mode=RepoGroupTitleMode.NAME)
+        config = BoxGroupConfig(box_title_mode=BoxGroupTitleMode.NAME)
 
-        title1 = repo1.name
-        title2 = repo2.name
+        title1 = box1.name
+        title2 = box2.name
 
         # Titles would be the same - this is a conflict scenario
         assert title1 == title2 == "my-project"
 
     def test_datetime_and_name_same_name_different_times(self):
         """With DATETIME_AND_NAME mode, different timestamps prevent conflicts."""
-        repo1 = RepoMeta(
+        box1 = BoxMeta(
             creation_timestamp_utc="20251122_143022",
-            repo_subid="abc12",
+            box_subid="abc12",
             name="my-project",
             storage_location="default",
             creator_hostname="host",
             groups=[],
         )
-        repo2 = RepoMeta(
+        box2 = BoxMeta(
             creation_timestamp_utc="20251123_143022",
-            repo_subid="def34",
+            box_subid="def34",
             name="my-project",
             storage_location="default",
             creator_hostname="host",
             groups=[],
         )
 
-        config = RepoGroupConfig(repo_title_mode=RepoGroupTitleMode.DATETIME_AND_NAME)
+        config = BoxGroupConfig(box_title_mode=BoxGroupTitleMode.DATETIME_AND_NAME)
 
-        title1 = f"{repo1.creation_timestamp_utc}__{repo1.name}"
-        title2 = f"{repo2.creation_timestamp_utc}__{repo2.name}"
+        title1 = f"{box1.creation_timestamp_utc}__{box1.name}"
+        title2 = f"{box2.creation_timestamp_utc}__{box2.name}"
 
         # Titles should be different due to different timestamps
         assert title1 != title2

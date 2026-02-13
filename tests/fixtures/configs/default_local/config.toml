@@ -2,19 +2,19 @@
 # Paths are overwritten at runtime by test fixtures to use tmp directories
 
 default_storage_location = "local_test"
-repoyard_data_path = "__REPLACED_AT_RUNTIME__"
-user_repos_path = "__REPLACED_AT_RUNTIME__"
-user_repo_groups_path = "__REPLACED_AT_RUNTIME__"
-repo_timestamp_format = "date_and_time"
-default_repo_groups = []
-repo_subid_character_set = "abcdefghijklmnopqrstuvwxyz0123456789"
-repo_subid_length = 5
+boxyard_data_path = "__REPLACED_AT_RUNTIME__"
+user_boxes_path = "__REPLACED_AT_RUNTIME__"
+user_box_groups_path = "__REPLACED_AT_RUNTIME__"
+box_timestamp_format = "date_and_time"
+default_box_groups = []
+box_subid_character_set = "abcdefghijklmnopqrstuvwxyz0123456789"
+box_subid_length = 5
 max_concurrent_rclone_ops = 10
 
 [storage_locations.local_test]
 storage_type = "rclone"
-store_path = "repoyard"
+store_path = "boxyard"
 
-[repo_groups]
+[box_groups]
 
-[virtual_repo_groups]
+[virtual_box_groups]

@@ -7,22 +7,22 @@ import pytest
 import asyncio
 from pathlib import Path
 
-from repoyard.cmds import (
-    new_repo,
-    sync_repo,
-    sync_missing_repometas,
-    include_repo,
+from boxyard.cmds import (
+    new_box,
+    sync_box,
+    sync_missing_boxmetas,
+    include_box,
 )
-from repoyard._models import (
-    get_repoyard_meta,
+from boxyard._models import (
+    get_boxyard_meta,
     get_sync_status,
-    RepoPart,
+    BoxPart,
     SyncRecord,
     SyncCondition,
 )
-from repoyard._utils.sync_helper import SyncUnsafe, SyncSetting, SyncDirection
+from boxyard._utils.sync_helper import SyncUnsafe, SyncSetting, SyncDirection
 
-from ...integration.conftest import create_repoyards
+from ...integration.conftest import create_boxyards
 
 
 # ============================================================================
@@ -44,26 +44,26 @@ def test_interrupted_push_retry_same_machine():
 
 
 async def _test_interrupted_push_retry_same_machine():
-    # Set up repoyard
-    sl_name, sl_rclone_path, config, config_path, data_path = create_repoyards()
+    # Set up boxyard
+    sl_name, sl_rclone_path, config, config_path, data_path = create_boxyards()
 
-    # Create a repo and sync it
-    repo_index_name = new_repo(
+    # Create a box and sync it
+    box_index_name = new_box(
         config_path=config_path,
-        repo_name="test_repo",
+        box_name="test_box",
         storage_location=sl_name,
     )
-    await sync_repo(config_path=config_path, repo_index_name=repo_index_name)
+    await sync_box(config_path=config_path, box_index_name=box_index_name)
 
-    # Get repo meta
-    repoyard_meta = get_repoyard_meta(config)
-    repo_meta = repoyard_meta.by_index_name[repo_index_name]
+    # Get box meta
+    boxyard_meta = get_boxyard_meta(config)
+    box_meta = boxyard_meta.by_index_name[box_index_name]
 
     # Simulate an interrupted push by creating incomplete sync records with the SAME ULID
     incomplete_record = SyncRecord.create(sync_complete=False, syncer_hostname="test_host")
 
-    local_sync_record_path = repo_meta.get_local_sync_record_path(config, RepoPart.DATA)
-    remote_sync_record_path = repo_meta.get_remote_sync_record_path(config, RepoPart.DATA)
+    local_sync_record_path = box_meta.get_local_sync_record_path(config, BoxPart.DATA)
+    remote_sync_record_path = box_meta.get_remote_sync_record_path(config, BoxPart.DATA)
 
     # Save the same incomplete record to both local and remote (simulating interrupted push)
     local_sync_record_path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,28 +77,28 @@ async def _test_interrupted_push_retry_same_machine():
     # Verify we're in SYNC_TO_REMOTE_INCOMPLETE state
     sync_status = await get_sync_status(
         rclone_config_path=config.rclone_config_path,
-        local_path=repo_meta.get_local_part_path(config, RepoPart.DATA),
+        local_path=box_meta.get_local_part_path(config, BoxPart.DATA),
         local_sync_record_path=local_sync_record_path,
         remote=sl_name,
-        remote_path=repo_meta.get_remote_part_path(config, RepoPart.DATA),
+        remote_path=box_meta.get_remote_part_path(config, BoxPart.DATA),
         remote_sync_record_path=remote_sync_record_path,
     )
     assert sync_status.sync_condition == SyncCondition.SYNC_TO_REMOTE_INCOMPLETE
 
     # Retry the sync - should succeed because ULIDs match (same machine)
-    await sync_repo(
+    await sync_box(
         config_path=config_path,
-        repo_index_name=repo_index_name,
+        box_index_name=box_index_name,
         sync_setting=SyncSetting.CAREFUL,  # Default safe mode
     )
 
     # Verify sync completed successfully
     sync_status = await get_sync_status(
         rclone_config_path=config.rclone_config_path,
-        local_path=repo_meta.get_local_part_path(config, RepoPart.DATA),
+        local_path=box_meta.get_local_part_path(config, BoxPart.DATA),
         local_sync_record_path=local_sync_record_path,
         remote=sl_name,
-        remote_path=repo_meta.get_remote_part_path(config, RepoPart.DATA),
+        remote_path=box_meta.get_remote_part_path(config, BoxPart.DATA),
         remote_sync_record_path=remote_sync_record_path,
     )
     assert sync_status.sync_condition == SyncCondition.SYNCED
@@ -125,28 +125,28 @@ def test_interrupted_push_blocked_from_other_machine():
 
 
 async def _test_interrupted_push_blocked_from_other_machine():
-    # Set up two repoyards to simulate two machines
+    # Set up two boxyards to simulate two machines
     (
         sl_name,
         sl_rclone_path,
         [(config1, config_path1, data_path1), (config2, config_path2, data_path2)],
-    ) = create_repoyards(num_repoyards=2)
+    ) = create_boxyards(num_boxyards=2)
 
-    # Create a repo on machine 1 and sync it
-    repo_index_name = new_repo(
+    # Create a box on machine 1 and sync it
+    box_index_name = new_box(
         config_path=config_path1,
-        repo_name="test_repo",
+        box_name="test_box",
         storage_location=sl_name,
     )
-    await sync_repo(config_path=config_path1, repo_index_name=repo_index_name)
+    await sync_box(config_path=config_path1, box_index_name=box_index_name)
 
-    # Sync repometas to machine 2 and include the repo
-    await sync_missing_repometas(config_path=config_path2)
-    await include_repo(config_path=config_path2, repo_index_name=repo_index_name)
+    # Sync boxmetas to machine 2 and include the box
+    await sync_missing_boxmetas(config_path=config_path2)
+    await include_box(config_path=config_path2, box_index_name=box_index_name)
 
-    # Get repo meta for both machines
-    repo_meta1 = get_repoyard_meta(config1).by_index_name[repo_index_name]
-    repo_meta2 = get_repoyard_meta(config2).by_index_name[repo_index_name]
+    # Get box meta for both machines
+    box_meta1 = get_boxyard_meta(config1).by_index_name[box_index_name]
+    box_meta2 = get_boxyard_meta(config2).by_index_name[box_index_name]
 
     # Simulate an interrupted push from machine 1:
     # - Remote has incomplete record from machine 1's interrupted push
@@ -154,7 +154,7 @@ async def _test_interrupted_push_blocked_from_other_machine():
     incomplete_record_machine1 = SyncRecord.create(sync_complete=False, syncer_hostname="machine1")
 
     # Save incomplete record to remote (simulating machine 1's interrupted push)
-    remote_sync_record_path = repo_meta1.get_remote_sync_record_path(config1, RepoPart.DATA)
+    remote_sync_record_path = box_meta1.get_remote_sync_record_path(config1, BoxPart.DATA)
     await incomplete_record_machine1.rclone_save(
         config1.rclone_config_path,
         sl_name,
@@ -165,22 +165,22 @@ async def _test_interrupted_push_blocked_from_other_machine():
     # This means machine 2 did NOT start the interrupted push
 
     # Verify the sync status from machine 2's perspective
-    local_sync_record_path2 = repo_meta2.get_local_sync_record_path(config2, RepoPart.DATA)
+    local_sync_record_path2 = box_meta2.get_local_sync_record_path(config2, BoxPart.DATA)
     sync_status = await get_sync_status(
         rclone_config_path=config2.rclone_config_path,
-        local_path=repo_meta2.get_local_part_path(config2, RepoPart.DATA),
+        local_path=box_meta2.get_local_part_path(config2, BoxPart.DATA),
         local_sync_record_path=local_sync_record_path2,
         remote=sl_name,
-        remote_path=repo_meta2.get_remote_part_path(config2, RepoPart.DATA),
+        remote_path=box_meta2.get_remote_part_path(config2, BoxPart.DATA),
         remote_sync_record_path=remote_sync_record_path,
     )
     assert sync_status.sync_condition == SyncCondition.SYNC_TO_REMOTE_INCOMPLETE
 
     # Machine 2 should NOT be able to sync - it doesn't own the incomplete sync
     with pytest.raises(SyncUnsafe, match="another machine"):
-        await sync_repo(
+        await sync_box(
             config_path=config_path2,
-            repo_index_name=repo_index_name,
+            box_index_name=box_index_name,
             sync_setting=SyncSetting.CAREFUL,
         )
 
@@ -204,63 +204,63 @@ def test_interrupted_pull_retry_same_machine():
 
 
 async def _test_interrupted_pull_retry_same_machine():
-    # Set up two repoyards to simulate two machines
+    # Set up two boxyards to simulate two machines
     (
         sl_name,
         sl_rclone_path,
         [(config1, config_path1, data_path1), (config2, config_path2, data_path2)],
-    ) = create_repoyards(num_repoyards=2)
+    ) = create_boxyards(num_boxyards=2)
 
-    # Create a repo on machine 1 and sync it
-    repo_index_name = new_repo(
+    # Create a box on machine 1 and sync it
+    box_index_name = new_box(
         config_path=config_path1,
-        repo_name="test_repo",
+        box_name="test_box",
         storage_location=sl_name,
     )
-    await sync_repo(config_path=config_path1, repo_index_name=repo_index_name)
+    await sync_box(config_path=config_path1, box_index_name=box_index_name)
 
-    # Sync repometas to machine 2 and include the repo
-    await sync_missing_repometas(config_path=config_path2)
-    await include_repo(config_path=config_path2, repo_index_name=repo_index_name)
+    # Sync boxmetas to machine 2 and include the box
+    await sync_missing_boxmetas(config_path=config_path2)
+    await include_box(config_path=config_path2, box_index_name=box_index_name)
 
-    # Get repo meta
-    repo_meta2 = get_repoyard_meta(config2).by_index_name[repo_index_name]
+    # Get box meta
+    box_meta2 = get_boxyard_meta(config2).by_index_name[box_index_name]
 
     # Simulate an interrupted pull on machine 2:
     # - Local has incomplete record (pull was interrupted)
     # - Remote still has complete record (pull doesn't touch remote)
     incomplete_record = SyncRecord.create(sync_complete=False, syncer_hostname="machine2")
 
-    local_sync_record_path = repo_meta2.get_local_sync_record_path(config2, RepoPart.DATA)
+    local_sync_record_path = box_meta2.get_local_sync_record_path(config2, BoxPart.DATA)
     local_sync_record_path.parent.mkdir(parents=True, exist_ok=True)
     local_sync_record_path.write_text(incomplete_record.model_dump_json())
 
     # Verify we're in SYNC_FROM_REMOTE_INCOMPLETE state
-    remote_sync_record_path = repo_meta2.get_remote_sync_record_path(config2, RepoPart.DATA)
+    remote_sync_record_path = box_meta2.get_remote_sync_record_path(config2, BoxPart.DATA)
     sync_status = await get_sync_status(
         rclone_config_path=config2.rclone_config_path,
-        local_path=repo_meta2.get_local_part_path(config2, RepoPart.DATA),
+        local_path=box_meta2.get_local_part_path(config2, BoxPart.DATA),
         local_sync_record_path=local_sync_record_path,
         remote=sl_name,
-        remote_path=repo_meta2.get_remote_part_path(config2, RepoPart.DATA),
+        remote_path=box_meta2.get_remote_part_path(config2, BoxPart.DATA),
         remote_sync_record_path=remote_sync_record_path,
     )
     assert sync_status.sync_condition == SyncCondition.SYNC_FROM_REMOTE_INCOMPLETE
 
     # Retry the sync - should succeed (local incomplete = this machine owns it)
-    await sync_repo(
+    await sync_box(
         config_path=config_path2,
-        repo_index_name=repo_index_name,
+        box_index_name=box_index_name,
         sync_setting=SyncSetting.CAREFUL,
     )
 
     # Verify sync completed successfully
     sync_status = await get_sync_status(
         rclone_config_path=config2.rclone_config_path,
-        local_path=repo_meta2.get_local_part_path(config2, RepoPart.DATA),
+        local_path=box_meta2.get_local_part_path(config2, BoxPart.DATA),
         local_sync_record_path=local_sync_record_path,
         remote=sl_name,
-        remote_path=repo_meta2.get_remote_part_path(config2, RepoPart.DATA),
+        remote_path=box_meta2.get_remote_part_path(config2, BoxPart.DATA),
         remote_sync_record_path=remote_sync_record_path,
     )
     assert sync_status.sync_condition == SyncCondition.SYNCED
@@ -288,20 +288,20 @@ def test_both_incomplete_different_ulids_is_error():
 async def _test_both_incomplete_different_ulids_is_error():
     import time
 
-    # Set up repoyard
-    sl_name, sl_rclone_path, config, config_path, data_path = create_repoyards()
+    # Set up boxyard
+    sl_name, sl_rclone_path, config, config_path, data_path = create_boxyards()
 
-    # Create a repo and sync it
-    repo_index_name = new_repo(
+    # Create a box and sync it
+    box_index_name = new_box(
         config_path=config_path,
-        repo_name="test_repo",
+        box_name="test_box",
         storage_location=sl_name,
     )
-    await sync_repo(config_path=config_path, repo_index_name=repo_index_name)
+    await sync_box(config_path=config_path, box_index_name=box_index_name)
 
-    # Get repo meta
-    repoyard_meta = get_repoyard_meta(config)
-    repo_meta = repoyard_meta.by_index_name[repo_index_name]
+    # Get box meta
+    boxyard_meta = get_boxyard_meta(config)
+    box_meta = boxyard_meta.by_index_name[box_index_name]
 
     # Create two DIFFERENT incomplete records (different ULIDs)
     incomplete_record_local = SyncRecord.create(sync_complete=False, syncer_hostname="machine_a")
@@ -311,8 +311,8 @@ async def _test_both_incomplete_different_ulids_is_error():
     # Verify ULIDs are different
     assert incomplete_record_local.ulid != incomplete_record_remote.ulid
 
-    local_sync_record_path = repo_meta.get_local_sync_record_path(config, RepoPart.DATA)
-    remote_sync_record_path = repo_meta.get_remote_sync_record_path(config, RepoPart.DATA)
+    local_sync_record_path = box_meta.get_local_sync_record_path(config, BoxPart.DATA)
+    remote_sync_record_path = box_meta.get_remote_sync_record_path(config, BoxPart.DATA)
 
     # Save different incomplete records to local and remote
     local_sync_record_path.parent.mkdir(parents=True, exist_ok=True)
@@ -326,10 +326,10 @@ async def _test_both_incomplete_different_ulids_is_error():
     # Verify we're in ERROR state
     sync_status = await get_sync_status(
         rclone_config_path=config.rclone_config_path,
-        local_path=repo_meta.get_local_part_path(config, RepoPart.DATA),
+        local_path=box_meta.get_local_part_path(config, BoxPart.DATA),
         local_sync_record_path=local_sync_record_path,
         remote=sl_name,
-        remote_path=repo_meta.get_remote_part_path(config, RepoPart.DATA),
+        remote_path=box_meta.get_remote_part_path(config, BoxPart.DATA),
         remote_sync_record_path=remote_sync_record_path,
     )
     assert sync_status.sync_condition == SyncCondition.ERROR
@@ -337,9 +337,9 @@ async def _test_both_incomplete_different_ulids_is_error():
 
     # Sync should raise exception due to ERROR state (unless FORCE)
     with pytest.raises(Exception, match="[Ii]nconsistent"):
-        await sync_repo(
+        await sync_box(
             config_path=config_path,
-            repo_index_name=repo_index_name,
+            box_index_name=box_index_name,
             sync_setting=SyncSetting.CAREFUL,
         )
 
@@ -363,26 +363,26 @@ def test_push_creates_incomplete_on_both_sides():
 
 
 async def _test_push_creates_incomplete_on_both_sides():
-    # Set up repoyard
-    sl_name, sl_rclone_path, config, config_path, data_path = create_repoyards()
+    # Set up boxyard
+    sl_name, sl_rclone_path, config, config_path, data_path = create_boxyards()
 
-    # Create a repo
-    repo_index_name = new_repo(
+    # Create a box
+    box_index_name = new_box(
         config_path=config_path,
-        repo_name="test_repo",
+        box_name="test_box",
         storage_location=sl_name,
     )
 
-    # Get repo meta
-    repoyard_meta = get_repoyard_meta(config)
-    repo_meta = repoyard_meta.by_index_name[repo_index_name]
+    # Get box meta
+    boxyard_meta = get_boxyard_meta(config)
+    box_meta = boxyard_meta.by_index_name[box_index_name]
 
     # Do the initial sync (push)
-    await sync_repo(config_path=config_path, repo_index_name=repo_index_name)
+    await sync_box(config_path=config_path, box_index_name=box_index_name)
 
     # Verify both records exist and are complete with matching ULIDs
-    local_sync_record_path = repo_meta.get_local_sync_record_path(config, RepoPart.DATA)
-    remote_sync_record_path = repo_meta.get_remote_sync_record_path(config, RepoPart.DATA)
+    local_sync_record_path = box_meta.get_local_sync_record_path(config, BoxPart.DATA)
+    remote_sync_record_path = box_meta.get_remote_sync_record_path(config, BoxPart.DATA)
 
     local_record = SyncRecord.model_validate_json(local_sync_record_path.read_text())
     remote_record = await SyncRecord.rclone_read(

@@ -9,16 +9,16 @@
 # %% [markdown]
 # # Copy From Remote Integration Tests
 #
-# Tests for the `copy` command that downloads a remote repo to an arbitrary local path
-# without including it in repoyard tracking.
+# Tests for the `copy` command that downloads a remote box to an arbitrary local path
+# without including it in boxyard tracking.
 #
 # Tests:
 # - Basic copy DATA to arbitrary path
 # - Copy with --meta and --conf flags
 # - Error without --overwrite when dest exists
 # - Success with --overwrite
-# - Error when dest is within repoyard data path (safety check)
-# - Error when dest is within user repos path (safety check)
+# - Error when dest is within boxyard data path (safety check)
+# - Error when dest is within user boxes path (safety check)
 
 # %%
 #|default_exp integration.cmds.test_copy_from_remote
@@ -36,22 +36,22 @@ import tempfile
 import shutil
 from pathlib import Path
 
-from repoyard.cmds import (
-    new_repo,
-    sync_repo,
+from boxyard.cmds import (
+    new_box,
+    sync_box,
 )
-from repoyard.cmds._copy_from_remote import copy_from_remote
-from repoyard._models import get_repoyard_meta, RepoPart
-from repoyard.config import get_config
-from repoyard import const
+from boxyard.cmds._copy_from_remote import copy_from_remote
+from boxyard._models import get_boxyard_meta, BoxPart
+from boxyard.config import get_config
+from boxyard import const
 
-from tests.integration.conftest import create_repoyards
+from tests.integration.conftest import create_boxyards
 
 # %%
 #|top_export
 @pytest.mark.integration
 def test_copy_from_remote():
-    """Test copy command for downloading remote repos without tracking."""
+    """Test copy command for downloading remote boxes without tracking."""
     asyncio.run(_test_copy_from_remote())
 
 # %%
@@ -59,30 +59,30 @@ def test_copy_from_remote():
 async def _test_copy_from_remote(): ...
 
 # %% [markdown]
-# ## Initialize repoyard
+# ## Initialize boxyard
 
 # %%
 #|export
-remote_name, remote_rclone_path, config, config_path, data_path = create_repoyards()
+remote_name, remote_rclone_path, config, config_path, data_path = create_boxyards()
 
 # %% [markdown]
-# ## Create a repo with some data
+# ## Create a box with some data
 
 # %%
 #|export
-repo_index_name = new_repo(
+box_index_name = new_box(
     config_path=config_path,
-    repo_name="test-copy-repo",
+    box_name="test-copy-box",
     storage_location=remote_name,
 )
 
-# Refresh config and get repo meta
+# Refresh config and get box meta
 config = get_config(config_path)
-repoyard_meta = get_repoyard_meta(config, force_create=True)
-repo_meta = repoyard_meta.by_index_name[repo_index_name]
+boxyard_meta = get_boxyard_meta(config, force_create=True)
+box_meta = boxyard_meta.by_index_name[box_index_name]
 
 # Add some test data
-local_data_path = repo_meta.get_local_part_path(config, RepoPart.DATA)
+local_data_path = box_meta.get_local_part_path(config, BoxPart.DATA)
 test_file = local_data_path / "test_data.txt"
 test_file.write_text("Hello from copy test!")
 
@@ -92,7 +92,7 @@ nested_dir.mkdir(parents=True, exist_ok=True)
 (nested_dir / "nested_file.txt").write_text("Nested content")
 
 # Sync to remote
-await sync_repo(config_path=config_path, repo_index_name=repo_index_name)
+await sync_box(config_path=config_path, box_index_name=box_index_name)
 
 # %% [markdown]
 # ## Test 1: Basic copy DATA to arbitrary path
@@ -105,7 +105,7 @@ with tempfile.TemporaryDirectory() as temp_dir:
 
     result_path = await copy_from_remote(
         config_path=config_path,
-        repo_index_name=repo_index_name,
+        box_index_name=box_index_name,
         dest_path=dest_path,
         verbose=True,
     )
@@ -117,11 +117,11 @@ with tempfile.TemporaryDirectory() as temp_dir:
     assert (dest_path / "nested" / "subdir" / "nested_file.txt").exists()
     assert (dest_path / "nested" / "subdir" / "nested_file.txt").read_text() == "Nested content"
 
-    # Verify no repometa.toml by default
-    assert not (dest_path / const.REPO_METAFILE_REL_PATH).exists()
+    # Verify no boxmeta.toml by default
+    assert not (dest_path / const.BOX_METAFILE_REL_PATH).exists()
 
     # Verify no conf folder by default
-    assert not (dest_path / const.REPO_CONF_REL_PATH).exists()
+    assert not (dest_path / const.BOX_CONF_REL_PATH).exists()
 
 # %% [markdown]
 # ## Test 2: Copy with --meta flag
@@ -133,7 +133,7 @@ with tempfile.TemporaryDirectory() as temp_dir:
 
     result_path = await copy_from_remote(
         config_path=config_path,
-        repo_index_name=repo_index_name,
+        box_index_name=box_index_name,
         dest_path=dest_path,
         copy_meta=True,
         verbose=True,
@@ -142,8 +142,8 @@ with tempfile.TemporaryDirectory() as temp_dir:
     assert dest_path.exists()
     assert (dest_path / "test_data.txt").exists()
 
-    # Verify repometa.toml was copied
-    assert (dest_path / const.REPO_METAFILE_REL_PATH).exists()
+    # Verify boxmeta.toml was copied
+    assert (dest_path / const.BOX_METAFILE_REL_PATH).exists()
 
 # %% [markdown]
 # ## Test 3: Error without --overwrite when dest exists
@@ -158,7 +158,7 @@ with tempfile.TemporaryDirectory() as temp_dir:
     try:
         await copy_from_remote(
             config_path=config_path,
-            repo_index_name=repo_index_name,
+            box_index_name=box_index_name,
             dest_path=dest_path,
         )
         assert False, "Should have raised ValueError"
@@ -178,7 +178,7 @@ with tempfile.TemporaryDirectory() as temp_dir:
 
     result_path = await copy_from_remote(
         config_path=config_path,
-        repo_index_name=repo_index_name,
+        box_index_name=box_index_name,
         dest_path=dest_path,
         overwrite=True,
         verbose=True,
@@ -189,40 +189,40 @@ with tempfile.TemporaryDirectory() as temp_dir:
     assert (dest_path / "test_data.txt").read_text() == "Hello from copy test!"
 
 # %% [markdown]
-# ## Test 5: Error when dest is within repoyard data path
+# ## Test 5: Error when dest is within boxyard data path
 
 # %%
 #|export
-# Try to copy to within repoyard data path
-bad_dest = config.repoyard_data_path / "bad_copy_dest"
+# Try to copy to within boxyard data path
+bad_dest = config.boxyard_data_path / "bad_copy_dest"
 
 try:
     await copy_from_remote(
         config_path=config_path,
-        repo_index_name=repo_index_name,
+        box_index_name=box_index_name,
         dest_path=bad_dest,
     )
     assert False, "Should have raised ValueError"
 except ValueError as e:
-    assert "is within the repoyard data path" in str(e)
+    assert "is within the boxyard data path" in str(e)
 
 # %% [markdown]
-# ## Test 6: Error when dest is within user repos path
+# ## Test 6: Error when dest is within user boxes path
 
 # %%
 #|export
-# Try to copy to within user repos path
-bad_dest = config.user_repos_path / "bad_copy_dest"
+# Try to copy to within user boxes path
+bad_dest = config.user_boxes_path / "bad_copy_dest"
 
 try:
     await copy_from_remote(
         config_path=config_path,
-        repo_index_name=repo_index_name,
+        box_index_name=box_index_name,
         dest_path=bad_dest,
     )
     assert False, "Should have raised ValueError"
 except ValueError as e:
-    assert "is within the user repos path" in str(e)
+    assert "is within the user boxes path" in str(e)
 
 # %% [markdown]
 # ## Test 7: Verify no sync records created
@@ -234,20 +234,20 @@ with tempfile.TemporaryDirectory() as temp_dir:
 
     await copy_from_remote(
         config_path=config_path,
-        repo_index_name=repo_index_name,
+        box_index_name=box_index_name,
         dest_path=dest_path,
     )
 
     # Verify no sync record was created in the destination
     # (This is implicit - there's nowhere for a sync record to be in an arbitrary path)
     assert dest_path.exists()
-    assert not (dest_path / ".repoyard").exists()
+    assert not (dest_path / ".boxyard").exists()
 
 # %% [markdown]
 # ## Cleanup
 
 # %%
 #|export
-from repoyard.cmds import delete_repo
+from boxyard.cmds import delete_box
 
-await delete_repo(config_path=config_path, repo_index_name=repo_index_name)
+await delete_box(config_path=config_path, box_index_name=box_index_name)

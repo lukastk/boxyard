@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 import tempfile
 import shutil
 
-from repoyard._remote_index import (
+from boxyard._remote_index import (
     get_remote_index_cache_path,
     load_remote_index_cache,
     save_remote_index_cache,
@@ -42,16 +42,16 @@ class TestGetRemoteIndexCachePath:
     def test_returns_correct_path(self):
         """get_remote_index_cache_path returns path with storage location name."""
         mock_config = MagicMock()
-        mock_config.remote_indexes_path = Path("/tmp/repoyard/remote_indexes")
+        mock_config.remote_indexes_path = Path("/tmp/boxyard/remote_indexes")
 
         path = get_remote_index_cache_path(mock_config, "my_remote")
 
-        assert path == Path("/tmp/repoyard/remote_indexes/my_remote.json")
+        assert path == Path("/tmp/boxyard/remote_indexes/my_remote.json")
 
     def test_different_storage_locations(self):
         """Different storage locations produce different paths."""
         mock_config = MagicMock()
-        mock_config.remote_indexes_path = Path("/tmp/repoyard/remote_indexes")
+        mock_config.remote_indexes_path = Path("/tmp/boxyard/remote_indexes")
 
         path1 = get_remote_index_cache_path(mock_config, "remote1")
         path2 = get_remote_index_cache_path(mock_config, "remote2")
