@@ -4,7 +4,6 @@ from pathlib import Path
 
 from ..config import get_config
 
-
 def create_user_symlinks(
     config_path: Path,
     user_boxes_path: Path | None = None,
@@ -12,16 +11,16 @@ def create_user_symlinks(
 ):
     """ """
     config = get_config(config_path)
-
+    
     if user_boxes_path is None:
         user_boxes_path = config.user_boxes_path
     if user_box_groups_path is None:
         user_box_groups_path = config.user_box_groups_path
     from boxyard._models import refresh_boxyard_meta
-
+    
     refresh_boxyard_meta(config)
     from boxyard._models import create_user_box_group_symlinks
-
+    
     create_user_box_group_symlinks(
         config=config,
     )

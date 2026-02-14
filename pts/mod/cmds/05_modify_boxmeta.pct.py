@@ -136,6 +136,39 @@ for g in modified_box_meta.groups:
             )
 
 # %% [markdown]
+# Validate parents if they were modified
+
+# %%
+#|export
+if "parents" in modifications:
+    from boxyard._models import BoxyardMeta as _BM
+
+    _temp_meta = _BM(box_metas=_box_metas)
+
+    # Cycle detection
+    for parent_id in modified_box_meta.parents:
+        if _temp_meta.would_create_cycle(modified_box_meta.box_id, parent_id):
+            raise ValueError(
+                f"Adding parent '{parent_id}' to box '{box_index_name}' would create a cycle."
+            )
+
+    # Single-parent enforcement
+    if config.single_parent and len(modified_box_meta.parents) > 1:
+        raise ValueError(
+            f"Config has single_parent=True but box '{box_index_name}' would have "
+            f"{len(modified_box_meta.parents)} parents."
+        )
+
+    # Dangling parent warning
+    import sys
+    for parent_id in modified_box_meta.parents:
+        if parent_id not in _temp_meta.by_id:
+            print(
+                f"Warning: parent '{parent_id}' not found locally. It may not be synced yet.",
+                file=sys.stderr,
+            )
+
+# %% [markdown]
 # Save the modified box meta
 
 # %%

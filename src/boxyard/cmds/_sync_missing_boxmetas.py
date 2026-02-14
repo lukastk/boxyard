@@ -18,7 +18,6 @@ from .._utils import (
 )
 from .. import const
 
-
 async def sync_missing_boxmetas(
     config_path: Path,
     max_concurrent_rclone_ops: int | None = None,
@@ -30,32 +29,37 @@ async def sync_missing_boxmetas(
     soft_interruption_enabled: bool = True,
 ) -> tuple[
     list[str],
-    list[tuple[bool, SyncFailed | SyncUnsafe | InvalidRemotePath | None, SyncStatus, bool]],
+    list[
+        tuple[
+            bool, SyncFailed | SyncUnsafe | InvalidRemotePath | None, SyncStatus, bool
+        ]
+    ],
 ]:
-    """ """
+    """
+    """
     config = get_config(config_path)
-
+    
     if box_index_names is not None and storage_locations is not None:
         raise ValueError("Cannot provide both `box_index_names` and `storage_locations`.")
-
+    
     if max_concurrent_rclone_ops is None:
         max_concurrent_rclone_ops = config.max_concurrent_rclone_ops
-
+    
     if soft_interruption_enabled:
         enable_soft_interruption()
     if check_interrupted():
         raise SoftInterruption()
-
+    
     from boxyard._utils import rclone_lsjson, rclone_sync, async_throttler
     from boxyard._models import BoxMeta, SyncRecord, BoxPart
-
+    
     for sl_name, sl_config in config.storage_locations.items():
         if sl_config.storage_type == StorageType.LOCAL:
             continue
-
+    
         if storage_locations is not None and sl_name not in storage_locations:
             continue
-
+    
         # Get remote boxmetas
         _ls_remote = await rclone_lsjson(
             config.rclone_config_path,
@@ -67,7 +71,7 @@ async def sync_missing_boxmetas(
             max_depth=2,
         )
         _ls_remote = {f["Path"] for f in _ls_remote} if _ls_remote else set()
-
+    
         _ls_local = await rclone_lsjson(
             config.rclone_config_path,
             source="",
@@ -78,25 +82,27 @@ async def sync_missing_boxmetas(
             max_depth=2,
         )
         _ls_local = {f["Path"] for f in _ls_local} if _ls_local else set()
-
+    
         missing_metas = sorted(_ls_remote - _ls_local)
-
+    
         if box_index_names is not None:
             missing_metas = [
-                missing_meta for missing_meta in missing_metas if Path(missing_meta).parts[0] in box_index_names
+                missing_meta
+                for missing_meta in missing_metas
+                if Path(missing_meta).parts[0] in box_index_names
             ]
-
+    
         if check_interrupted():
             raise SoftInterruption()
-
+    
         missing_box_index_names = [Path(p).parts[0] for p in missing_metas]
-
+    
         if len(missing_metas) > 0:
             if verbose:
                 print(f"Syncing {len(missing_metas)} missing boxmetas from '{sl_name}'.")
                 for missing_meta in missing_metas:
                     print(f"  - {missing_meta}")
-
+    
             await rclone_sync(
                 rclone_config_path=config.rclone_config_path,
                 source=sl_name,
@@ -106,10 +112,12 @@ async def sync_missing_boxmetas(
                 filter=[f"+ /{p}" for p in missing_metas] + ["- **"],
                 exclude=[],
             )
-
+    
             # Create sync records
             async def _task(box_index_name):
-                box_meta = BoxMeta.load(config, sl_name, box_index_name)  # Used to get the paths consistently
+                box_meta = BoxMeta.load(
+                    config, sl_name, box_index_name
+                )  # Used to get the paths consistently
                 rec = await SyncRecord.rclone_read(
                     config.rclone_config_path,
                     sl_name,
@@ -120,7 +128,7 @@ async def sync_missing_boxmetas(
                     "",
                     box_meta.get_local_sync_record_path(config, BoxPart.META),
                 )
-
+    
             await async_throttler(
                 [_task(box_index_name) for box_index_name in missing_box_index_names],
                 max_concurrency=max_concurrent_rclone_ops,
@@ -129,6 +137,6 @@ async def sync_missing_boxmetas(
             if verbose:
                 print(f"No missing boxmetas in '{sl_name}' to sync.")
     from boxyard._models import refresh_boxyard_meta
-
+    
     refresh_boxyard_meta(config)
     return missing_metas

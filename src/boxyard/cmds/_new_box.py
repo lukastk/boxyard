@@ -10,7 +10,6 @@ from .._utils.locking import BoxyardLockManager, LockAcquisitionError, GLOBAL_LO
 from filelock import Timeout
 from .._models import generate_unique_box_id
 
-
 def _extract_box_name_from_git_url(url: str) -> str:
     """Extract box name from a git URL (SSH or HTTPS)."""
     # Remove trailing .git if present
@@ -32,7 +31,6 @@ def _extract_box_name_from_git_url(url: str) -> str:
 
     # Fallback: just take the last path component
     return url.split("/")[-1]
-
 
 def new_box(
     config_path: Path,
@@ -68,57 +66,61 @@ def new_box(
         The index name of the new box.
     """
     from boxyard.config import get_config
-
+    
     config = get_config(config_path)
-
+    
     if storage_location is None:
         storage_location = config.default_storage_location
-
+    
     if storage_location not in config.storage_locations:
         raise ValueError(
             f"Invalid storage location: {storage_location}. Must be one of: {', '.join(config.storage_locations)}."
         )
-
+    
     if git_clone_url is not None and from_path is not None:
         raise ValueError("`git_clone_url` and `from_path` are mutually exclusive.")
-
+    
     if box_name is None and from_path is None and git_clone_url is None:
         raise ValueError("Either `box_name`, `from_path`, or `git_clone_url` must be provided.")
-
+    
     if from_path is not None:
         from_path = Path(from_path).expanduser().resolve()
-
+    
     if from_path is not None and box_name is None:
         box_name = from_path.name
-
+    
     if git_clone_url is not None and box_name is None:
         box_name = _extract_box_name_from_git_url(git_clone_url)
-
+    
     if from_path is None and copy_from_path:
         raise ValueError("`from_path` must be provided if `copy_from_path` is True.")
-
+    
     from boxyard._utils import get_hostname
-
+    
     if creator_hostname is None:
         creator_hostname = get_hostname()
-
+    
     # Resolve sync_first from config if not specified
     if sync_first is None:
         sync_first = config.sync_before_new_box
     if sync_first:
         from boxyard.cmds import sync_boxmetas
-
         if verbose:
             print("Syncing boxmetas before creating new box...")
-        asyncio.get_event_loop().run_until_complete(sync_boxmetas(config_path=config_path, verbose=verbose))
+        asyncio.get_event_loop().run_until_complete(
+            sync_boxmetas(config_path=config_path, verbose=verbose)
+        )
     from boxyard._models import get_boxyard_meta, BoxPart
-
+    
     boxyard_meta = get_boxyard_meta(config)
-
+    
     if from_path is not None:
         from_path = Path(from_path).expanduser().resolve()
-        box_paths = [box_meta.get_local_part_path(config, BoxPart.DATA) for box_meta in boxyard_meta.box_metas]
-
+        box_paths = [
+            box_meta.get_local_part_path(config, BoxPart.DATA)
+            for box_meta in boxyard_meta.box_metas
+        ]
+    
         if from_path in box_paths and not copy_from_path:
             raise ValueError(
                 f"'{from_path}' is already a boxyard box. Use `copy_from_path=True` to copy the contents of this box into a new box."
@@ -126,7 +128,7 @@ def new_box(
     _lock_manager = BoxyardLockManager(config.boxyard_data_path)
     _lock_path = _lock_manager.global_lock_path
     _lock_manager._ensure_lock_dir(_lock_path)
-    _global_lock = __import__("filelock").FileLock(_lock_path, timeout=GLOBAL_LOCK_TIMEOUT)
+    _global_lock = __import__('filelock').FileLock(_lock_path, timeout=GLOBAL_LOCK_TIMEOUT)
     try:
         _global_lock.acquire()
     except Timeout:
@@ -137,26 +139,25 @@ def new_box(
             message=(
                 f"Could not acquire global lock within {GLOBAL_LOCK_TIMEOUT}s. "
                 f"Another boxyard operation may be in progress."
-            ),
+            )
         )
     from boxyard._models import BoxMeta
-
+    
     # Collect all existing box IDs to prevent collisions
     existing_ids = {rm.box_id for rm in boxyard_meta.box_metas}
-
+    
     # Generate unique timestamp and subid
     creation_timestamp, box_subid = generate_unique_box_id(config, existing_ids)
-
+    
     # If user provided a timestamp, use it (but still use the unique subid)
     if creation_timestamp_utc is not None:
         from boxyard.config import BoxTimestampFormat
         from boxyard import const
-
         if config.box_timestamp_format == BoxTimestampFormat.DATE_AND_TIME:
             creation_timestamp = creation_timestamp_utc.strftime(const.BOX_TIMESTAMP_FORMAT)
         else:
             creation_timestamp = creation_timestamp_utc.strftime(const.BOX_TIMESTAMP_FORMAT_DATE_ONLY)
-
+    
     box_meta = BoxMeta(
         creation_timestamp_utc=creation_timestamp,
         box_subid=box_subid,
@@ -165,16 +166,16 @@ def new_box(
         creator_hostname=creator_hostname,
         groups=config.default_box_groups,
     )
-
+    
     box_meta.save(config)
     from boxyard._models import BoxPart
-
+    
     box_path = box_meta.get_local_path(config)
     box_data_path = box_meta.get_local_part_path(config, BoxPart.DATA)
     box_conf_path = box_meta.get_local_part_path(config, BoxPart.CONF)
     box_path.mkdir(parents=True, exist_ok=True)
     box_conf_path.mkdir(parents=True, exist_ok=True)
-
+    
     if git_clone_url is not None:
         if verbose:
             print(f"Cloning {git_clone_url}")
@@ -189,8 +190,10 @@ def new_box(
     elif from_path is not None:
         if copy_from_path:
             import shutil
-
-            shutil.copytree(from_path, box_data_path)  # TESTREF: test_new_box_copy_from_path
+    
+            shutil.copytree(
+                from_path, box_data_path
+            )  # TESTREF: test_new_box_copy_from_path
         else:
             from_path.rename(box_data_path)
     else:
@@ -210,7 +213,7 @@ def new_box(
             if verbose:
                 print("Warning: Failed to initialise git box")
     from boxyard._models import refresh_boxyard_meta
-
+    
     refresh_boxyard_meta(config, _skip_lock=True)
     if _global_lock.is_locked:
         _global_lock.release()

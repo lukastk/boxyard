@@ -1,0 +1,180 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # path_tui
+#
+# Interactive Textual TUI for selecting a box path.
+
+# %%
+#|default_exp _cli.path_tui
+
+# %%
+#|hide
+from nblite import nbl_export, show_doc; nbl_export();
+
+# %%
+#|export
+from textual.app import App, ComposeResult
+from textual.widgets import Tree, Header, Footer, Input
+from textual.binding import Binding
+from pathlib import Path
+
+
+class BoxPathSelector(App):
+    """Interactive TUI for selecting a box and returning its path."""
+
+    TITLE = "boxyard path"
+    BINDINGS = [
+        Binding("q", "quit_app", "Quit"),
+        Binding("f", "toggle_filter", "Filter"),
+        Binding("slash", "toggle_filter", "Filter", show=False),
+    ]
+
+    CSS = """
+    Input {
+        dock: top;
+        display: none;
+    }
+    Input.visible {
+        display: block;
+    }
+    Tree {
+        height: 1fr;
+    }
+    """
+
+    def __init__(self, box_metas, config, mode="groups", path_option="data"):
+        super().__init__()
+        self._box_metas = box_metas
+        self._config = config
+        self._mode = mode
+        self._path_option = path_option
+        self._selected_path = None
+        self._filter_text = ""
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Input(placeholder="Type to filter...", id="filter-input")
+        tree = Tree("boxyard")
+        tree.show_root = False
+        tree.guide_depth = 3
+        yield tree
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._build_tree()
+        tree = self.query_one(Tree)
+        tree.focus()
+        # Position cursor on the first line without triggering selection
+        tree.cursor_line = 0
+
+    def _get_box_path(self, box_meta) -> str:
+        from boxyard._enums import BoxPart
+
+        if self._path_option == "data":
+            return box_meta.get_local_part_path(self._config, BoxPart.DATA).as_posix()
+        elif self._path_option == "meta":
+            return box_meta.get_local_part_path(self._config, BoxPart.META).as_posix()
+        elif self._path_option == "conf":
+            return box_meta.get_local_part_path(self._config, BoxPart.CONF).as_posix()
+        elif self._path_option == "root":
+            return box_meta.get_local_path(self._config).as_posix()
+        else:
+            return box_meta.get_local_part_path(self._config, BoxPart.DATA).as_posix()
+
+    def _build_tree(self, filter_text: str = "") -> None:
+        tree = self.query_one(Tree)
+        tree.clear()
+        tree.root.expand()
+
+        metas = self._box_metas
+        if filter_text:
+            ft = filter_text.lower()
+            metas = [bm for bm in metas if ft in bm.name.lower() or ft in bm.box_id.lower()]
+
+        if self._mode == "groups":
+            self._build_groups_tree(tree, metas)
+        else:
+            self._build_hierarchy_tree(tree, metas)
+
+    def _build_groups_tree(self, tree, metas) -> None:
+        groups: dict[str, list] = {}
+        ungrouped = []
+        for bm in metas:
+            if bm.groups:
+                for g in bm.groups:
+                    groups.setdefault(g, []).append(bm)
+            else:
+                ungrouped.append(bm)
+
+        for group_name in sorted(groups.keys()):
+            group_node = tree.root.add(f"[bold]{group_name}[/bold]", expand=True)
+            for bm in sorted(groups[group_name], key=lambda x: x.name):
+                group_node.add_leaf(
+                    f"{bm.name} ({bm.box_id})",
+                    data=bm,
+                )
+
+        if ungrouped:
+            ungrouped_node = tree.root.add("[dim](ungrouped)[/dim]", expand=True)
+            for bm in sorted(ungrouped, key=lambda x: x.name):
+                ungrouped_node.add_leaf(
+                    f"{bm.name} ({bm.box_id})",
+                    data=bm,
+                )
+
+    def _build_hierarchy_tree(self, tree, metas) -> None:
+        meta_ids = {bm.box_id for bm in metas}
+        by_id = {bm.box_id: bm for bm in metas}
+
+        def _add_children(parent_node, parent_id, visited):
+            children = [bm for bm in metas if parent_id in bm.parents]
+            children.sort(key=lambda x: x.name)
+            for child in children:
+                if child.box_id not in visited:
+                    visited.add(child.box_id)
+                    child_node = parent_node.add(
+                        f"{child.name} ({child.box_id})",
+                        data=child,
+                    )
+                    child_node.expand()
+                    _add_children(child_node, child.box_id, visited)
+
+        roots = [bm for bm in metas if not bm.parents or not any(p in meta_ids for p in bm.parents)]
+        roots.sort(key=lambda x: x.name)
+        visited = set()
+
+        for root in roots:
+            visited.add(root.box_id)
+            root_node = tree.root.add(
+                f"{root.name} ({root.box_id})",
+                data=root,
+            )
+            root_node.expand()
+            _add_children(root_node, root.box_id, visited)
+
+    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+        if event.node.data is not None:
+            self._selected_path = self._get_box_path(event.node.data)
+            self.exit(self._selected_path)
+
+    def action_quit_app(self) -> None:
+        self.exit(None)
+
+    def action_toggle_filter(self) -> None:
+        filter_input = self.query_one("#filter-input", Input)
+        if filter_input.has_class("visible"):
+            filter_input.remove_class("visible")
+            self.query_one(Tree).focus()
+        else:
+            filter_input.add_class("visible")
+            filter_input.focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._build_tree(filter_text=event.value)

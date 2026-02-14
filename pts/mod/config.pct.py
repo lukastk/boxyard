@@ -92,6 +92,9 @@ class Config(const.StrictModel):
     box_subid_length: int
     max_concurrent_rclone_ops: int
 
+    # Parent-child settings
+    single_parent: bool = False  # If True, each box can have at most one parent
+
     # New box creation settings
     sync_before_new_box: bool = False  # If True, sync boxmetas before creating new box to check for ID collisions on remote
 
@@ -193,6 +196,7 @@ def _get_default_config_dict(config_path=None, data_path=None) -> Config:
         box_subid_character_set=const.DEFAULT_BOX_SUBID_CHARACTER_SET,
         box_subid_length=const.DEFAULT_BOX_SUBID_LENGTH,
         max_concurrent_rclone_ops=const.DEFAULT_MAX_CONCURRENT_RCLONE_OPS,
+        single_parent=False,
         sync_before_new_box=False,
     )
     return config_dict

@@ -308,6 +308,11 @@ def cli_new(
     groups: list[str] | None = Option(
         None, "--group", "-g", help="The groups to add the new box to."
     ),
+    parent: str | None = Option(
+        None,
+        "--parent",
+        help="Parent box (index name, id, or name) to set for the new box.",
+    ),
     initialise_git: bool = Option(
         True, help="Initialise a git box in the new box."
     ),
@@ -374,6 +379,28 @@ def cli_new(
             },
         )
 
+    if parent:
+        from boxyard._models import get_boxyard_meta
+        from boxyard.config import get_config as _get_config
+
+        _config = _get_config(app_state["config_path"])
+        _bm = get_boxyard_meta(_config)
+        parent_index = _get_box_index_name(
+            box_name=parent, box_id=None, box_index_name=None,
+            name_match_mode=None, name_match_case=False,
+        )
+        parent_meta = _bm.by_index_name.get(parent_index)
+        if parent_meta is None:
+            typer.echo(f"Parent box '{parent}' not found.", err=True)
+            raise typer.Exit(code=1)
+        from boxyard.cmds import modify_boxmeta as _modify_bm
+
+        _modify_bm(
+            config_path=app_state["config_path"],
+            box_index_name=box_index_name,
+            modifications={"parents": [parent_meta.box_id]},
+        )
+
     from boxyard.cmds import create_user_symlinks
 
     create_user_symlinks(config_path=app_state["config_path"])
@@ -427,6 +454,9 @@ def cli_sync(
         False, "--progress", help="Show the progress of the sync in rclone."
     ),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
+    sync_children: bool = Option(
+        False, "--sync-children", help="Also sync all descendant boxes after syncing the target.",
+    ),
     soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
@@ -467,6 +497,28 @@ def cli_sync(
             soft_interruption_enabled=soft_interruption_enabled,
         )
     )
+
+    if sync_children:
+        from boxyard._models import get_boxyard_meta
+        from boxyard.config import get_config as _get_config
+
+        _config = _get_config(app_state["config_path"])
+        _bm = get_boxyard_meta(_config)
+        descendants = _bm.descendants_of(_bm.by_index_name[box_index_name].box_id)
+        for desc in descendants:
+            typer.echo(f"Syncing child: {desc.index_name}")
+            _run_with_lock_handling(
+                sync_box(
+                    config_path=app_state["config_path"],
+                    box_index_name=desc.index_name,
+                    sync_direction=sync_direction,
+                    sync_setting=sync_setting,
+                    sync_choices=sync_choices,
+                    verbose=True,
+                    show_rclone_progress=show_rclone_progress,
+                    soft_interruption_enabled=soft_interruption_enabled,
+                )
+            )
 
     if refresh_user_symlinks:
         from boxyard.cmds import create_user_symlinks
@@ -763,6 +815,367 @@ def cli_remove_from_group(
         create_user_symlinks(config_path=app_state["config_path"])
 
 # %% [markdown]
+# # `add-parent`
+
+# %%
+#|export
+@app.command(name="add-parent")
+def cli_add_parent(
+    box_path: Path | None = Option(
+        None, "--box-path", "-p", help="The path to the child box."
+    ),
+    box_index_name: str | None = Option(
+        None, "--box", "-r", help="The index name of the child box."
+    ),
+    box_id: str | None = Option(
+        None, "--box-id", "-i", help="The id of the child box."
+    ),
+    box_name: str | None = Option(
+        None, "--box-name", "-n", help="The name of the child box."
+    ),
+    parent_index_name: str | None = Option(
+        None, "--parent", help="The index name of the parent box."
+    ),
+    parent_id: str | None = Option(
+        None, "--parent-id", help="The id of the parent box."
+    ),
+    parent_name: str | None = Option(
+        None, "--parent-name", help="The name of the parent box."
+    ),
+    name_match_mode: NameMatchMode | None = Option(
+        None, "--name-match-mode", "-m", help="The mode to use for matching box names.",
+    ),
+    name_match_case: bool = Option(
+        False, "--name-match-case", "-c", help="Whether to match box names case-sensitively.",
+    ),
+    sync_after: bool = Option(
+        False, "--sync-after", "-s", help="Sync the box meta after adding the parent.",
+    ),
+    sync_setting: SyncSetting = Option(
+        SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."
+    ),
+    refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
+    soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
+):
+    """
+    Add a parent to a box.
+    """
+    from boxyard.cmds import modify_boxmeta
+    from boxyard._models import get_boxyard_meta
+    from boxyard.config import get_config
+
+    if all(arg is None for arg in [box_path, box_index_name, box_id, box_name]):
+        box_path = Path.cwd()
+
+    if box_path is not None:
+        from boxyard._utils import get_box_index_name_from_sub_path
+
+        config = get_config(app_state["config_path"])
+        box_index_name = get_box_index_name_from_sub_path(config=config, sub_path=box_path)
+        if box_index_name is None:
+            typer.echo(f"Box not found in `{box_path}`.", err=True)
+            raise typer.Exit(code=1)
+
+    box_index_name = _get_box_index_name(
+        box_name=box_name, box_id=box_id, box_index_name=box_index_name,
+        name_match_mode=name_match_mode, name_match_case=name_match_case,
+    )
+
+    # Resolve parent
+    parent_index_name = _get_box_index_name(
+        box_name=parent_name, box_id=parent_id, box_index_name=parent_index_name,
+        name_match_mode=name_match_mode, name_match_case=name_match_case,
+        allow_no_args=False,
+    )
+
+    config = get_config(app_state["config_path"])
+    boxyard_meta = get_boxyard_meta(config)
+
+    if box_index_name not in boxyard_meta.by_index_name:
+        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        raise typer.Exit(code=1)
+    if parent_index_name not in boxyard_meta.by_index_name:
+        typer.echo(f"Parent box with index name `{parent_index_name}` not found.")
+        raise typer.Exit(code=1)
+
+    box_meta = boxyard_meta.by_index_name[box_index_name]
+    parent_meta = boxyard_meta.by_index_name[parent_index_name]
+
+    if parent_meta.box_id in box_meta.parents:
+        typer.echo(f"Box `{box_index_name}` already has parent `{parent_index_name}`.")
+    else:
+        modify_boxmeta(
+            config_path=app_state["config_path"],
+            box_index_name=box_index_name,
+            modifications={"parents": [*box_meta.parents, parent_meta.box_id]},
+        )
+
+        if sync_after:
+            import asyncio
+            from boxyard.cmds import sync_box
+            from boxyard._models import BoxPart
+
+            asyncio.run(
+                sync_box(
+                    config_path=app_state["config_path"],
+                    box_index_name=box_index_name,
+                    sync_setting=sync_setting,
+                    sync_direction=SyncDirection.PUSH,
+                    sync_choices=[BoxPart.META],
+                    verbose=True,
+                    soft_interruption_enabled=soft_interruption_enabled,
+                )
+            )
+
+    if refresh_user_symlinks:
+        from boxyard.cmds import create_user_symlinks
+
+        create_user_symlinks(config_path=app_state["config_path"])
+
+# %% [markdown]
+# # `remove-parent`
+
+# %%
+#|export
+@app.command(name="remove-parent")
+def cli_remove_parent(
+    box_path: Path | None = Option(
+        None, "--box-path", "-p", help="The path to the child box."
+    ),
+    box_index_name: str | None = Option(
+        None, "--box", "-r", help="The index name of the child box."
+    ),
+    box_id: str | None = Option(
+        None, "--box-id", "-i", help="The id of the child box."
+    ),
+    box_name: str | None = Option(
+        None, "--box-name", "-n", help="The name of the child box."
+    ),
+    parent_index_name: str | None = Option(
+        None, "--parent", help="The index name of the parent box."
+    ),
+    parent_id: str | None = Option(
+        None, "--parent-id", help="The id of the parent box."
+    ),
+    parent_name: str | None = Option(
+        None, "--parent-name", help="The name of the parent box."
+    ),
+    name_match_mode: NameMatchMode | None = Option(
+        None, "--name-match-mode", "-m", help="The mode to use for matching box names.",
+    ),
+    name_match_case: bool = Option(
+        False, "--name-match-case", "-c", help="Whether to match box names case-sensitively.",
+    ),
+    sync_after: bool = Option(
+        False, "--sync-after", "-s", help="Sync the box meta after removing the parent.",
+    ),
+    sync_setting: SyncSetting = Option(
+        SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."
+    ),
+    refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
+    soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
+):
+    """
+    Remove a parent from a box.
+    """
+    from boxyard.cmds import modify_boxmeta
+    from boxyard._models import get_boxyard_meta
+    from boxyard.config import get_config
+
+    if all(arg is None for arg in [box_path, box_index_name, box_id, box_name]):
+        box_path = Path.cwd()
+
+    if box_path is not None:
+        from boxyard._utils import get_box_index_name_from_sub_path
+
+        config = get_config(app_state["config_path"])
+        box_index_name = get_box_index_name_from_sub_path(config=config, sub_path=box_path)
+
+    box_index_name = _get_box_index_name(
+        box_name=box_name, box_id=box_id, box_index_name=box_index_name,
+        name_match_mode=name_match_mode, name_match_case=name_match_case,
+    )
+
+    # Resolve parent
+    parent_index_name = _get_box_index_name(
+        box_name=parent_name, box_id=parent_id, box_index_name=parent_index_name,
+        name_match_mode=name_match_mode, name_match_case=name_match_case,
+        allow_no_args=False,
+    )
+
+    config = get_config(app_state["config_path"])
+    boxyard_meta = get_boxyard_meta(config)
+
+    if box_index_name not in boxyard_meta.by_index_name:
+        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        raise typer.Exit(code=1)
+
+    box_meta = boxyard_meta.by_index_name[box_index_name]
+    parent_meta = boxyard_meta.by_index_name.get(parent_index_name)
+    target_parent_id = parent_meta.box_id if parent_meta else None
+
+    if target_parent_id is None or target_parent_id not in box_meta.parents:
+        typer.echo(f"Box `{box_index_name}` does not have parent `{parent_index_name}`.")
+        raise typer.Exit(code=1)
+    else:
+        modify_boxmeta(
+            config_path=app_state["config_path"],
+            box_index_name=box_index_name,
+            modifications={"parents": [p for p in box_meta.parents if p != target_parent_id]},
+        )
+
+        if sync_after:
+            import asyncio
+            from boxyard.cmds import sync_box
+            from boxyard._models import BoxPart
+
+            asyncio.run(
+                sync_box(
+                    config_path=app_state["config_path"],
+                    box_index_name=box_index_name,
+                    sync_setting=sync_setting,
+                    sync_direction=SyncDirection.PUSH,
+                    sync_choices=[BoxPart.META],
+                    verbose=True,
+                    soft_interruption_enabled=soft_interruption_enabled,
+                )
+            )
+
+    if refresh_user_symlinks:
+        from boxyard.cmds import create_user_symlinks
+
+        create_user_symlinks(config_path=app_state["config_path"])
+
+# %% [markdown]
+# # `tree`
+
+# %%
+#|export
+@app.command(name="tree")
+def cli_tree(
+    storage_locations: list[str] | None = Option(
+        None, "--storage-location", "-s", help="The storage location to filter by.",
+    ),
+    include_groups: list[str] | None = Option(
+        None, "--include-group", "-g", help="The group to include in the output."
+    ),
+    exclude_groups: list[str] | None = Option(
+        None, "--exclude-group", "-e", help="The group to exclude from the output."
+    ),
+    group_filter: str | None = Option(
+        None, "--group-filter", "-f", help="Boolean filter expression over groups.",
+    ),
+    root_box: str | None = Option(
+        None, "--root", help="Show subtree from a specific box (index name, id, or name).",
+    ),
+    output_format: Literal["text", "json"] = Option(
+        "text", "--output-format", "-o", help="The format of the output."
+    ),
+):
+    """
+    Display the parent-child hierarchy of boxes as a tree.
+    """
+    from boxyard._models import get_boxyard_meta, BoxyardMeta
+    from boxyard.config import get_config
+    import json
+
+    config = get_config(app_state["config_path"])
+    boxyard_meta = get_boxyard_meta(config)
+    box_metas = list(boxyard_meta.box_metas)
+
+    if storage_locations:
+        box_metas = [bm for bm in box_metas if bm.storage_location in storage_locations]
+
+    box_metas = _get_filtered_box_metas(box_metas, include_groups, exclude_groups, group_filter)
+
+    filtered_meta = BoxyardMeta(box_metas=box_metas)
+    filtered_ids = {bm.box_id for bm in box_metas}
+
+    if output_format == "json":
+        from boxyard._fast import BoxyardFast
+
+        fast = BoxyardFast({"box_metas": [bm.model_dump() for bm in box_metas]})
+        if root_box:
+            # Resolve root_box to a box_id
+            root_meta = filtered_meta.by_id.get(root_box) or filtered_meta.by_index_name.get(root_box)
+            if root_meta is None:
+                # Try name match
+                matches = [bm for bm in box_metas if root_box in bm.name]
+                if len(matches) == 1:
+                    root_meta = matches[0]
+                elif len(matches) > 1:
+                    typer.echo(f"Ambiguous root box '{root_box}', matches: {[m.index_name for m in matches]}", err=True)
+                    raise typer.Exit(code=1)
+                else:
+                    typer.echo(f"Root box '{root_box}' not found.", err=True)
+                    raise typer.Exit(code=1)
+            typer.echo(json.dumps(fast.get_dag_nested(root_meta.box_id), indent=2))
+        else:
+            typer.echo(json.dumps(fast.get_dag_nested(), indent=2))
+        return
+
+    # Text output using rich.tree
+    from rich.tree import Tree as RichTree
+    from rich.console import Console
+
+    def _label(bm):
+        groups_str = f" [groups: {', '.join(bm.groups)}]" if bm.groups else ""
+        return f"{bm.name} ({bm.box_id}){groups_str}"
+
+    def _add_children(rich_node, parent_id):
+        children = [bm for bm in box_metas if parent_id in bm.parents]
+        children.sort(key=lambda x: x.index_name)
+        for child in children:
+            child_node = rich_node.add(_label(child))
+            _add_children(child_node, child.box_id)
+
+    root_metas = []
+    if root_box:
+        root_meta = filtered_meta.by_id.get(root_box) or filtered_meta.by_index_name.get(root_box)
+        if root_meta is None:
+            matches = [bm for bm in box_metas if root_box in bm.name]
+            if len(matches) == 1:
+                root_meta = matches[0]
+            elif len(matches) > 1:
+                typer.echo(f"Ambiguous root box '{root_box}', matches: {[m.index_name for m in matches]}", err=True)
+                raise typer.Exit(code=1)
+            else:
+                typer.echo(f"Root box '{root_box}' not found.", err=True)
+                raise typer.Exit(code=1)
+        root_metas = [root_meta]
+    else:
+        root_metas = sorted(filtered_meta.roots(), key=lambda x: x.index_name)
+
+    tree = RichTree("boxyard")
+    # Track boxes shown in the tree so we can detect orphans
+    shown_ids = set()
+
+    for rm in root_metas:
+        node = tree.add(_label(rm))
+        shown_ids.add(rm.box_id)
+        _add_children(node, rm.box_id)
+
+    # Collect all shown descendants
+    def _collect_shown(parent_id):
+        for bm in box_metas:
+            if parent_id in bm.parents and bm.box_id not in shown_ids:
+                shown_ids.add(bm.box_id)
+                _collect_shown(bm.box_id)
+
+    for rm in root_metas:
+        _collect_shown(rm.box_id)
+
+    # Show orphaned children (parent not in filtered set)
+    orphans = [bm for bm in box_metas if bm.box_id not in shown_ids]
+    if orphans:
+        unknown_node = tree.add("[unknown parent]")
+        for orphan in sorted(orphans, key=lambda x: x.index_name):
+            child_node = unknown_node.add(_label(orphan))
+            _add_children(child_node, orphan.box_id)
+
+    Console().print(tree)
+
+# %% [markdown]
 # # `include`
 
 # %%
@@ -934,6 +1347,9 @@ def cli_delete(
         "-c",
         help="Whether to match the box name case-sensitively.",
     ),
+    force: bool = Option(
+        False, "--force", help="Force deletion even if the box has children.",
+    ),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
     soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
@@ -953,10 +1369,28 @@ def cli_delete(
         allow_no_args=False,
     )
 
-    boxyard_meta = get_boxyard_meta(get_config(app_state["config_path"]))
+    config = get_config(app_state["config_path"])
+    boxyard_meta = get_boxyard_meta(config)
     if box_index_name not in boxyard_meta.by_index_name:
         typer.echo(f"Box with index name `{box_index_name}` not found.")
         raise typer.Exit(code=1)
+
+    box_meta = boxyard_meta.by_index_name[box_index_name]
+    children = boxyard_meta.children_of(box_meta.box_id)
+    if children and not force:
+        child_names = ", ".join(c.index_name for c in children)
+        typer.echo(
+            f"Box `{box_index_name}` has children: {child_names}. "
+            f"Use --force to delete anyway.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if children and force:
+        child_names = ", ".join(c.index_name for c in children)
+        typer.echo(
+            f"Warning: Deleting box `{box_index_name}` will orphan children: {child_names}",
+            err=True,
+        )
 
     _run_with_lock_handling(
         delete_box(
@@ -1227,11 +1661,32 @@ def cli_list(
         "-f",
         help="The filter to apply to the groups. The filter is a boolean expression over the groups of the boxes. Allowed operators are `AND`, `OR`, `NOT`, and parentheses for grouping..",
     ),
+    children_of: str | None = Option(
+        None, "--children-of", help="Filter to direct children of the given box.",
+    ),
+    descendants_of: str | None = Option(
+        None, "--descendants-of", help="Filter to all descendants of the given box.",
+    ),
+    parent_of: str | None = Option(
+        None, "--parent-of", help="Filter to direct parents of the given box.",
+    ),
+    ancestors_of: str | None = Option(
+        None, "--ancestors-of", help="Filter to all ancestors of the given box.",
+    ),
+    roots_only: bool = Option(
+        False, "--roots", help="Only show root boxes (no parents).",
+    ),
+    leaves_only: bool = Option(
+        False, "--leaves", help="Only show leaf boxes (no children).",
+    ),
+    tree_view: bool = Option(
+        False, "--tree", help="Display as a tree instead of flat list.",
+    ),
 ):
     """
     List all boxes in the yard.
     """
-    from boxyard._models import get_boxyard_meta
+    from boxyard._models import get_boxyard_meta, BoxyardMeta
     from boxyard.config import get_config
     import json
 
@@ -1244,14 +1699,101 @@ def cli_list(
         typer.echo(f"Invalid storage location: {storage_locations}")
         raise typer.Exit(code=1)
 
+    all_boxyard_meta = get_boxyard_meta(config)
     box_metas = [
         box_meta
-        for box_meta in get_boxyard_meta(config).box_metas
+        for box_meta in all_boxyard_meta.box_metas
         if box_meta.storage_location in storage_locations
     ]
     box_metas = _get_filtered_box_metas(
         box_metas, include_groups, exclude_groups, group_filter
     )
+
+    # Hierarchy filters
+    filtered_meta = BoxyardMeta(box_metas=box_metas)
+    if children_of:
+        ref = all_boxyard_meta.by_id.get(children_of) or all_boxyard_meta.by_index_name.get(children_of)
+        if ref is None:
+            matches = [bm for bm in all_boxyard_meta.box_metas if children_of in bm.name]
+            ref = matches[0] if len(matches) == 1 else None
+        if ref is None:
+            typer.echo(f"Box '{children_of}' not found.", err=True)
+            raise typer.Exit(code=1)
+        child_ids = {c.box_id for c in all_boxyard_meta.children_of(ref.box_id)}
+        box_metas = [bm for bm in box_metas if bm.box_id in child_ids]
+
+    if descendants_of:
+        ref = all_boxyard_meta.by_id.get(descendants_of) or all_boxyard_meta.by_index_name.get(descendants_of)
+        if ref is None:
+            matches = [bm for bm in all_boxyard_meta.box_metas if descendants_of in bm.name]
+            ref = matches[0] if len(matches) == 1 else None
+        if ref is None:
+            typer.echo(f"Box '{descendants_of}' not found.", err=True)
+            raise typer.Exit(code=1)
+        desc_ids = {d.box_id for d in all_boxyard_meta.descendants_of(ref.box_id)}
+        box_metas = [bm for bm in box_metas if bm.box_id in desc_ids]
+
+    if parent_of:
+        ref = all_boxyard_meta.by_id.get(parent_of) or all_boxyard_meta.by_index_name.get(parent_of)
+        if ref is None:
+            matches = [bm for bm in all_boxyard_meta.box_metas if parent_of in bm.name]
+            ref = matches[0] if len(matches) == 1 else None
+        if ref is None:
+            typer.echo(f"Box '{parent_of}' not found.", err=True)
+            raise typer.Exit(code=1)
+        parent_ids = set(ref.parents)
+        box_metas = [bm for bm in box_metas if bm.box_id in parent_ids]
+
+    if ancestors_of:
+        ref = all_boxyard_meta.by_id.get(ancestors_of) or all_boxyard_meta.by_index_name.get(ancestors_of)
+        if ref is None:
+            matches = [bm for bm in all_boxyard_meta.box_metas if ancestors_of in bm.name]
+            ref = matches[0] if len(matches) == 1 else None
+        if ref is None:
+            typer.echo(f"Box '{ancestors_of}' not found.", err=True)
+            raise typer.Exit(code=1)
+        anc_ids = {a.box_id for a in all_boxyard_meta.ancestors_of(ref.box_id)}
+        box_metas = [bm for bm in box_metas if bm.box_id in anc_ids]
+
+    if roots_only:
+        box_metas = [bm for bm in box_metas if len(bm.parents) == 0]
+
+    if leaves_only:
+        all_parent_ids = set()
+        for bm in all_boxyard_meta.box_metas:
+            all_parent_ids.update(bm.parents)
+        box_metas = [bm for bm in box_metas if bm.box_id not in all_parent_ids]
+
+    if tree_view:
+        from rich.tree import Tree as RichTree
+        from rich.console import Console
+
+        filtered_meta = BoxyardMeta(box_metas=box_metas)
+        filtered_ids = {bm.box_id for bm in box_metas}
+
+        def _label(bm):
+            groups_str = f" [groups: {', '.join(bm.groups)}]" if bm.groups else ""
+            return f"{bm.name} ({bm.box_id}){groups_str}"
+
+        def _add_children(rich_node, parent_id, shown):
+            children = [bm for bm in box_metas if parent_id in bm.parents]
+            children.sort(key=lambda x: x.index_name)
+            for child in children:
+                if child.box_id not in shown:
+                    shown.add(child.box_id)
+                    child_node = rich_node.add(_label(child))
+                    _add_children(child_node, child.box_id, shown)
+
+        tree = RichTree("boxyard")
+        shown = set()
+        roots = sorted([bm for bm in box_metas if len(bm.parents) == 0 or not any(p in filtered_ids for p in bm.parents)], key=lambda x: x.index_name)
+        for rm in roots:
+            shown.add(rm.box_id)
+            node = tree.add(_label(rm))
+            _add_children(node, rm.box_id, shown)
+
+        Console().print(tree)
+        return
 
     if output_format == "json":
         typer.echo(json.dumps([rm.model_dump() for rm in box_metas], indent=2))
@@ -1416,6 +1958,12 @@ def cli_path(
         "-f",
         help="The filter to apply to the groups. The filter is a boolean expression over the groups of the boxes. Allowed operators are `AND`, `OR`, `NOT`, and parentheses for grouping..",
     ),
+    interactive: bool = Option(
+        False, "--interactive", "-I", help="Launch interactive TUI for box selection.",
+    ),
+    browse_mode: Literal["groups", "tree"] = Option(
+        "groups", "--browse-mode", help="Browse mode for the interactive TUI: 'groups' or 'tree'.",
+    ),
 ):
     """
     Get the path of a box.
@@ -1434,6 +1982,20 @@ def cli_path(
 
     if only_included:
         box_metas = [rm for rm in box_metas if rm.check_included(config)]
+
+    if interactive:
+        from boxyard._cli.path_tui import BoxPathSelector
+
+        tui_app = BoxPathSelector(
+            box_metas=box_metas,
+            config=config,
+            mode=browse_mode,
+            path_option=path_option,
+        )
+        result = tui_app.run()
+        if result:
+            typer.echo(result)
+        return
 
     box_index_name = _get_box_index_name(
         box_name=box_name,

@@ -8,7 +8,6 @@ from .._models import get_boxyard_meta, BoxPart
 from .._remote_index import find_remote_box_by_id
 from .._utils.rclone import rclone_copy, rclone_copyto
 
-
 async def copy_from_remote(
     config_path: Path,
     box_index_name: str,
@@ -42,14 +41,14 @@ async def copy_from_remote(
     """
     config = get_config(config_path)
     boxyard_meta = get_boxyard_meta(config)
-
+    
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' does not exist locally.")
-
+    
     box_meta = boxyard_meta.by_index_name[box_index_name]
     dest_path = Path(dest_path).resolve()
     boxyard_data_path = config.boxyard_data_path.resolve()
-
+    
     try:
         dest_path.relative_to(boxyard_data_path)
         raise ValueError(
@@ -62,7 +61,7 @@ async def copy_from_remote(
             raise
         # Good - dest_path is not within boxyard_data_path
         pass
-
+    
     # Also check user_boxes_path
     user_boxes_path = config.user_boxes_path.resolve()
     try:
@@ -78,37 +77,40 @@ async def copy_from_remote(
         # Good - dest_path is not within user_boxes_path
         pass
     if dest_path.exists() and not overwrite:
-        raise ValueError(f"Destination path '{dest_path}' already exists. Use --overwrite to overwrite existing files.")
+        raise ValueError(
+            f"Destination path '{dest_path}' already exists. "
+            f"Use --overwrite to overwrite existing files."
+        )
     storage_location = box_meta.storage_location
     sl_config = config.storage_locations[storage_location]
-
+    
     # Find remote index name by box_id (handles renames)
     remote_index_name = await find_remote_box_by_id(
         config=config,
         storage_location=storage_location,
         box_id=box_meta.box_id,
     )
-
+    
     if remote_index_name is None:
         raise ValueError(
             f"Box '{box_index_name}' not found on remote storage '{storage_location}'. "
             f"The box may have been deleted or the remote is not accessible."
         )
-
+    
     if verbose:
         print(f"Found remote box: {remote_index_name}")
     from boxyard import const
-
+    
     remote_box_path = sl_config.store_path / const.REMOTE_BOXES_REL_PATH / remote_index_name
     remote_data_path = remote_box_path / const.BOX_DATA_REL_PATH
     remote_meta_path = remote_box_path / const.BOX_METAFILE_REL_PATH
     remote_conf_path = remote_box_path / const.BOX_CONF_REL_PATH
     if verbose:
         print(f"Copying DATA from {storage_location}:{remote_data_path} to {dest_path}")
-
+    
     # Create dest directory
     dest_path.mkdir(parents=True, exist_ok=True)
-
+    
     success, stdout, stderr = await rclone_copy(
         rclone_config_path=config.rclone_config_path.as_posix(),
         source=storage_location,
@@ -117,19 +119,19 @@ async def copy_from_remote(
         dest_path=dest_path.as_posix(),
         progress=show_rclone_progress,
     )
-
+    
     if not success:
         raise RuntimeError(f"Failed to copy DATA from remote: {stderr}")
-
+    
     if verbose:
         print("DATA copied successfully.")
     if copy_meta:
         if verbose:
             print(f"Copying META from {storage_location}:{remote_meta_path}")
-
+    
         dest_meta_path = dest_path / const.BOX_METAFILE_REL_PATH
         dest_meta_path.parent.mkdir(parents=True, exist_ok=True)
-
+    
         success, stdout, stderr = await rclone_copyto(
             rclone_config_path=config.rclone_config_path.as_posix(),
             source=storage_location,
@@ -138,7 +140,7 @@ async def copy_from_remote(
             dest_path=dest_meta_path.as_posix(),
             progress=show_rclone_progress,
         )
-
+    
         if not success:
             if verbose:
                 print(f"Warning: Failed to copy META: {stderr}")
@@ -147,10 +149,10 @@ async def copy_from_remote(
     if copy_conf:
         if verbose:
             print(f"Copying CONF from {storage_location}:{remote_conf_path}")
-
+    
         dest_conf_path = dest_path / const.BOX_CONF_REL_PATH
         dest_conf_path.mkdir(parents=True, exist_ok=True)
-
+    
         success, stdout, stderr = await rclone_copy(
             rclone_config_path=config.rclone_config_path.as_posix(),
             source=storage_location,
@@ -159,10 +161,10 @@ async def copy_from_remote(
             dest_path=dest_conf_path.as_posix(),
             progress=show_rclone_progress,
         )
-
+    
         if not success:
             if verbose:
                 print(f"Warning: Failed to copy CONF: {stderr}")
         elif verbose:
             print("CONF copied successfully.")
-    return dest_path
+    return dest_path;

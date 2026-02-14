@@ -6,10 +6,8 @@ from typing import Any
 from ..config import get_config
 from .. import const
 
-
 class BoxNameConflict(Exception):
     pass
-
 
 def modify_boxmeta(
     config_path: Path,
@@ -19,43 +17,76 @@ def modify_boxmeta(
     """ """
     config = get_config(config_path)
     from boxyard._models import get_boxyard_meta, BoxMeta
-
+    
     boxyard_meta = get_boxyard_meta(config)
-
+    
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' not found.")
-
+    
     box_meta = boxyard_meta.by_index_name[box_index_name]
     modified_box_meta = BoxMeta(**{**box_meta.model_dump(), **modifications})
     # TESTREF: test_modify_boxmeta_unique_names
     from boxyard._models import get_box_group_configs
-
+    
     # Construct modified box_metas list
     _old_box_meta = boxyard_meta.by_index_name[box_index_name]
     _box_metas = list(boxyard_meta.box_metas)
     _box_metas.remove(_old_box_meta)
     _box_metas.append(modified_box_meta)
-
+    
     box_group_configs, virtual_box_groups = get_box_group_configs(config, _box_metas)
     for g in modified_box_meta.groups:
         if g in virtual_box_groups:
-            raise Exception(f"Cannot add a box to a virtual box group (virtual box group: '{g}')")
-
+            raise Exception(
+                f"Cannot add a box to a virtual box group (virtual box group: '{g}')"
+            )
+    
         box_group_config = box_group_configs[g]
         box_metas_in_group = [rm for rm in _box_metas if g in rm.groups]
-
+    
         if box_group_config.unique_box_names:
             name_counts = {box_meta.name: 0 for box_meta in box_metas_in_group}
             for box_meta in box_metas_in_group:
                 name_counts[box_meta.name] += 1
-            duplicate_names = [(name, count) for name, count in name_counts.items() if count > 1]
+            duplicate_names = [
+                (name, count) for name, count in name_counts.items() if count > 1
+            ]
             if duplicate_names:
-                names_str = ", ".join(f"'{name}' (count: {count})" for name, count in duplicate_names)
+                names_str = ", ".join(
+                    f"'{name}' (count: {count})" for name, count in duplicate_names
+                )
                 raise BoxNameConflict(
                     f"Error modifying box meta for '{box_index_name}':\n"
                     f"Box is in group '{g}' which requires unique names. After the modification, the following name(s) appear multiple times in this group: {names_str}."
                 )
+    if "parents" in modifications:
+        from boxyard._models import BoxyardMeta as _BM
+    
+        _temp_meta = _BM(box_metas=_box_metas)
+    
+        # Cycle detection
+        for parent_id in modified_box_meta.parents:
+            if _temp_meta.would_create_cycle(modified_box_meta.box_id, parent_id):
+                raise ValueError(
+                    f"Adding parent '{parent_id}' to box '{box_index_name}' would create a cycle."
+                )
+    
+        # Single-parent enforcement
+        if config.single_parent and len(modified_box_meta.parents) > 1:
+            raise ValueError(
+                f"Config has single_parent=True but box '{box_index_name}' would have "
+                f"{len(modified_box_meta.parents)} parents."
+            )
+    
+        # Dangling parent warning
+        import sys
+        for parent_id in modified_box_meta.parents:
+            if parent_id not in _temp_meta.by_id:
+                print(
+                    f"Warning: parent '{parent_id}' not found locally. It may not be synced yet.",
+                    file=sys.stderr,
+                )
     modified_box_meta.save(config)
     from boxyard._models import refresh_boxyard_meta
-
+    
     refresh_boxyard_meta(config)

@@ -10,7 +10,6 @@ from .._utils.rclone import rclone_sync, rclone_mkdir, rclone_purge
 from .._utils.locking import BoxyardLockManager, BOX_SYNC_LOCK_TIMEOUT, acquire_lock_async
 from .._utils import check_interrupted, SoftInterruption
 
-
 async def force_push_to_remote(
     config_path: Path,
     box_index_name: str,
@@ -40,45 +39,46 @@ async def force_push_to_remote(
     """
     if not force:
         raise ValueError(
-            "This is a destructive operation that will overwrite the remote DATA. You must pass --force to confirm."
+            "This is a destructive operation that will overwrite the remote DATA. "
+            "You must pass --force to confirm."
         )
     config = get_config(config_path)
     source_path = Path(source_path).resolve()
-
+    
     if not source_path.exists():
         raise ValueError(f"Source path '{source_path}' does not exist.")
-
+    
     if not source_path.is_dir():
         raise ValueError(f"Source path '{source_path}' is not a directory.")
     boxyard_meta = get_boxyard_meta(config)
-
+    
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' does not exist locally.")
-
+    
     box_meta = boxyard_meta.by_index_name[box_index_name]
     storage_location = box_meta.storage_location
     sl_config = config.storage_locations[storage_location]
-
+    
     # Find remote index name by box_id (handles renames)
     remote_index_name = await find_remote_box_by_id(
         config=config,
         storage_location=storage_location,
         box_id=box_meta.box_id,
     )
-
+    
     if remote_index_name is None:
         raise ValueError(
             f"Box '{box_index_name}' not found on remote storage '{storage_location}'. "
             f"The box may have been deleted or the remote is not accessible."
         )
-
+    
     if verbose:
         print(f"Found remote box: {remote_index_name}")
     from boxyard import const
-
+    
     remote_box_path = sl_config.store_path / const.REMOTE_BOXES_REL_PATH / remote_index_name
     remote_data_path = remote_box_path / const.BOX_DATA_REL_PATH
-
+    
     # Sync record paths
     local_sync_record_path = box_meta.get_local_sync_record_path(config, BoxPart.DATA)
     remote_sync_record_path = (
@@ -87,7 +87,7 @@ async def force_push_to_remote(
         / remote_index_name  # Use remote index name for remote sync record
         / f"{BoxPart.DATA.value}.rec"
     )
-
+    
     # Backup paths
     local_sync_backups_path = config.local_sync_backups_path / box_meta.index_name / BoxPart.DATA.value
     remote_sync_backups_path = (
@@ -99,7 +99,7 @@ async def force_push_to_remote(
     _lock_manager = BoxyardLockManager(config.boxyard_data_path)
     _lock_path = _lock_manager.box_sync_lock_path(box_index_name)
     _lock_manager._ensure_lock_dir(_lock_path)
-    _sync_lock = __import__("filelock").FileLock(_lock_path, timeout=0)
+    _sync_lock = __import__('filelock').FileLock(_lock_path, timeout=0)
     await acquire_lock_async(
         _sync_lock,
         f"box sync ({box_index_name})",
@@ -109,19 +109,19 @@ async def force_push_to_remote(
     try:
         if soft_interruption_enabled and check_interrupted():
             raise SoftInterruption()
-
+    
         if verbose:
             print(f"Force pushing {source_path} to {storage_location}:{remote_data_path}")
-
+    
         # Create incomplete sync record and save to BOTH sides (same ULID)
         # This creates a "sync session" marker - if interrupted, both sides have the same incomplete ULID,
         # proving this machine owns the interrupted sync and can safely retry
         rec = SyncRecord.create(sync_complete=False)
         backup_name = str(rec.ulid)
-
+    
         if verbose:
             print(f"Creating sync session with ULID: {rec.ulid}")
-
+    
         # Save incomplete record to both sides BEFORE syncing
         await rec.rclone_save(
             config.rclone_config_path.as_posix(),
@@ -133,7 +133,7 @@ async def force_push_to_remote(
             "",
             local_sync_record_path.as_posix(),
         )
-
+    
         # Create backup directory on remote
         backup_path = remote_sync_backups_path / backup_name
         await rclone_mkdir(
@@ -141,10 +141,10 @@ async def force_push_to_remote(
             source=storage_location,
             source_path=backup_path.as_posix(),
         )
-
+    
         if verbose:
             print("Syncing data to remote...")
-
+    
         # Perform the sync (source -> remote DATA)
         success, stdout, stderr = await rclone_sync(
             rclone_config_path=config.rclone_config_path.as_posix(),
@@ -155,13 +155,13 @@ async def force_push_to_remote(
             backup_path=f"{storage_location}:{backup_path.as_posix()}",
             progress=show_rclone_progress,
         )
-
+    
         if not success:
             raise RuntimeError(f"Failed to sync to remote: {stderr}")
-
+    
         if verbose:
             print("Sync completed successfully.")
-
+    
         # Update sync records to complete state
         complete_rec = SyncRecord.create(sync_complete=True)
         await complete_rec.rclone_save(
@@ -174,20 +174,20 @@ async def force_push_to_remote(
             storage_location,
             remote_sync_record_path.as_posix(),
         )
-
+    
         if verbose:
             print("Sync records updated.")
-
+    
         # Clean up backup
         await rclone_purge(
             rclone_config_path=config.rclone_config_path.as_posix(),
             source=storage_location,
             source_path=backup_path.as_posix(),
         )
-
+    
         if verbose:
             print("Backup cleaned up.")
             print(f"Force push complete: {source_path} -> {storage_location}:{remote_data_path}")
-
+    
     finally:
         _sync_lock.release()

@@ -5,7 +5,6 @@ from pathlib import Path
 from ..config import get_config
 from .._models import SyncStatus, BoxPart
 
-
 async def get_box_sync_status(
     config_path: Path,
     box_index_name: str,
@@ -13,16 +12,16 @@ async def get_box_sync_status(
     """ """
     config = get_config(config_path)
     from boxyard._models import get_boxyard_meta
-
+    
     boxyard_meta = get_boxyard_meta(config)
-
+    
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' not found.")
-
+    
     box_meta = boxyard_meta.by_index_name[box_index_name]
     from boxyard._models import get_sync_status, BoxPart
     import asyncio
-
+    
     tasks = [
         get_sync_status(
             rclone_config_path=config.rclone_config_path,
@@ -30,10 +29,15 @@ async def get_box_sync_status(
             local_sync_record_path=box_meta.get_local_sync_record_path(config, box_part),
             remote=box_meta.storage_location,
             remote_path=box_meta.get_remote_part_path(config, box_part),
-            remote_sync_record_path=box_meta.get_remote_sync_record_path(config, box_part),
+            remote_sync_record_path=box_meta.get_remote_sync_record_path(
+                config, box_part
+            ),
         )
         for box_part in BoxPart
     ]
-
-    box_sync_status = {box_part: sync_status for box_part, sync_status in zip(BoxPart, await asyncio.gather(*tasks))}
+    
+    box_sync_status = {
+        box_part: sync_status
+        for box_part, sync_status in zip(BoxPart, await asyncio.gather(*tasks))
+    }
     return box_sync_status

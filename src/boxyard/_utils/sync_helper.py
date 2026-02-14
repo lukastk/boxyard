@@ -9,18 +9,14 @@ from .. import const
 
 from .._models import SyncStatus
 
-
 class SyncFailed(Exception):
     pass
-
 
 class SyncUnsafe(Exception):
     pass
 
-
 class InvalidRemotePath(Exception):
     pass
-
 
 async def sync_helper(
     rclone_config_path: str,
@@ -57,7 +53,7 @@ async def sync_helper(
     if sync_direction is None and sync_setting != SyncSetting.CAREFUL:
         raise ValueError("Auto sync direction can only be used with careful sync setting.")
     from boxyard._models import get_sync_status, SyncCondition
-
+    
     sync_status = await get_sync_status(
         rclone_config_path=rclone_config_path,
         local_path=local_path,
@@ -75,17 +71,16 @@ async def sync_helper(
         sync_path_is_dir,
         error_message,
     ) = sync_status
-
+    
     if sync_condition == SyncCondition.ERROR and sync_setting != SyncSetting.FORCE:
         raise Exception(error_message)
-
     def _can_safely_retry_incomplete(sync_cond, sync_dir, local_rec, remote_rec):
         """Check if this machine can safely retry an incomplete sync.
-
+    
         For SYNC_FROM_REMOTE_INCOMPLETE (pull was interrupted):
             - Local is incomplete, this machine owns it
             - Safe to retry pull
-
+    
         For SYNC_TO_REMOTE_INCOMPLETE (push was interrupted):
             - Remote is incomplete
             - Only safe if this machine started it (matching incomplete ULIDs on both sides)
@@ -94,21 +89,18 @@ async def sync_helper(
             # Local is incomplete - this machine owns it
             # Safe to retry pull (or auto-direction which will choose pull)
             return sync_dir in (SyncDirection.PULL, None)
-
+    
         if sync_cond == SyncCondition.SYNC_TO_REMOTE_INCOMPLETE:
             # Remote is incomplete - only safe if this machine started it
-            if (
-                local_rec
-                and remote_rec
-                and not local_rec.sync_complete
-                and not remote_rec.sync_complete
-                and local_rec.ulid == remote_rec.ulid
-            ):
+            if (local_rec and remote_rec and
+                not local_rec.sync_complete and not remote_rec.sync_complete and
+                local_rec.ulid == remote_rec.ulid):
                 # Matching incomplete ULIDs = this machine started it
                 return sync_dir in (SyncDirection.PUSH, None)
-
+    
         return False
-
+    
+    
     def _raise_unsafe(message=None):
         if message:
             raise SyncUnsafe(message)
@@ -122,12 +114,13 @@ async def sync_helper(
                 Sync condition: {sync_condition.value}
         """).strip()
         )
-
+    
+    
     if sync_setting != SyncSetting.FORCE and sync_condition == SyncCondition.SYNCED:
         if verbose:
             print("Sync not needed.")
         return sync_status, False
-
+    
     if sync_direction is None:  # auto
         if sync_condition == SyncCondition.NEEDS_PUSH:
             sync_direction = SyncDirection.PUSH
@@ -155,16 +148,14 @@ async def sync_helper(
                 )
         else:
             _raise_unsafe()  # In the case where the sync status is SYNCED, 'auto'-mode should not reach this, as it should have already returned (as auto can only be used in CAREFUL mode)
-
+    
     if sync_setting == SyncSetting.CAREFUL:
         if sync_direction == SyncDirection.PUSH:
             if sync_condition in [SyncCondition.NEEDS_PUSH, SyncCondition.SYNCED]:
                 pass  # Safe to push
             elif sync_condition == SyncCondition.SYNC_TO_REMOTE_INCOMPLETE:
                 # Check if this machine can safely retry the interrupted push
-                if not _can_safely_retry_incomplete(
-                    sync_condition, sync_direction, local_sync_record, remote_sync_record
-                ):
+                if not _can_safely_retry_incomplete(sync_condition, sync_direction, local_sync_record, remote_sync_record):
                     _raise_unsafe(
                         "Remote has an incomplete sync from another machine. "
                         "Use --sync-setting force to override, or sync from the original machine."
@@ -176,9 +167,7 @@ async def sync_helper(
                 pass  # Safe to pull
             elif sync_condition == SyncCondition.SYNC_FROM_REMOTE_INCOMPLETE:
                 # Local is incomplete from interrupted pull - this machine can safely retry
-                if not _can_safely_retry_incomplete(
-                    sync_condition, sync_direction, local_sync_record, remote_sync_record
-                ):
+                if not _can_safely_retry_incomplete(sync_condition, sync_direction, local_sync_record, remote_sync_record):
                     _raise_unsafe()  # This shouldn't happen, but just in case
             else:
                 _raise_unsafe()
@@ -190,7 +179,8 @@ async def sync_helper(
                 print(f"Source does not exist and allow_missing_source=True. Skipping sync.")
             return sync_status, False
     from boxyard._utils import rclone_sync, BisyncResult, rclone_mkdir, rclone_purge
-
+    
+    
     async def _sync(
         dry_run: bool,
         source: str,
@@ -202,22 +192,24 @@ async def sync_helper(
         return_command: bool = False,
     ) -> BisyncResult:
         if not sync_path_is_dir:
-            dest_path = Path(
-                dest_path
-            ).parent.as_posix()  # needed because rlcone sync doesn't seem to accept files on the dest path
+            dest_path = (
+                Path(dest_path).parent.as_posix()
+            )  # needed because rlcone sync doesn't seem to accept files on the dest path
             if dest_path == ".":
                 dest_path = ""
-
+    
         if verbose:
-            print(f"Syncing {source}:{source_path} to {dest}:{dest_path}.  Backup path: {backup_remote}:{backup_path}")
-
+            print(
+                f"Syncing {source}:{source_path} to {dest}:{dest_path}.  Backup path: {backup_remote}:{backup_path}"
+            )
+    
         # Create backup store directory if it doesn't already exist
         await rclone_mkdir(
             rclone_config_path=rclone_config_path,
             source=backup_remote,
             source_path=backup_path,
         )
-
+    
         return await rclone_sync(
             rclone_config_path=rclone_config_path,
             source=source,
@@ -236,22 +228,21 @@ async def sync_helper(
             verbose=False,
             progress=show_rclone_progress,
         )
-
     from boxyard._models import SyncRecord
-
+    
     if check_interrupted():
         raise SoftInterruption()
-
+    
     rec = SyncRecord.create(syncer_hostname=syncer_hostname, sync_complete=False)
     backup_name = str(rec.ulid)
-
+    
     if sync_direction == SyncDirection.PULL:
         # Save the sync record on local to signify an ongoing sync
         await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
-
+    
         backup_remote = ""
         backup_path = Path(local_sync_backups_path) / backup_name
-
+    
         res, stdout, stderr = await _sync(
             dry_run=False,
             source=remote,
@@ -261,22 +252,24 @@ async def sync_helper(
             backup_remote=backup_remote,
             backup_path=backup_path,
         )
-
+    
         if res:
             # Retrieve the remote sync record and save it locally
-            rec = await SyncRecord.rclone_read(rclone_config_path, remote, remote_sync_record_path)
+            rec = await SyncRecord.rclone_read(
+                rclone_config_path, remote, remote_sync_record_path
+            )
             await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
-
+    
     elif sync_direction == SyncDirection.PUSH:
         # Save the incomplete sync record on BOTH local and remote to signify an ongoing sync
         # This creates a "sync session" marker - if interrupted, both sides have the same incomplete ULID,
         # proving this machine owns the interrupted sync and can safely retry
         await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
         await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
-
+    
         backup_remote = remote
         backup_path = Path(remote_sync_backups_path) / backup_name
-
+    
         res, stdout, stderr = await _sync(
             dry_run=False,
             source="",
@@ -286,19 +279,19 @@ async def sync_helper(
             backup_remote=backup_remote,
             backup_path=backup_path,
         )
-
+    
         if res:
             # Create a new sync record and save it at the remote
             rec = SyncRecord.create(syncer_hostname=syncer_hostname, sync_complete=True)
             await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
             await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
-
+    
     else:
         raise ValueError(f"Unknown sync direction: {sync_direction}")
-
+    
     if not res:
         raise SyncFailed(f"Sync failed. Rclone output:\n{stdout}\n{stderr}")
-
+    
     if res and delete_backup:
         await rclone_purge(
             rclone_config_path=rclone_config_path,

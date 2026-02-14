@@ -6,7 +6,6 @@ import asyncio
 from ..config import get_config
 from .._utils.locking import BoxyardLockManager, LockAcquisitionError, BOX_SYNC_LOCK_TIMEOUT, acquire_lock_async
 
-
 async def include_box(
     config_path: Path,
     box_index_name: str,
@@ -15,24 +14,24 @@ async def include_box(
     """ """
     config = get_config(config_path)
     from boxyard._models import get_boxyard_meta
-
+    
     boxyard_meta = get_boxyard_meta(config)
-
+    
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' does not exist.")
-
+    
     box_meta = boxyard_meta.by_index_name[box_index_name]
-
+    
     if box_meta.check_included(config):
         raise ValueError(f"Box '{box_index_name}' is already included.")
     from boxyard.cmds import sync_box
     from boxyard._models import BoxPart
     from boxyard._utils.sync_helper import SyncSetting, SyncDirection
-
+    
     _lock_manager = BoxyardLockManager(config.boxyard_data_path)
     _lock_path = _lock_manager.box_sync_lock_path(box_index_name)
     _lock_manager._ensure_lock_dir(_lock_path)
-    _sync_lock = __import__("filelock").FileLock(_lock_path, timeout=0)
+    _sync_lock = __import__('filelock').FileLock(_lock_path, timeout=0)
     await acquire_lock_async(
         _sync_lock,
         f"box sync ({box_index_name})",
@@ -50,7 +49,7 @@ async def include_box(
             soft_interruption_enabled=soft_interruption_enabled,
             _skip_lock=True,
         )
-
+    
         # Then sync the rest
         await sync_box(
             config_path=config_path,

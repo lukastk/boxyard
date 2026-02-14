@@ -7,7 +7,6 @@ from .._remote_index import find_remote_box_by_id
 from .._models import BoxMeta
 from .._enums import SyncNameDirection
 
-
 async def sync_name(
     config_path: Path,
     box_index_name: str,
@@ -32,31 +31,31 @@ async def sync_name(
         - TO_REMOTE: Renames the remote box to match the local's name.
     """
     config = get_config(config_path)
-
+    
     from boxyard._models import get_boxyard_meta
-
+    
     boxyard_meta = get_boxyard_meta(config)
-
+    
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' not found.")
-
+    
     box_meta = boxyard_meta.by_index_name[box_index_name]
     box_id = BoxMeta.extract_box_id(box_index_name)
     storage_location = box_meta.storage_location
     local_name = box_meta.name
-
+    
     if verbose:
         print(f"Syncing name for box ID: {box_id}")
         print(f"Local name: {local_name}")
     if box_meta.get_storage_location_config(config).storage_type == StorageType.LOCAL:
         raise ValueError("Cannot sync name for local storage locations.")
     remote_index_name = await find_remote_box_by_id(config, storage_location, box_id)
-
+    
     if remote_index_name is None:
         raise ValueError(f"Remote box not found for ID '{box_id}'. Cannot sync name.")
-
+    
     _, remote_name = BoxMeta.parse_index_name(remote_index_name)
-
+    
     if verbose:
         print(f"Remote name: {remote_name}")
     if direction == SyncNameDirection.TO_LOCAL:
@@ -69,17 +68,17 @@ async def sync_name(
         action_desc = "local -> remote"
     else:
         raise ValueError(f"Invalid direction: {direction}")
-
+    
     if source_name == target_name:
         if verbose:
             print(f"Names already match: '{source_name}'. Nothing to do.")
         result_index_name = box_index_name
         return
-
+    
     if verbose:
         print(f"Syncing name ({action_desc}): '{target_name}' -> '{source_name}'")
     from boxyard.cmds._rename_box import rename_box, RenameScope
-
+    
     if direction == SyncNameDirection.TO_LOCAL:
         # Rename local to match remote
         result_index_name = await rename_box(
@@ -98,7 +97,7 @@ async def sync_name(
             scope=RenameScope.REMOTE,
             verbose=verbose,
         )
-
+    
     if verbose:
         print(f"Name sync complete. Result index: {result_index_name}")
     return result_index_name

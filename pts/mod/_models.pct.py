@@ -100,6 +100,7 @@ class BoxMeta(const.StrictModel):
     storage_location: str
     creator_hostname: str
     groups: list[str]
+    parents: list[str] = []  # box_id values; default [] for backwards compat
 
     @classmethod
     def create(
@@ -109,6 +110,7 @@ class BoxMeta(const.StrictModel):
         storage_location_name: str,
         creator_hostname: str,
         groups: list[str],
+        parents: list[str] | None = None,
         creation_timestamp_utc: datetime | None = None,
     ) -> "BoxMeta":
         if creation_timestamp_utc is None:
@@ -143,6 +145,7 @@ class BoxMeta(const.StrictModel):
             storage_location=storage_location_name,
             creator_hostname=creator_hostname,
             groups=groups,
+            parents=parents or [],
         )
 
     @property
@@ -311,6 +314,12 @@ class BoxMeta(const.StrictModel):
         for group_name in self.groups:
             self.validate_group_name(group_name)
 
+        if len(self.parents) != len(set(self.parents)):
+            raise ValueError("Parents must be unique.")
+
+        if self.box_id in self.parents:
+            raise ValueError("A box cannot be its own parent.")
+
         # Test that the creation timestamp is valid
         try:
             self.creation_timestamp_datetime
@@ -374,6 +383,55 @@ class BoxyardMeta(const.StrictModel):
                 box_meta.index_name: box_meta for box_meta in self.box_metas
             }
         return self.__by_index_name
+
+    def children_of(self, box_id: str) -> list[BoxMeta]:
+        return [bm for bm in self.box_metas if box_id in bm.parents]
+
+    def descendants_of(self, box_id: str) -> list[BoxMeta]:
+        visited = set()
+        queue = [box_id]
+        result = []
+        while queue:
+            current = queue.pop(0)
+            for child in self.children_of(current):
+                if child.box_id not in visited:
+                    visited.add(child.box_id)
+                    result.append(child)
+                    queue.append(child.box_id)
+        return result
+
+    def ancestors_of(self, box_id: str) -> list[BoxMeta]:
+        visited = set()
+        queue = [box_id]
+        result = []
+        while queue:
+            current = queue.pop(0)
+            current_meta = self.by_id.get(current)
+            if current_meta is None:
+                continue
+            for parent_id in current_meta.parents:
+                if parent_id not in visited:
+                    visited.add(parent_id)
+                    parent_meta = self.by_id.get(parent_id)
+                    if parent_meta is not None:
+                        result.append(parent_meta)
+                        queue.append(parent_id)
+        return result
+
+    def roots(self) -> list[BoxMeta]:
+        return [bm for bm in self.box_metas if len(bm.parents) == 0]
+
+    def leaves(self) -> list[BoxMeta]:
+        all_parent_ids = set()
+        for bm in self.box_metas:
+            all_parent_ids.update(bm.parents)
+        return [bm for bm in self.box_metas if bm.box_id not in all_parent_ids]
+
+    def would_create_cycle(self, child_id: str, proposed_parent_id: str) -> bool:
+        if child_id == proposed_parent_id:
+            return True
+        ancestors = self.ancestors_of(proposed_parent_id)
+        return any(a.box_id == child_id for a in ancestors)
 
 # %%
 #|export
