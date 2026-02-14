@@ -15,7 +15,7 @@ import boxyard.config
 def get_box_index_name_from_sub_path(
     config: boxyard.config.Config,
     sub_path: str,
-) -> Path | None:
+) -> str | None:
     """
     Get the index name of a synced box from a path inside of the box.
     """

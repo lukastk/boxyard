@@ -4,8 +4,11 @@ __all__ = ['BoxyardFast']
 
 # %% pts/mod/_fast.pct.py 3
 import json
+import tomllib
 from pathlib import Path
 from collections import deque
+
+_DEFAULT_CONFIG_PATH = Path("~/.config/boxyard/config.toml")
 
 
 class BoxyardFast:
@@ -16,7 +19,8 @@ class BoxyardFast:
     importing any boxyard modules.
     """
 
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, user_boxes_path: str | None = None):
+        self._user_boxes_path = user_boxes_path
         box_metas = data.get("box_metas", [])
         self._boxes = box_metas
         self._by_id: dict[str, dict] = {}
@@ -36,12 +40,27 @@ class BoxyardFast:
                 self._children_index.setdefault(parent_id, []).append(bm["_box_id"])
 
     @classmethod
-    def from_file(cls, path: str | Path | None = None) -> "BoxyardFast":
+    def from_file(cls, path: str | Path | None = None, config_path: str | Path | None = None) -> "BoxyardFast":
+        """Load from boxyard_meta.json, optionally reading config for user_boxes_path.
+
+        Args:
+            path: Path to boxyard_meta.json. Defaults to ~/.boxyard/boxyard_meta.json,
+                or reads boxyard_data_path from the config file if available.
+            config_path: Path to config.toml. Defaults to ~/.config/boxyard/config.toml.
+        """
+        config_path = Path(config_path or _DEFAULT_CONFIG_PATH).expanduser()
+        config = {}
+        if config_path.exists():
+            config = tomllib.loads(config_path.read_text())
+
         if path is None:
-            path = Path.home() / ".boxyard" / "boxyard_meta.json"
+            data_path = config.get("boxyard_data_path", "~/.boxyard")
+            path = Path(data_path).expanduser() / "boxyard_meta.json"
         path = Path(path)
+
         data = json.loads(path.read_text())
-        return cls(data)
+        user_boxes_path = config.get("user_boxes_path")
+        return cls(data, user_boxes_path=user_boxes_path)
 
     # ── helpers ──
 
@@ -226,18 +245,23 @@ class BoxyardFast:
 
     # ── path-based queries ──
 
-    def which(self, path: str, user_boxes_path: str = "~/boxes") -> dict | None:
+    def which(self, path: str, user_boxes_path: str | None = None) -> dict | None:
         """Resolve a filesystem path to the box it belongs to.
 
         Mirrors the CLI ``which`` command: checks whether *path* falls under
         *user_boxes_path* and, if so, extracts the first directory component
         as the index_name and returns the matching box result dict.
 
+        Uses the user_boxes_path from the config file if not provided
+        (set during ``from_file()``). Falls back to ``~/boxes`` if neither
+        is available.
+
         Returns ``None`` when the path is outside the boxes directory or when
         no matching box is found in the metadata.
         """
+        boxes_path = user_boxes_path or self._user_boxes_path or "~/boxes"
         resolved = Path(path).expanduser().resolve()
-        boxes_root = Path(user_boxes_path).expanduser().resolve()
+        boxes_root = Path(boxes_path).expanduser().resolve()
 
         if not resolved.is_relative_to(boxes_root) or resolved == boxes_root:
             return None
