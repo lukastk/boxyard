@@ -9,8 +9,8 @@
 # %% [markdown]
 # # _fast
 #
-# Lightweight stdlib-only query module for external packages.
-# No `from boxyard import ...` allowed — only stdlib imports.
+# Lightweight query module for external packages.
+# No `from boxyard import ...` allowed — only stdlib + toml.
 
 # %%
 #|default_exp _fast
@@ -22,7 +22,7 @@ from nblite import nbl_export, show_doc; nbl_export();
 # %%
 #|export
 import json
-import tomllib
+import toml
 from pathlib import Path
 from collections import deque
 
@@ -30,7 +30,7 @@ _DEFAULT_CONFIG_PATH = Path("~/.config/boxyard/config.toml")
 
 
 class BoxyardFast:
-    """Lightweight, stdlib-only query interface for boxyard metadata.
+    """Lightweight query interface for boxyard metadata.
 
     Reads the boxyard_meta.json file and provides fast lookups for
     parent-child relationships, groups, and DAG traversal without
@@ -69,7 +69,7 @@ class BoxyardFast:
         config_path = Path(config_path or _DEFAULT_CONFIG_PATH).expanduser()
         config = {}
         if config_path.exists():
-            config = tomllib.loads(config_path.read_text())
+            config = toml.load(config_path)
 
         if path is None:
             data_path = config.get("boxyard_data_path", "~/.boxyard")
