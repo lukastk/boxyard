@@ -19,7 +19,7 @@ from nblite import nbl_export, show_doc; nbl_export();
 # %%
 #|export
 import typer
-from typer import Option
+from typer import Argument, Option
 from typing import Literal
 from pathlib import Path
 from enum import Enum
@@ -621,8 +621,8 @@ def cli_add_to_group(
         "-c",
         help="Whether to match the box name case-sensitively.",
     ),
-    group_name: str = Option(
-        ..., "--group", "-g", help="The name of the group to add the box to."
+    group_names: list[str] = Argument(
+        ..., help="The group(s) to add the box to."
     ),
     sync_after: bool = Option(
         False,
@@ -637,7 +637,7 @@ def cli_add_to_group(
     soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
-    Add a box to a group.
+    Add a box to one or more groups.
     """
     from boxyard.cmds import modify_boxmeta
     from boxyard._models import get_boxyard_meta
@@ -671,13 +671,19 @@ def cli_add_to_group(
         typer.echo(f"Box with index name `{box_index_name}` not found.")
         raise typer.Exit(code=1)
     box_meta = boxyard_meta.by_index_name[box_index_name]
-    if group_name in box_meta.groups:
-        typer.echo(f"Box `{box_index_name}` already in group `{group_name}`.")
-    else:
+    new_groups = list(box_meta.groups)
+    added = []
+    for gn in group_names:
+        if gn in new_groups:
+            typer.echo(f"Box `{box_index_name}` already in group `{gn}`.")
+        else:
+            new_groups.append(gn)
+            added.append(gn)
+    if added:
         modify_boxmeta(
             config_path=app_state["config_path"],
             box_index_name=box_index_name,
-            modifications={"groups": [*box_meta.groups, group_name]},
+            modifications={"groups": new_groups},
         )
 
         if sync_after:
@@ -736,14 +742,14 @@ def cli_remove_from_group(
         "-c",
         help="Whether to match the box name case-sensitively.",
     ),
-    group_name: str = Option(
-        ..., "--group", "-g", help="The name of the group to add the box to."
+    group_names: list[str] = Argument(
+        ..., help="The group(s) to remove the box from."
     ),
     sync_after: bool = Option(
         False,
         "--sync-after",
         "-s",
-        help="Sync the box after adding it to the group.",
+        help="Sync the box after removing it from the group.",
     ),
     sync_setting: SyncSetting = Option(
         SyncSetting.CAREFUL, "--sync-setting", help="The sync setting to use."
@@ -752,7 +758,7 @@ def cli_remove_from_group(
     soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
-    Remove a box from a group.
+    Remove a box from one or more groups.
     """
     from boxyard.cmds import modify_boxmeta
     from boxyard._models import get_boxyard_meta
@@ -783,14 +789,17 @@ def cli_remove_from_group(
         typer.echo(f"Box with index name `{box_index_name}` not found.")
         raise typer.Exit(code=1)
     box_meta = boxyard_meta.by_index_name[box_index_name]
-    if group_name not in box_meta.groups:
-        typer.echo(f"Box `{box_index_name}` not in group `{group_name}`.")
-        raise typer.Exit(code=1)
-    else:
+    to_remove = set()
+    for gn in group_names:
+        if gn not in box_meta.groups:
+            typer.echo(f"Box `{box_index_name}` not in group `{gn}`.")
+        else:
+            to_remove.add(gn)
+    if to_remove:
         modify_boxmeta(
             config_path=app_state["config_path"],
             box_index_name=box_index_name,
-            modifications={"groups": [g for g in box_meta.groups if g != group_name]},
+            modifications={"groups": [g for g in box_meta.groups if g not in to_remove]},
         )
 
         if sync_after:
