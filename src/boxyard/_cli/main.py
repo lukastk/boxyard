@@ -1008,6 +1008,9 @@ def cli_tree(
     output_format: Literal["text", "json"] = Option(
         "text", "--output-format", "-o", help="The format of the output."
     ),
+    show_status: bool = Option(
+        False, "--show-status", help="Show included/excluded status icon (●/○) for each box.",
+    ),
 ):
     """
     Display the parent-child hierarchy of boxes as a tree.
@@ -1056,8 +1059,9 @@ def cli_tree(
     from rich.console import Console
 
     def _label(bm):
+        status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
         groups_str = f" [groups: {', '.join(bm.groups)}]" if bm.groups else ""
-        return f"{bm.name} ({bm.box_id}){groups_str}"
+        return f"{status}{bm.name} ({bm.box_id}){groups_str}"
 
     def _add_children(rich_node, parent_id):
         children = [bm for bm in box_metas if parent_id in bm.parents]
@@ -1591,6 +1595,9 @@ def cli_list(
     hide_groups: list[str] | None = Option(
         None, "--hide-group", help="Hide a group branch in --view groups. Boxes still appear under their other groups.",
     ),
+    show_status: bool = Option(
+        False, "--show-status", help="Show included/excluded status icon (●/○) for each box.",
+    ),
 ):
     """
     List all boxes in the yard.
@@ -1694,12 +1701,14 @@ def cli_list(
             for bm in sorted(groups_map[group_name], key=lambda x: x.name):
                 other_groups = sorted(g for g in bm.groups if g != group_name)
                 suffix = f" [dim]\\[{', '.join(other_groups)}][/dim]" if other_groups else ""
-                group_node.add(f"{bm.name} ({bm.box_id}){suffix}")
+                status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
+                group_node.add(f"{status}{bm.name} ({bm.box_id}){suffix}")
         if ungrouped:
             ug_node = tree.add("[dim](ungrouped)[/dim]")
             for bm in sorted(ungrouped, key=lambda x: x.name):
+                status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
                 suffix = f" [dim]\\[{', '.join(sorted(bm.groups))}][/dim]" if bm.groups else ""
-                ug_node.add(f"{bm.name} ({bm.box_id}){suffix}")
+                ug_node.add(f"{status}{bm.name} ({bm.box_id}){suffix}")
 
         Console().print(tree)
         return
@@ -1712,8 +1721,9 @@ def cli_list(
         filtered_ids = {bm.box_id for bm in box_metas}
 
         def _label(bm):
+            status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
             groups_str = f" [groups: {', '.join(bm.groups)}]" if bm.groups else ""
-            return f"{bm.name} ({bm.box_id}){groups_str}"
+            return f"{status}{bm.name} ({bm.box_id}){groups_str}"
 
         def _add_children(rich_node, parent_id, shown):
             children = [bm for bm in box_metas if parent_id in bm.parents]
@@ -1739,7 +1749,8 @@ def cli_list(
         typer.echo(json.dumps([rm.model_dump() for rm in box_metas], indent=2))
     else:
         for box_meta in box_metas:
-            typer.echo(box_meta.index_name)
+            status = f"{'●' if box_meta.check_included(config) else '○'} " if show_status else ""
+            typer.echo(f"{status}{box_meta.index_name}")
 
 # %% pts/mod/_cli/main.pct.py 48
 @app.command(name="list-groups")
