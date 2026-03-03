@@ -38,6 +38,7 @@ dev = [
 
 [project.scripts]
 boxyard = "boxyard._cli.app:app"
+boxyard-shell-helper = "boxyard._shell_helper:main"
 
 [tool.pytest.ini_options]
 testpaths = ["src/tests"]
