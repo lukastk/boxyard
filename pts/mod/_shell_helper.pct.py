@@ -35,10 +35,15 @@ from boxyard._fast import BoxyardFast
 _DEFAULT_CONFIG_PATH = Path("~/.config/boxyard/config.toml")
 
 
-def search(term: str | None = None, config_path: Path | None = None):
+def search(term: str | None = None, config_path: Path | None = None,
+           groups: list[str] | None = None, included: bool | None = None):
     """Search boxes by name (case-insensitive contains) and print matches.
 
     If term is None or empty, all boxes are listed.
+
+    Args:
+        groups: Only show boxes belonging to at least one of these groups.
+        included: True = only included, False = only excluded, None = all.
 
     Output format: one line per match, tab-separated:
         display_string\\trelative_path
@@ -60,12 +65,19 @@ def search(term: str | None = None, config_path: Path | None = None):
         index_name = bm["_index_name"]
         box_id = bm["_box_id"]
         box_path = user_boxes_path / index_name
-        included = box_path.exists() or box_path.is_symlink()
+        box_included = box_path.exists() or box_path.is_symlink()
+
+        if included is not None and box_included != included:
+            continue
+
+        box_groups = bm.get("groups", [])
+        if groups and not any(g in box_groups for g in groups):
+            continue
+
         rel = os.path.relpath(box_path, cwd)
 
-        marker = "\u25cf" if included else "\u25cb"
-        groups = bm.get("groups", [])
-        group_tag = f" [{', '.join(groups)}]" if groups else ""
+        marker = "\u25cf" if box_included else "\u25cb"
+        group_tag = f" [{', '.join(box_groups)}]" if box_groups else ""
         display = f"{marker} {bm['name']} ({box_id}){group_tag}"
 
         matches.append((display, rel))
@@ -81,10 +93,20 @@ def main():
 
     search_p = sub.add_parser("search", help="Fuzzy search boxes by name")
     search_p.add_argument("term", nargs="?", default=None, help="Search term (case-insensitive substring). Lists all boxes if omitted.")
+    search_p.add_argument("--group", "-g", action="append", dest="groups", help="Only show boxes in this group (repeatable).")
+    incl_excl = search_p.add_mutually_exclusive_group()
+    incl_excl.add_argument("--included", "-i", action="store_true", default=False, help="Only show included boxes.")
+    incl_excl.add_argument("--excluded", "-e", action="store_true", default=False, help="Only show excluded boxes.")
 
     args = parser.parse_args()
     if args.command == "search":
-        search(args.term)
+        if args.included:
+            incl = True
+        elif args.excluded:
+            incl = False
+        else:
+            incl = None
+        search(args.term, groups=args.groups, included=incl)
     else:
         parser.print_help()
         sys.exit(1)
