@@ -1304,15 +1304,24 @@ def cli_include(
             create_user_symlinks(config_path=app_state["config_path"])
         return
 
+    config = get_config(app_state["config_path"])
+    boxyard_meta = get_boxyard_meta(config)
+
+    # Only show excluded boxes in fzf picker
+    _eligible = [
+        bm for bm in boxyard_meta.box_metas
+        if not bm.check_included(config)
+    ]
+
     box_index_name = _get_box_index_name(
         box_name=box_name,
         box_id=box_id,
         box_index_name=box_index_name,
         name_match_mode=name_match_mode,
         name_match_case=name_match_case,
+        box_metas=_eligible,
     )
 
-    boxyard_meta = get_boxyard_meta(get_config(app_state["config_path"]))
     if box_index_name not in boxyard_meta.by_index_name:
         typer.echo(f"Box with index name `{box_index_name}` not found.")
         raise typer.Exit(code=1)
@@ -1508,15 +1517,27 @@ def cli_exclude(
             create_user_symlinks(config_path=app_state["config_path"])
         return
 
+    config = get_config(app_state["config_path"])
+    boxyard_meta = get_boxyard_meta(config)
+
+    # Only show included, non-local boxes in fzf picker
+    from boxyard.config import StorageType
+    from boxyard._models import BoxPart
+    _eligible = [
+        bm for bm in boxyard_meta.box_metas
+        if bm.check_included(config)
+        and bm.get_storage_location_config(config).storage_type != StorageType.LOCAL
+    ]
+
     box_index_name = _get_box_index_name(
         box_name=box_name,
         box_id=box_id,
         box_index_name=box_index_name,
         name_match_mode=name_match_mode,
         name_match_case=name_match_case,
+        box_metas=_eligible,
     )
 
-    boxyard_meta = get_boxyard_meta(get_config(app_state["config_path"]))
     if box_index_name not in boxyard_meta.by_index_name:
         typer.echo(f"Box with index name `{box_index_name}` not found.")
         raise typer.Exit(code=1)
