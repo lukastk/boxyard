@@ -135,7 +135,18 @@ try:
         )
 
     # Exclude it - delete local data
-    shutil.rmtree(box_meta.get_local_part_path(config, BoxPart.DATA))
+    # Retry rmtree to handle macOS race where Finder recreates .DS_Store mid-delete
+    import time, errno
+    _data_path = box_meta.get_local_part_path(config, BoxPart.DATA)
+    for _attempt in range(3):
+        try:
+            shutil.rmtree(_data_path)
+            break
+        except OSError as e:
+            if e.errno == errno.ENOTEMPTY and _attempt < 2:
+                time.sleep(0.1)
+            else:
+                raise
     box_meta.get_local_sync_record_path(config, BoxPart.DATA).unlink()
 finally:
     _sync_lock.release()

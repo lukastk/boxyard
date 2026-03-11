@@ -127,10 +127,23 @@ try:
         )
 
     # Delete local box
+    # Retry rmtree to handle macOS race where Finder recreates .DS_Store mid-delete
+    import time, errno
+    def _rmtree_retry(path):
+        for _attempt in range(3):
+            try:
+                shutil.rmtree(path)
+                return
+            except OSError as e:
+                if e.errno == errno.ENOTEMPTY and _attempt < 2:
+                    time.sleep(0.1)
+                else:
+                    raise
+
     local_box_path = box_meta.get_local_part_path(config, BoxPart.DATA)
     if local_box_path.exists():
-        shutil.rmtree(local_box_path)
-    shutil.rmtree(box_meta.get_local_path(config))
+        _rmtree_retry(local_box_path)
+    _rmtree_retry(box_meta.get_local_path(config))
 
     # Delete remote box
     if box_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL:
