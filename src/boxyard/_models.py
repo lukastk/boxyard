@@ -554,18 +554,22 @@ def create_user_box_group_symlinks(
 
     # Remove all empty group folders that are not existing groups
     def _remove_empty_non_group_folders(path: Path) -> None:
-        if path.is_symlink():
+        if path.is_symlink() or not path.is_dir():
             return
         for p in path.iterdir():
+            if p.name.startswith("."):
+                continue
             if p.is_dir():
                 _remove_empty_non_group_folders(p)
         is_group_folder = (
             path.relative_to(config.user_box_groups_path).as_posix() in groups
         )
-        if not is_group_folder and len(list(path.iterdir())) == 0:
+        if not is_group_folder and len([p for p in path.iterdir() if not p.name.startswith(".")]) == 0:
             path.rmdir()
 
     for path in config.user_box_groups_path.glob("*"):
+        if path.name.startswith("."):
+            continue
         _remove_empty_non_group_folders(path)
 
 # %% pts/mod/_models.pct.py 18
