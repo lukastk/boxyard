@@ -129,6 +129,49 @@ def run_fzf(terms: list[str], disp_terms: list[str] | None = None):
 
 # %%
 #|hide
+show_doc(this_module.run_fzf_multi)
+
+# %%
+#|export
+def run_fzf_multi(terms: list[str], disp_terms: list[str] | None = None):
+    """
+    Launches fzf in multi-select mode and returns all selected terms.
+
+    Use Tab or Space to toggle selection, Enter to confirm.
+
+    Parameters:
+    terms (List[str]): A list of strings to be presented to fzf for selection.
+    disp_terms (List[str] | None): Optional display strings for each term.
+
+    Returns:
+    list[tuple[int, str]]: List of (index, term) tuples for each selected item,
+        or an empty list if no selection was made.
+
+    Raises:
+    RuntimeError: If fzf is not installed or not found in the system PATH.
+    """
+    import subprocess
+
+    if disp_terms is None:
+        disp_terms = terms
+    try:
+        result = subprocess.run(
+            ["fzf", "--multi"], input="\n".join(disp_terms), text=True, capture_output=True
+        )
+        if result.returncode != 0:
+            return []
+        selected_lines = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
+        disp_stripped = [t.strip() for t in disp_terms]
+        selections = []
+        for sel in selected_lines:
+            idx = disp_stripped.index(sel)
+            selections.append((idx, terms[idx]))
+        return selections
+    except FileNotFoundError:
+        raise RuntimeError("fzf is not installed or not found in PATH.")
+
+# %%
+#|hide
 show_doc(this_module.check_last_time_modified)
 
 # %%

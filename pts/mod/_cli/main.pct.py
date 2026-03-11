@@ -1220,6 +1220,12 @@ def cli_include(
         "-c",
         help="Whether to match the box name case-sensitively.",
     ),
+    interactive: bool = Option(
+        False,
+        "--interactive",
+        "-I",
+        help="Interactively select multiple boxes to include.",
+    ),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
     soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
@@ -1229,6 +1235,74 @@ def cli_include(
     from boxyard.cmds import include_box
     from boxyard._models import get_boxyard_meta
     from boxyard.config import get_config
+
+    if interactive:
+        config = get_config(app_state["config_path"])
+        boxyard_meta = get_boxyard_meta(config)
+
+        # Filter to excluded boxes only
+        excluded_boxes = [
+            bm for bm in boxyard_meta.box_metas
+            if not bm.check_included(config)
+        ]
+        excluded_boxes.sort(key=lambda bm: bm.name)
+
+        if not excluded_boxes:
+            typer.echo("No excluded boxes to include.")
+            raise typer.Exit(code=0)
+
+        from boxyard._utils import run_fzf_multi
+
+        disp_terms = []
+        for bm in excluded_boxes:
+            group_tag = f" [{', '.join(bm.groups)}]" if bm.groups else ""
+            disp_terms.append(f"\u25cb {bm.name} ({bm.box_id}){group_tag}")
+
+        selections = run_fzf_multi(
+            terms=[bm.index_name for bm in excluded_boxes],
+            disp_terms=disp_terms,
+        )
+        if not selections:
+            typer.echo("No boxes selected.")
+            raise typer.Exit(code=0)
+
+        # Confirmation
+        typer.echo("Boxes to include:")
+        for _, idx_name in selections:
+            bm = boxyard_meta.by_index_name[idx_name]
+            typer.echo(f"  {bm.name} ({bm.box_id})")
+        if not typer.confirm(f"Include {len(selections)} box(es)?"):
+            raise typer.Exit(code=0)
+
+        errors = []
+        for i, (_, idx_name) in enumerate(selections, 1):
+            bm = boxyard_meta.by_index_name[idx_name]
+            typer.echo(f"[{i}/{len(selections)}] Including {bm.name} ({bm.box_id})...")
+            try:
+                _run_with_lock_handling(
+                    include_box(
+                        config_path=app_state["config_path"],
+                        box_index_name=idx_name,
+                        soft_interruption_enabled=soft_interruption_enabled,
+                    )
+                )
+            except (typer.Exit, SystemExit):
+                raise
+            except Exception as e:
+                typer.echo(f"  Error: {e}", err=True)
+                errors.append((bm.name, str(e)))
+                continue
+
+        if errors:
+            typer.echo(f"\n{len(errors)} error(s):")
+            for name, err in errors:
+                typer.echo(f"  {name}: {err}", err=True)
+
+        if refresh_user_symlinks:
+            from boxyard.cmds import create_user_symlinks
+
+            create_user_symlinks(config_path=app_state["config_path"])
+        return
 
     box_index_name = _get_box_index_name(
         box_name=box_name,
@@ -1293,6 +1367,17 @@ def cli_exclude(
         "-s",
         help="Skip the sync before excluding the box.",
     ),
+    interactive: bool = Option(
+        False,
+        "--interactive",
+        "-I",
+        help="Interactively select multiple boxes to exclude.",
+    ),
+    show_sizes: bool = Option(
+        False,
+        "--show-sizes",
+        help="Show local sizes of each box in interactive mode.",
+    ),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
     soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
@@ -1302,6 +1387,126 @@ def cli_exclude(
     from boxyard.cmds import exclude_box
     from boxyard._models import get_boxyard_meta
     from boxyard.config import get_config
+
+    if interactive:
+        import os
+        from boxyard._models import BoxPart
+        from boxyard.config import StorageType
+
+        config = get_config(app_state["config_path"])
+        boxyard_meta = get_boxyard_meta(config)
+
+        # Filter to included, non-local boxes only
+        eligible_boxes = [
+            bm for bm in boxyard_meta.box_metas
+            if bm.check_included(config)
+            and bm.get_storage_location_config(config).storage_type != StorageType.LOCAL
+        ]
+
+        if show_sizes:
+            # Calculate sizes and sort by size descending
+            def _get_dir_size(path):
+                total = 0
+                for dirpath, _dirnames, filenames in os.walk(path):
+                    for f in filenames:
+                        try:
+                            total += os.path.getsize(os.path.join(dirpath, f))
+                        except OSError:
+                            pass
+                return total
+
+            box_sizes = {}
+            for bm in eligible_boxes:
+                data_path = bm.get_local_part_path(config, BoxPart.DATA)
+                box_sizes[bm.index_name] = _get_dir_size(data_path) if data_path.exists() else 0
+
+            eligible_boxes.sort(key=lambda bm: box_sizes[bm.index_name], reverse=True)
+        else:
+            eligible_boxes.sort(key=lambda bm: bm.name)
+
+        if not eligible_boxes:
+            typer.echo("No eligible boxes to exclude.")
+            raise typer.Exit(code=0)
+
+        from boxyard._utils import run_fzf_multi
+
+        disp_terms = []
+        for bm in eligible_boxes:
+            group_tag = f" [{', '.join(bm.groups)}]" if bm.groups else ""
+            if show_sizes:
+                size_bytes = box_sizes[bm.index_name]
+                size_gb = size_bytes / (1024 ** 3)
+                if size_gb >= 0.1:
+                    size_str = f"[{size_gb:.1f} GB]"
+                else:
+                    size_mb = size_bytes / (1024 ** 2)
+                    size_str = f"[{size_mb:.0f} MB]"
+                disp_terms.append(f"{size_str}  \u25cf {bm.name} ({bm.box_id}){group_tag}")
+            else:
+                disp_terms.append(f"\u25cf {bm.name} ({bm.box_id}){group_tag}")
+
+        selections = run_fzf_multi(
+            terms=[bm.index_name for bm in eligible_boxes],
+            disp_terms=disp_terms,
+        )
+        if not selections:
+            typer.echo("No boxes selected.")
+            raise typer.Exit(code=0)
+
+        # Confirmation
+        typer.echo("Boxes to exclude:")
+        for _, idx_name in selections:
+            bm = boxyard_meta.by_index_name[idx_name]
+            size_info = ""
+            if show_sizes:
+                size_bytes = box_sizes[idx_name]
+                size_gb = size_bytes / (1024 ** 3)
+                if size_gb >= 0.1:
+                    size_info = f"[{size_gb:.1f} GB]  "
+                else:
+                    size_mb = size_bytes / (1024 ** 2)
+                    size_info = f"[{size_mb:.0f} MB]  "
+            typer.echo(f"  {size_info}{bm.name} ({bm.box_id})")
+        if show_sizes:
+            total_bytes = sum(box_sizes[idx_name] for _, idx_name in selections)
+            total_gb = total_bytes / (1024 ** 3)
+            if total_gb >= 0.1:
+                typer.echo(f"Total: {total_gb:.1f} GB")
+            else:
+                typer.echo(f"Total: {total_bytes / (1024 ** 2):.0f} MB")
+        if not typer.confirm(f"Exclude {len(selections)} box(es)?"):
+            raise typer.Exit(code=0)
+
+        errors = []
+        for i, (_, idx_name) in enumerate(selections, 1):
+            bm = boxyard_meta.by_index_name[idx_name]
+            typer.echo(f"[{i}/{len(selections)}] Excluding {bm.name} ({bm.box_id})...")
+            try:
+                _run_with_lock_handling(
+                    exclude_box(
+                        config_path=app_state["config_path"],
+                        box_index_name=idx_name,
+                        skip_sync=skip_sync,
+                        soft_interruption_enabled=soft_interruption_enabled,
+                    )
+                )
+            except (typer.Exit, SystemExit):
+                raise
+            except Exception as e:
+                typer.echo(f"  Error: {e}", err=True)
+                errors.append((bm.name, str(e)))
+                continue
+
+        if errors:
+            typer.echo(f"\n{len(errors)} error(s):")
+            for name, err in errors:
+                typer.echo(f"  {name}: {err}", err=True)
+
+        if refresh_user_symlinks:
+            from boxyard.cmds import create_user_symlinks
+
+            create_user_symlinks(config_path=app_state["config_path"])
+        return
 
     box_index_name = _get_box_index_name(
         box_name=box_name,
