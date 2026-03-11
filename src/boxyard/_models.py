@@ -515,6 +515,8 @@ def create_user_box_group_symlinks(
         if path.is_symlink():
             return
         for p in path.iterdir():
+            if p.name.startswith("."):
+                continue
             if p.is_dir():
                 _inspect_folder(p)
             else:
@@ -524,6 +526,8 @@ def create_user_box_group_symlinks(
                     )
 
     for path in config.user_box_groups_path.glob("*"):
+        if path.name.startswith("."):
+            continue
         if path.is_dir():
             _inspect_folder(path)
         else:
