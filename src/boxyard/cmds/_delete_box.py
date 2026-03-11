@@ -58,7 +58,8 @@ async def delete_box(
     
         # Delete local box
         # Retry rmtree to handle macOS race where Finder recreates .DS_Store mid-delete
-        import time, errno
+        import time
+        import errno
         def _rmtree_retry(path):
             for _attempt in range(3):
                 try:

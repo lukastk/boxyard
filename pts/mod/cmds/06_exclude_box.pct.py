@@ -136,7 +136,8 @@ try:
 
     # Exclude it - delete local data
     # Retry rmtree to handle macOS race where Finder recreates .DS_Store mid-delete
-    import time, errno
+    import time
+    import errno
     _data_path = box_meta.get_local_part_path(config, BoxPart.DATA)
     for _attempt in range(3):
         try:
