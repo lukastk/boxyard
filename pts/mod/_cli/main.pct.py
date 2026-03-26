@@ -217,6 +217,7 @@ def _get_box_index_name(
                         ],
                     )
                     if box_index_name is None:
+                        typer.echo()
                         raise typer.Exit(code=0)
 
     if box_index_name is None:
