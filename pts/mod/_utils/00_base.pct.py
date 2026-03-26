@@ -116,14 +116,12 @@ def run_fzf(terms: list[str], disp_terms: list[str] | None = None):
         result = subprocess.run(
             ["fzf"], input="\n".join(disp_terms), text=True, capture_output=True
         )
+        if result.returncode != 0:
+            return None, None
         res_term = result.stdout.strip()
         term_index = [t.strip() for t in disp_terms].index(res_term)
         sel_term = terms[term_index]
-        # Return the selected string or None if no selection was made
-        if result.returncode != 0:
-            return None, None
-        else:
-            return term_index, sel_term
+        return term_index, sel_term
     except FileNotFoundError:
         raise RuntimeError("fzf is not installed or not found in PATH.")
 

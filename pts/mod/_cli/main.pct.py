@@ -216,6 +216,8 @@ def _get_box_index_name(
                             for r in boxes_with_name
                         ],
                     )
+                    if box_index_name is None:
+                        raise typer.Exit(code=0)
 
     if box_index_name is None:
         from boxyard._utils import get_box_index_name_from_sub_path
