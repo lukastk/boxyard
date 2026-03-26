@@ -217,7 +217,6 @@ def _get_box_index_name(
                         ],
                     )
                     if box_index_name is None:
-                        typer.echo()
                         raise typer.Exit(code=0)
 
     if box_index_name is None:
@@ -2298,7 +2297,7 @@ def cli_path(
         )
         result = tui_app.run()
         if result:
-            typer.echo(result, nl=False)
+            typer.echo(result)
         return
 
     box_index_name = _get_box_index_name(
@@ -2319,24 +2318,24 @@ def cli_path(
     config = get_config(app_state["config_path"])
 
     if path_option == "data":
-        typer.echo(box_meta.get_local_part_path(config, BoxPart.DATA).as_posix(), nl=False)
+        typer.echo(box_meta.get_local_part_path(config, BoxPart.DATA).as_posix())
     elif path_option == "meta":
-        typer.echo(box_meta.get_local_part_path(config, BoxPart.META).as_posix(), nl=False)
+        typer.echo(box_meta.get_local_part_path(config, BoxPart.META).as_posix())
     elif path_option == "conf":
-        typer.echo(box_meta.get_local_part_path(config, BoxPart.CONF).as_posix(), nl=False)
+        typer.echo(box_meta.get_local_part_path(config, BoxPart.CONF).as_posix())
     elif path_option == "root":
-        typer.echo(box_meta.get_local_path(config).as_posix(), nl=False)
+        typer.echo(box_meta.get_local_path(config).as_posix())
     elif path_option == "sync-record-data":
         typer.echo(
-            box_meta.get_local_sync_record_path(config, BoxPart.DATA).as_posix(), nl=False
+            box_meta.get_local_sync_record_path(config, BoxPart.DATA).as_posix()
         )
     elif path_option == "sync-record-meta":
         typer.echo(
-            box_meta.get_local_sync_record_path(config, BoxPart.META).as_posix(), nl=False
+            box_meta.get_local_sync_record_path(config, BoxPart.META).as_posix()
         )
     elif path_option == "sync-record-conf":
         typer.echo(
-            box_meta.get_local_sync_record_path(config, BoxPart.CONF).as_posix(), nl=False
+            box_meta.get_local_sync_record_path(config, BoxPart.CONF).as_posix()
         )
     else:
         typer.echo(f"Invalid path option: {path_option}")
