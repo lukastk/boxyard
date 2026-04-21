@@ -152,6 +152,8 @@ try:
 finally:
     _sync_lock.release()
 
+print(f"Excluded box '{box_meta.name}'")
+
 # %%
 # Should now be included
 assert not box_meta.check_included(config)

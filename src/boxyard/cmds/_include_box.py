@@ -62,3 +62,5 @@ async def include_box(
         )
     finally:
         _sync_lock.release()
+    
+    print(f"Included box '{box_meta.name}'")

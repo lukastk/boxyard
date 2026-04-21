@@ -74,3 +74,5 @@ async def exclude_box(
         box_meta.get_local_sync_record_path(config, BoxPart.DATA).unlink()
     finally:
         _sync_lock.release()
+    
+    print(f"Excluded box '{box_meta.name}'")
