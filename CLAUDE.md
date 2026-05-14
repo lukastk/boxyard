@@ -20,16 +20,16 @@ nbl export               # Export nbs → pts → src/boxyard/
 nbl clean                # Clean notebook outputs
 
 # Testing
-pytest tests/            # Run all tests
-pytest tests/test_00_sync.py -v  # Run specific test file
+pytest src/tests/            # Run all tests
+pytest src/tests/unit/config/test_config_loading.py -v  # Run specific test file
 nbl test                 # Test notebooks execute without errors
 
 # Building
 uv build                 # Create distribution in dist/
 
 # Publishing
-./publish_new_version.sh         # Interactive version bump, tag, and publish to PyPI
-./publish_new_version.sh --test  # Publish to TestPyPI
+uv build                 # Create distribution in dist/
+uv publish               # Upload to PyPI
 ```
 
 ## Architecture
@@ -43,13 +43,13 @@ uv build                 # Create distribution in dist/
 The export pipeline (defined in `nblite.toml`):
 ```
 nbs/mod/*.ipynb → pts/mod/*.pct.py → src/boxyard/*.py
-nbs/tests/*.ipynb → pts/tests/*.pct.py → tests/*.py
+nbs/tests/*.ipynb → pts/tests/*.pct.py → src/tests/*.py
 ```
 
 - `nbs/` - Jupyter notebooks (source of truth)
 - `pts/` - Percent-format Python files (preferred for editing)
 - `src/boxyard/` - Generated Python package (DO NOT EDIT)
-- `tests/` - Generated test files
+- `src/tests/` - Generated test files
 
 Git hook requires: when adding `nbs/X.ipynb`, must also add `pts/X.pct.py`.
 
