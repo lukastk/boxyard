@@ -1,7 +1,3 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
 Boxyard is a Python CLI tool for managing and syncing folders ("boxes") across local and remote storage using rclone. It tracks box metadata, supports group management, and provides bidirectional sync with conflict detection.
