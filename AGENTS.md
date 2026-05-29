@@ -112,7 +112,9 @@ result;
 - **`src/boxyard/config.py`** - Configuration: `StorageConfig`, `Config`
 - **`src/boxyard/_cli/main.py`** - CLI commands (typer-based)
 - **`src/boxyard/cmds/`** - Command implementations (init, new_box, sync_box, etc.)
-- **`src/boxyard/_utils/`** - Utilities (rclone wrapper, sync helpers, async throttling)
+- **`src/boxyard/_remote_index.py`** - Remote-index caching
+- **`src/boxyard/_tombstones.py`** - Tombstone tracking for delete propagation
+- **`src/boxyard/_utils/`** - Utilities (rclone wrapper, sync helpers, async locking, logical-expression group filters)
 
 ### Key Concepts
 
