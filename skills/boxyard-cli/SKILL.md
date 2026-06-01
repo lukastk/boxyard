@@ -9,6 +9,10 @@ Use this skill when the user wants to **use** Boxyard, not develop Boxyard itsel
 
 Boxyard is a Python CLI for managing and syncing folders ("boxes") across local and remote storage using rclone or local storage. A box has data, metadata, optional sync configuration, group membership, and sync records.
 
+## Where generated data should live
+
+Generated data — including large outputs — generally belongs **inside** the box it relates to, not in some sibling directory chosen to dodge syncing. Do not move heavy outputs out of a box to keep it "small". The whole point of Boxyard is that syncing makes large boxes comfortable to live with: anything you don't want pushed can be excluded from sync via the box's `conf/.rclone_exclude` / `conf/.rclone_filters` (see "Per-box sync configuration"), or the box itself can be excluded locally with `boxyard exclude`. Keep data colocated with its box and control sync with filters — don't fragment it to avoid sync.
+
 ## Before running commands
 
 - If operating from this repository checkout, prefer:
