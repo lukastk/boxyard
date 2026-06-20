@@ -19,13 +19,129 @@ import boxyard._utils.rclone as this_module
 
 # %%
 #|export
+import os
 import shlex
 import json
+import shutil
 from enum import Enum
 from boxyard import const
 from pathlib import Path
 
 from boxyard._utils import run_cmd_async
+
+# %% [markdown]
+# ## Resolving the rclone binary
+#
+# boxyard shells out to `rclone`. In minimal / non-interactive contexts (`ssh host
+# 'boxyard ...'`, cron, agents) the caller's PATH often omits the dir rclone lives in,
+# so a bare `"rclone"` dies with an opaque `FileNotFoundError`. We resolve the binary
+# once, robustly, and independently of the caller's PATH.
+
+# %%
+#|exporti
+# Known locations to search for the rclone binary when it is not on PATH. Covers
+# Homebrew (Apple Silicon + Intel), the macOS/Linux system dirs, and snap installs.
+_RCLONE_FALLBACK_DIRS = [
+    "/opt/homebrew/bin",  # Homebrew on Apple Silicon
+    "/usr/local/bin",  # Homebrew on Intel macs / common manual installs
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+    "/snap/bin",  # snap-installed rclone on Linux
+]
+
+# Cache of the resolved rclone binary path (resolved once per process).
+_rclone_binary: str | None = None
+
+
+def _read_rclone_path_from_config() -> str | None:
+    """Read the optional ``rclone_path`` key from the boxyard config.toml, if present.
+
+    Reads the raw TOML directly (not via ``get_config``) so that resolving the rclone
+    binary never depends on the rest of the config being valid.
+    """
+    import toml
+
+    config_path = Path(
+        os.environ.get(const.ENV_VAR_BOXYARD_CONFIG_PATH, const.DEFAULT_CONFIG_PATH)
+    ).expanduser()
+    if not config_path.is_file():
+        return None
+    rclone_path = toml.load(config_path).get("rclone_path")
+    return str(Path(rclone_path).expanduser()) if rclone_path else None
+
+
+def _is_executable(path: Path) -> bool:
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def _resolve_rclone_binary() -> str:
+    """Resolve the rclone binary path, independent of the caller's PATH.
+
+    Resolution order:
+      1. ``BOXYARD_RCLONE`` env var (explicit full path)
+      2. ``rclone_path`` key in the boxyard config.toml, if present
+      3. ``shutil.which("rclone")`` (the caller's PATH)
+      4. Known fallback install dirs (Homebrew, system dirs, snap)
+
+    Raises a loud, actionable ``RuntimeError`` naming every location searched if rclone
+    cannot be found — never a bare ``FileNotFoundError`` at exec time.
+    """
+    searched: list[str] = []
+
+    # 1. Explicit env var override.
+    env_path = os.environ.get(const.ENV_VAR_BOXYARD_RCLONE)
+    if env_path:
+        if _is_executable(Path(env_path).expanduser()):
+            return str(Path(env_path).expanduser())
+        raise RuntimeError(
+            f"{const.ENV_VAR_BOXYARD_RCLONE} is set to '{env_path}', but no executable "
+            f"rclone binary exists there. Fix the path or unset {const.ENV_VAR_BOXYARD_RCLONE}."
+        )
+    searched.append(f"${const.ENV_VAR_BOXYARD_RCLONE} (env var, unset)")
+
+    # 2. `rclone_path` key in config.toml.
+    config_path = _read_rclone_path_from_config()
+    if config_path:
+        if _is_executable(Path(config_path)):
+            return config_path
+        raise RuntimeError(
+            f"`rclone_path` in the boxyard config.toml points to '{config_path}', but "
+            f"no executable rclone binary exists there. Fix or remove the `rclone_path` key."
+        )
+    searched.append("`rclone_path` in config.toml (unset)")
+
+    # 3. The caller's PATH.
+    which = shutil.which("rclone")
+    if which:
+        return which
+    searched.append("PATH (via shutil.which)")
+
+    # 4. Known fallback install dirs.
+    for d in _RCLONE_FALLBACK_DIRS:
+        candidate = Path(d) / "rclone"
+        if _is_executable(candidate):
+            return str(candidate)
+        searched.append(str(candidate))
+
+    searched_str = "\n  - ".join(searched)
+    raise RuntimeError(
+        "boxyard could not find the `rclone` binary. Searched:\n  - "
+        + searched_str
+        + f"\n\nInstall rclone (https://rclone.org/install/), or set "
+        f"{const.ENV_VAR_BOXYARD_RCLONE} to its full path "
+        f"(e.g. {const.ENV_VAR_BOXYARD_RCLONE}=/opt/homebrew/bin/rclone), or add a "
+        f"`rclone_path` key to your boxyard config.toml."
+    )
+
+
+def get_rclone_binary() -> str:
+    """Return the resolved rclone binary path, resolving (and caching) it on first use."""
+    global _rclone_binary
+    if _rclone_binary is None:
+        _rclone_binary = _resolve_rclone_binary()
+    return _rclone_binary
 
 # %% [markdown]
 # Set up testing environment
@@ -85,7 +201,7 @@ def _rclone_cmd_helper(
     source_spec = f"{source}:{source_path}" if source else source_path
     dest_spec = f"{dest}:{dest_path}" if dest else dest_path
     cmd = [
-        "rclone",
+        get_rclone_binary(),
         cmd_name,
         "--config",
         rclone_config_path,
@@ -244,7 +360,7 @@ async def rclone_copyto(
 ) -> bool:
     source_spec = f"{source}:{source_path}" if source else source_path
     dest_spec = f"{dest}:{dest_path}" if dest else dest_path
-    cmd = ["rclone", "copyto", "--config", rclone_config_path, source_spec, dest_spec]
+    cmd = [get_rclone_binary(), "copyto", "--config", rclone_config_path, source_spec, dest_spec]
     if progress:
         cmd.append("--progress")
     if not return_command:
@@ -436,7 +552,7 @@ async def rclone_mkdir(
     Create a directory in rclone. Will not fail if the directory already exists. If parent directories are missing, they will be created.
     """
     source_str = f"{source}:{source_path}" if source else source_path
-    cmd = ["rclone", "mkdir", "--config", rclone_config_path, source_str]
+    cmd = [get_rclone_binary(), "mkdir", "--config", rclone_config_path, source_str]
     ret_code, stdout, stderr = await run_cmd_async(cmd)
     if ret_code != 0:
         raise Exception(stderr)
@@ -459,7 +575,7 @@ async def rclone_lsjson(
     filter: list[str] = [],
 ) -> dict | None:
     source_str = f"{source}:{source_path}" if source else source_path
-    cmd = ["rclone", "lsjson", "--config", rclone_config_path, source_str]
+    cmd = [get_rclone_binary(), "lsjson", "--config", rclone_config_path, source_str]
     if dirs_only:
         cmd.append("--dirs-only")
     if files_only:
@@ -531,7 +647,7 @@ async def rclone_purge(
     source_path: str,
 ) -> bool:
     source_str = f"{source}:{source_path}" if source else source_path
-    cmd = ["rclone", "purge", "--config", rclone_config_path, source_str]
+    cmd = [get_rclone_binary(), "purge", "--config", rclone_config_path, source_str]
     ret_code, stdout, stderr = await run_cmd_async(cmd)
     return ret_code == 0
 
@@ -556,7 +672,7 @@ async def rclone_cat(
     source_path: str,
 ) -> tuple[bool, str | None]:
     source_str = f"{source}:{source_path}" if source else source_path
-    cmd = ["rclone", "cat", "--config", rclone_config_path, source_str]
+    cmd = [get_rclone_binary(), "cat", "--config", rclone_config_path, source_str]
     ret_code, stdout, stderr = await run_cmd_async(cmd)
     if ret_code == 0:
         return True, stdout
@@ -606,7 +722,7 @@ async def rclone_move(
 ) -> tuple[bool, str | None]:
     source_str = f"{source}:{source_path}" if source else source_path
     dest_str = f"{dest}:{dest_path}" if dest else dest_path
-    cmd = ["rclone", "move", "--config", rclone_config_path, source_str, dest_str]
+    cmd = [get_rclone_binary(), "move", "--config", rclone_config_path, source_str, dest_str]
     ret_code, stdout, stderr = await run_cmd_async(cmd)
     if ret_code == 0:
         return True, stdout
@@ -648,7 +764,7 @@ async def rclone_moveto(
     """
     source_str = f"{source}:{source_path}" if source else source_path
     dest_str = f"{dest}:{dest_path}" if dest else dest_path
-    cmd = ["rclone", "moveto", "--config", rclone_config_path, source_str, dest_str]
+    cmd = [get_rclone_binary(), "moveto", "--config", rclone_config_path, source_str, dest_str]
     ret_code, stdout, stderr = await run_cmd_async(cmd)
     if ret_code == 0:
         return True, stdout
@@ -737,7 +853,7 @@ async def rclone_delete(
     Delete a single remote file.
     """
     dest_str = f"{dest}:{dest_path}" if dest else dest_path
-    cmd = ["rclone", "deletefile", "--config", rclone_config_path, dest_str]
+    cmd = [get_rclone_binary(), "deletefile", "--config", rclone_config_path, dest_str]
     ret_code, stdout, stderr = await run_cmd_async(cmd)
     return ret_code == 0
 

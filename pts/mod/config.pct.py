@@ -93,6 +93,10 @@ class Config(const.StrictModel):
     box_subid_length: int
     max_concurrent_rclone_ops: int
 
+    # Optional explicit path to the rclone binary. If unset, boxyard resolves rclone
+    # via the BOXYARD_RCLONE env var, PATH, then known install dirs (see _utils.rclone).
+    rclone_path: Path | None = None
+
     # Parent-child settings
     single_parent: bool = False  # If True, each box can have at most one parent
 
@@ -131,6 +135,8 @@ class Config(const.StrictModel):
         self.boxyard_data_path = Path(self.boxyard_data_path).expanduser()
         self.user_boxes_path = Path(self.user_boxes_path).expanduser()
         self.user_box_groups_path = Path(self.user_box_groups_path).expanduser()
+        if self.rclone_path is not None:
+            self.rclone_path = Path(self.rclone_path).expanduser()
 
         import re
 

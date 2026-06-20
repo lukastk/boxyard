@@ -842,7 +842,7 @@ class TestRcloneMkdir:
 
                 mock_run.assert_called_once()
                 cmd = mock_run.call_args[0][0]
-                assert cmd[0] == "rclone"
+                assert Path(cmd[0]).name == "rclone"  # resolved full path to the binary
                 assert cmd[1] == "mkdir"
                 assert "--config" in cmd
                 assert "/tmp/rclone.conf" in cmd
@@ -1020,7 +1020,7 @@ class TestRclonePurge:
                 assert result is True
                 mock_run.assert_called_once()
                 cmd = mock_run.call_args[0][0]
-                assert cmd[0] == "rclone"
+                assert Path(cmd[0]).name == "rclone"  # resolved full path to the binary
                 assert cmd[1] == "purge"
                 assert "--config" in cmd
                 assert "remote:bucket/dir" in cmd
@@ -1091,7 +1091,7 @@ class TestRcloneCat:
                 assert success is True
                 assert content == "file contents"
                 cmd = mock_run.call_args[0][0]
-                assert cmd[0] == "rclone"
+                assert Path(cmd[0]).name == "rclone"  # resolved full path to the binary
                 assert cmd[1] == "cat"
                 assert "--config" in cmd
                 assert "remote:bucket/file.txt" in cmd
@@ -1165,7 +1165,7 @@ class TestRcloneMove:
 
                 assert success is True
                 cmd = mock_run.call_args[0][0]
-                assert cmd[0] == "rclone"
+                assert Path(cmd[0]).name == "rclone"  # resolved full path to the binary
                 assert cmd[1] == "move"
                 assert "--config" in cmd
                 assert "remote1:bucket1/file.txt" in cmd

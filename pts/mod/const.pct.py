@@ -91,6 +91,7 @@ for i in range(2, 7):
 #|export
 ENV_VAR_BOXYARD_CONFIG_PATH = "BOXYARD_CONFIG_PATH"
 ENV_VAR_DEFAULT_BOX_GROUPS = "DEFAULT_BOX_GROUPS"
+ENV_VAR_BOXYARD_RCLONE = "BOXYARD_RCLONE"  # explicit full path to the rclone binary
 
 # %% [markdown]
 # Misc
