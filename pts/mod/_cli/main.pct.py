@@ -2787,13 +2787,13 @@ def cli_doctor(
     no_remote: bool = Option(
         False,
         "--no-remote",
-        help="Skip checks that access remote storage (the stale-meta-mirror check), so doctor works offline.",
+        help="Skip checks that access remote storage (stale-meta-mirror and tombstoned-box), so doctor works offline.",
     ),
     storage_locations: list[str] | None = Option(
         None,
         "--storage-location",
         "-s",
-        help="Restrict the remote stale-meta-mirror check to the given storage location(s). Local checks always cover all storage locations.",
+        help="Restrict the remote checks to the given storage location(s). Local checks always cover all storage locations.",
     ),
     output_format: Literal["text", "json"] = Option(
         "text", "--output-format", "-o", help="The format of the output."
@@ -2804,8 +2804,10 @@ def cli_doctor(
 
     Checks: unregistered/malformed folders in the user boxes path, broken or
     duplicated registrations, a stale boxyard_meta.json cache, dangling group
-    symlinks, orphaned sync records, remote boxmetas missing from the local
-    mirror (unless --no-remote), and boxes referencing unknown parents.
+    symlinks and debris in the group tree, orphaned sync records, interrupted
+    syncs, leftovers from removed storage locations, rclone configuration,
+    remote boxmetas missing from the local mirror and boxes tombstoned on the
+    remote (both unless --no-remote), and boxes referencing unknown parents.
 
     Never mutates or auto-fixes anything. Exit code is 0 when healthy and 1
     when there is at least one finding, so it can be asserted by cron jobs and

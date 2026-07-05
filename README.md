@@ -96,8 +96,13 @@ Checks:
 | `duplicate-box-id` | The same box id registered more than once |
 | `stale-cache` | `boxyard_meta.json` disagreeing with a fresh scan of `local_store` |
 | `dangling-symlinks` | Group symlinks whose targets don't exist |
+| `group-tree-debris` | Real (non-symlink) files in the group tree, which make `create-user-symlinks` raise |
 | `orphaned-sync-records` | `sync_records/<index>/` with no matching registration |
+| `interrupted-sync` | Local sync records left incomplete by an interrupted sync (the local copy may be incomplete), or that fail to parse |
+| `unknown-storage-location` | `local_store` dirs and remote-index caches left over from removed/renamed storage locations |
+| `rclone-config` | Unresolvable rclone binary, rclone storage locations with no remote in `boxyard_rclone.conf`, or a missing default exclude file |
 | `stale-meta-mirror` | Remote boxmetas not mirrored locally (what `sync-missing-meta` would fetch); skipped with `--no-remote` |
+| `tombstoned-box` | Locally registered boxes that were deleted (tombstoned) on the remote from another machine; skipped with `--no-remote` |
 | `tree-orphans` | Boxmeta `parents` referencing unknown box ids |
 
 Every finding comes with a one-line hint on how to fix it.

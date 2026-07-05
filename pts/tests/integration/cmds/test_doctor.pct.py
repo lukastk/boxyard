@@ -267,6 +267,173 @@ def test_doctor_dangling_symlinks(temp_boxyard):
 # %%
 #|export
 @pytest.mark.integration
+def test_doctor_group_tree_debris(temp_boxyard):
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    box1 = new_box(config_path=config_path, box_name="linked-box", storage_location=remote_name)
+
+    group_dir = config.user_box_groups_path / "all"
+    group_dir.mkdir(parents=True)
+    (group_dir / "good-link").symlink_to(config.user_boxes_path / box1)
+    (group_dir / "debris.txt").write_text("debris")
+    (group_dir / ".hidden").write_text("ignored")  # hidden entries are skipped
+
+    report = _doctor(config_path, check_remote=False)
+    findings = _findings(report, "group-tree-debris")
+    assert len(findings) == 1
+    assert findings[0]["path"] == str(group_dir / "debris.txt")
+    assert "create-user-symlinks" in findings[0]["hint"]
+
+# %%
+#|export
+@pytest.mark.integration
+def test_doctor_interrupted_sync(temp_boxyard):
+    from boxyard._models import SyncRecord
+
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    box1 = new_box(config_path=config_path, box_name="synced-box", storage_location=remote_name)
+    asyncio.run(sync_box(config_path=config_path, box_index_name=box1))
+
+    records_dir = config.boxyard_data_path / const.SYNC_RECORDS_REL_PATH
+
+    # Rewrite the data record as incomplete (interrupted sync) and corrupt the meta record
+    (records_dir / box1 / "data.rec").write_text(
+        SyncRecord.create(sync_complete=False, syncer_hostname="test-host").model_dump_json()
+    )
+    (records_dir / box1 / "meta.rec").write_text("this is not json")
+
+    # An incomplete record in an ORPHANED record dir must not be double-reported
+    orphan_dir = records_dir / "20990101_eeeeee__ghost-box"
+    orphan_dir.mkdir(parents=True)
+    (orphan_dir / "data.rec").write_text(
+        SyncRecord.create(sync_complete=False, syncer_hostname="test-host").model_dump_json()
+    )
+
+    report = _doctor(config_path, check_remote=False)
+    findings = _findings(report, "interrupted-sync")
+    assert len(findings) == 2
+    assert any(
+        f["index_name"] == box1 and "was interrupted" in f["message"] for f in findings
+    )
+    assert any(
+        f["index_name"] == box1 and "fails to parse" in f["message"] for f in findings
+    )
+    assert not any(f["index_name"] == "20990101_eeeeee__ghost-box" for f in findings)
+    # The orphaned dir is still reported by its own check
+    assert any(
+        f["path"] == str(orphan_dir) for f in _findings(report, "orphaned-sync-records")
+    )
+
+# %%
+#|export
+@pytest.mark.integration
+def test_doctor_unknown_storage_location(temp_boxyard):
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    new_box(config_path=config_path, box_name="a-box", storage_location=remote_name)
+
+    (config.local_store_path / "ghost-storage").mkdir()
+    (config.local_store_path / "stray.txt").write_text("stray")
+    config.remote_indexes_path.mkdir(parents=True, exist_ok=True)
+    (config.remote_indexes_path / "ghost-storage.json").write_text("{}")
+
+    report = _doctor(config_path, check_remote=False)
+    findings = _findings(report, "unknown-storage-location")
+    paths = {f["path"] for f in findings}
+    assert str(config.local_store_path / "ghost-storage") in paths
+    assert str(config.local_store_path / "stray.txt") in paths
+    assert str(config.remote_indexes_path / "ghost-storage.json") in paths
+    # Configured storage locations are not flagged
+    assert not any(remote_name in p for p in paths)
+
+# %%
+#|export
+@pytest.mark.integration
+def test_doctor_rclone_config(temp_boxyard):
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    new_box(config_path=config_path, box_name="a-box", storage_location=remote_name)
+
+    # A healthy yard has no rclone-config findings
+    report = _doctor(config_path, check_remote=False)
+    assert not _findings(report, "rclone-config")
+
+    # An rclone-type storage location with no matching remote in boxyard_rclone.conf
+    config_dump = toml.load(config_path)
+    config_dump["storage_locations"]["phantom"] = {
+        "storage_type": "rclone",
+        "store_path": "phantom-store",
+    }
+    config_path.write_text(toml.dumps(config_dump))
+
+    report = _doctor(config_path, check_remote=False)
+    messages = [f["message"] for f in _findings(report, "rclone-config")]
+    assert any("no [phantom] remote" in m for m in messages)
+    assert not any(f"no [{remote_name}] remote" in m for m in messages)
+
+    # A missing default exclude file breaks data syncs
+    config.default_rclone_exclude_path.unlink()
+    report = _doctor(config_path, check_remote=False)
+    messages = [f["message"] for f in _findings(report, "rclone-config")]
+    assert any("Default exclude file" in m for m in messages)
+
+# %%
+#|export
+@pytest.mark.integration
+def test_doctor_rclone_binary_unresolvable(temp_boxyard, monkeypatch):
+    """An unresolvable rclone binary is a finding plus skipped remote checks, not a crash."""
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    new_box(config_path=config_path, box_name="a-box", storage_location=remote_name)
+
+    def _raise():
+        raise RuntimeError("rclone not found (simulated)")
+
+    monkeypatch.setattr("boxyard._utils.rclone.get_rclone_binary", _raise)
+
+    report = _doctor(config_path)  # check_remote=True must not crash
+    messages = [f["message"] for f in _findings(report, "rclone-config")]
+    assert any("could not be resolved" in m for m in messages)
+    assert report["checks"]["stale-meta-mirror"]["skipped"]
+    assert report["checks"]["tombstoned-box"]["skipped"]
+    assert not report["healthy"]
+
+# %%
+#|export
+@pytest.mark.integration
+def test_doctor_tombstoned_box(temp_boxyard):
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    box1 = new_box(config_path=config_path, box_name="doomed-box", storage_location=remote_name)
+    asyncio.run(sync_box(config_path=config_path, box_index_name=box1))
+    box_id = box1.split("__", 1)[0]
+
+    tombstones_dir = remote_rclone_path / "boxyard" / "tombstones"
+    tombstones_dir.mkdir(parents=True)
+    (tombstones_dir / f"{box_id}.json").write_text(
+        json.dumps(
+            {
+                "box_id": box_id,
+                "deleted_at_utc": "2099-01-01T00:00:00+00:00",
+                "deleted_by_hostname": "other-machine",
+                "last_known_name": "doomed-box",
+            }
+        )
+    )
+    # A tombstone for a box that was never registered here causes no finding
+    (tombstones_dir / "20990101_xxxxxx.json").write_text("{}")
+
+    report = _doctor(config_path)
+    findings = _findings(report, "tombstoned-box")
+    assert len(findings) == 1
+    assert findings[0]["index_name"] == box1
+    assert findings[0]["box_id"] == box_id
+    assert "boxyard delete" in findings[0]["hint"]
+
+# %%
+#|export
+@pytest.mark.integration
 def test_doctor_orphaned_sync_records(temp_boxyard):
     remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
 
@@ -317,9 +484,10 @@ def test_doctor_stale_meta_mirror(temp_boxyard):
     assert findings[0]["missing_index_names"] == [foreign_index_name]
     assert "sync-missing-meta" in findings[0]["hint"]
 
-    # Skippable for offline use
+    # Skippable for offline use (both remote checks)
     report = _doctor(config_path, check_remote=False)
     assert report["checks"]["stale-meta-mirror"]["skipped"]
+    assert report["checks"]["tombstoned-box"]["skipped"]
     assert not _findings(report, "stale-meta-mirror")
     assert report["healthy"]
 

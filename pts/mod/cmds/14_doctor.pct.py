@@ -24,10 +24,21 @@
 # 4. **duplicate-box-id** — the same box id registered more than once.
 # 5. **stale-cache** — `boxyard_meta.json` disagrees with a fresh scan of `local_store`.
 # 6. **dangling-symlinks** — entries under `user_box_groups_path` whose targets don't exist.
-# 7. **orphaned-sync-records** — `sync_records/<index>/` with no matching local registration.
-# 8. **stale-meta-mirror** — per rclone storage location, remote boxmetas not present
-#    locally (what `sync-missing-meta` would fetch). Skippable so doctor works offline.
-# 9. **tree-orphans** — boxmeta parents referencing unknown box ids.
+# 7. **group-tree-debris** — real (non-symlink) files under `user_box_groups_path`,
+#    which make `create_user_symlinks` raise and thereby break most mutating commands.
+# 8. **orphaned-sync-records** — `sync_records/<index>/` with no matching local registration.
+# 9. **interrupted-sync** — local sync records with `sync_complete: false` (an
+#    interrupted sync; the local copy may be incomplete) or that fail to parse.
+# 10. **unknown-storage-location** — `local_store/` dirs and remote-index caches that
+#     match no configured storage location (left over from a removed/renamed one).
+# 11. **rclone-config** — the rclone binary must be resolvable, every rclone-type
+#     storage location needs a matching remote in `boxyard_rclone.conf`, and the
+#     default exclude file must exist.
+# 12. **stale-meta-mirror** — per rclone storage location, remote boxmetas not present
+#     locally (what `sync-missing-meta` would fetch). Skippable so doctor works offline.
+# 13. **tombstoned-box** — locally registered boxes whose id is tombstoned on the
+#     remote (deleted from another machine). Skippable, like stale-meta-mirror.
+# 14. **tree-orphans** — boxmeta parents referencing unknown box ids.
 #
 # Doctor never mutates or auto-fixes anything.
 
@@ -60,8 +71,13 @@ DOCTOR_CHECK_NAMES = [
     "duplicate-box-id",
     "stale-cache",
     "dangling-symlinks",
+    "group-tree-debris",
     "orphaned-sync-records",
+    "interrupted-sync",
+    "unknown-storage-location",
+    "rclone-config",
     "stale-meta-mirror",
+    "tombstoned-box",
     "tree-orphans",
 ]
 
@@ -171,9 +187,9 @@ async def run_doctor(
     Args:
         config_path: Path to the boxyard config file.
         check_remote: If False, skip checks that access remote storage
-            (the stale-meta-mirror check), so doctor works offline.
-        storage_locations: If given, restrict the stale-meta-mirror check to
-            these storage locations. Local checks always cover all storage
+            (stale-meta-mirror and tombstoned-box), so doctor works offline.
+        storage_locations: If given, restrict the remote checks to these
+            storage locations. Local checks always cover all storage
             locations.
 
     Returns:
@@ -235,6 +251,22 @@ _dangling.symlink_to(_test_config.user_boxes_path / "does-not-exist")
     parents=True
 )
 
+# A real (non-symlink) file in the group tree
+(_test_config.user_box_groups_path / "all" / "debris.txt").write_text("debris")
+
+# An interrupted sync: rewrite a synced box's data sync record as incomplete
+from boxyard._models import SyncRecord as _SyncRecord
+
+_incomplete_rec_path = (
+    _test_config.boxyard_data_path / const.SYNC_RECORDS_REL_PATH / box_index_name1 / "data.rec"
+)
+_incomplete_rec_path.write_text(
+    _SyncRecord.create(sync_complete=False, syncer_hostname="test-host").model_dump_json()
+)
+
+# A local_store dir for a storage location that is not in the config
+(_test_config.local_store_path / "ghost-storage").mkdir(parents=True)
+
 # A remote box that is not mirrored locally (as if created by another machine)
 import toml as _toml
 
@@ -243,6 +275,25 @@ _foreign_box_path = remote_rclone_path / "boxyard" / const.REMOTE_BOXES_REL_PATH
 _foreign_box_path.mkdir(parents=True)
 (_foreign_box_path / const.BOX_METAFILE_REL_PATH).write_text(
     _toml.dumps({"storage_location": "my_remote", "creator_hostname": "other-machine", "groups": [], "parents": []})
+)
+
+# A tombstone on the remote for a box that is still registered locally
+# (as if the box was deleted from another machine)
+import json as _json
+from datetime import datetime as _datetime, timezone as _timezone
+
+_tombstoned_box_id = box_index_name2.split("__", 1)[0]
+_tombstones_path = remote_rclone_path / "boxyard" / "tombstones"
+_tombstones_path.mkdir(parents=True)
+(_tombstones_path / f"{_tombstoned_box_id}.json").write_text(
+    _json.dumps(
+        {
+            "box_id": _tombstoned_box_id,
+            "deleted_at_utc": _datetime.now(_timezone.utc).isoformat(),
+            "deleted_by_hostname": "other-machine",
+            "last_known_name": "doctor-test-box2",
+        }
+    )
 )
 
 # %% [markdown]
@@ -472,16 +523,20 @@ else:
                 )
 
 # %% [markdown]
-# ## Check: `dangling-symlinks`
+# ## Checks: `dangling-symlinks` and `group-tree-debris`
 #
-# Symlinks under `user_box_groups_path` whose targets don't exist.
+# One walk over `user_box_groups_path`: symlinks whose targets don't exist, and
+# real (non-symlink) files, which make `create_user_symlinks` raise — breaking
+# every command that refreshes the symlinks (most mutating commands).
 
 # %%
 #|export
-def _check_symlinks(path: Path) -> None:
+def _walk_group_tree(path: Path) -> None:
     # Explicit walk that never descends into symlinks — Path.rglob follows
     # directory symlinks on Python < 3.13, which would scan inside every box.
     for entry in sorted(path.iterdir(), key=lambda p: p.name):
+        if entry.name.startswith("."):
+            continue
         if entry.is_symlink():
             if not entry.exists():
                 _add_finding(
@@ -491,11 +546,18 @@ def _check_symlinks(path: Path) -> None:
                     path=entry,
                 )
         elif entry.is_dir():
-            _check_symlinks(entry)
+            _walk_group_tree(entry)
+        else:
+            _add_finding(
+                "group-tree-debris",
+                f"'{entry}' in the user box groups path is a real file, not a symlink",
+                "`boxyard create-user-symlinks` (called by most mutating commands) refuses to run while real files are in the group tree; move or delete the file.",
+                path=entry,
+            )
 
 
 if config.user_box_groups_path.is_dir():
-    _check_symlinks(config.user_box_groups_path)
+    _walk_group_tree(config.user_box_groups_path)
 
 # %% [markdown]
 # ## Check: `orphaned-sync-records`
@@ -521,19 +583,179 @@ if _sync_records_path.is_dir():
             )
 
 # %% [markdown]
-# ## Check: `stale-meta-mirror`
+# ## Check: `interrupted-sync`
 #
-# Per rclone storage location, list the remote boxmetas and report the ones not
-# present in the local meta mirror — exactly what `boxyard sync-missing-meta`
-# would fetch. A machine where this never runs silently hides newer boxes from
-# `boxyard list` and everything built on it. Skipped when `check_remote` is
-# False so doctor works offline. A failure to list the remote is reported
-# loudly as a finding rather than being treated as "no boxes".
+# Local sync records with `sync_complete: false` mean a sync was interrupted —
+# an interrupted pull leaves the *local* copy potentially incomplete
+# (`SYNC_FROM_REMOTE_INCOMPLETE`). Only `box-status` reveals this today, and it
+# needs remote access; doctor catches it offline by reading the record files.
+# Records that fail to parse are flagged too. Record dirs without a matching
+# registration are skipped — those are already `orphaned-sync-records` findings.
 
 # %%
 #|export
-if not check_remote:
+from boxyard._models import SyncRecord
+
+if _sync_records_path.is_dir():
+    for entry in sorted(_sync_records_path.iterdir(), key=lambda p: p.name):
+        if entry.name.startswith(".") or not entry.is_dir():
+            continue
+        if entry.name not in all_registration_dirs:
+            continue  # already reported as orphaned-sync-records
+        for rec_path in sorted(entry.glob("*.rec")):
+            try:
+                rec = SyncRecord.model_validate_json(rec_path.read_text())
+            except Exception as e:
+                _add_finding(
+                    "interrupted-sync",
+                    f"Sync record '{rec_path}' fails to parse: {e}",
+                    f"Inspect the box with `boxyard box-status -r '{entry.name}'`; a fresh `boxyard sync` rewrites the record.",
+                    path=rec_path,
+                    index_name=entry.name,
+                )
+                continue
+            if not rec.sync_complete:
+                _add_finding(
+                    "interrupted-sync",
+                    f"A {rec_path.stem} sync of '{entry.name}' was interrupted and never completed (record from host '{rec.syncer_hostname}' at {rec.timestamp})",
+                    f"The local copy may be incomplete. Inspect with `boxyard box-status -r '{entry.name}'` and re-run `boxyard sync -r '{entry.name}'` to recover.",
+                    path=rec_path,
+                    index_name=entry.name,
+                )
+
+# %% [markdown]
+# ## Check: `unknown-storage-location`
+#
+# Directories under `local_store/` (and remote-index cache files) that match no
+# configured storage location — left over when a storage location is removed or
+# renamed in the config. Invisible to every other command, since they all
+# iterate the configured storage locations.
+
+# %%
+#|export
+if config.local_store_path.is_dir():
+    for entry in sorted(config.local_store_path.iterdir(), key=lambda p: p.name):
+        if entry.name.startswith("."):
+            continue
+        if not entry.is_dir():
+            _add_finding(
+                "unknown-storage-location",
+                f"Stray file in the local store root: '{entry}'",
+                "Only per-storage-location directories belong in the local store root; move or delete the file.",
+                path=entry,
+            )
+        elif entry.name not in config.storage_locations:
+            _add_finding(
+                "unknown-storage-location",
+                f"Local store contains '{entry.name}' but no such storage location is configured",
+                "Left over from a removed or renamed storage location; delete the directory, or re-add the storage location to the config.",
+                path=entry,
+            )
+
+if config.remote_indexes_path.is_dir():
+    for entry in sorted(config.remote_indexes_path.iterdir(), key=lambda p: p.name):
+        if entry.suffix == ".json" and entry.stem not in config.storage_locations:
+            _add_finding(
+                "unknown-storage-location",
+                f"Remote index cache '{entry.name}' matches no configured storage location",
+                "Left over from a removed or renamed storage location; delete the file.",
+                path=entry,
+            )
+
+# %% [markdown]
+# ## Check: `rclone-config`
+#
+# Environment/configuration prerequisites for syncing: the rclone binary must be
+# resolvable, every rclone-type storage location needs a matching remote section
+# in boxyard's own rclone config, and the default exclude file must exist (data
+# syncs of boxes without their own `conf/.rclone_exclude` pass it to rclone
+# unconditionally). `_rclone_available` is reused below: when the binary is
+# unresolvable the remote checks are skipped instead of crashing doctor.
+
+# %%
+#|export
+_rclone_available = True
+try:
+    from boxyard._utils.rclone import get_rclone_binary
+
+    get_rclone_binary()
+except Exception as e:
+    _rclone_available = False
+    _add_finding(
+        "rclone-config",
+        f"The rclone binary could not be resolved: {e}",
+        f"Install rclone, or point boxyard at it via the {const.ENV_VAR_BOXYARD_RCLONE} env var or the `rclone_path` config key.",
+    )
+
+_rclone_sl_names = [
+    sl_name
+    for sl_name, sl_config in config.storage_locations.items()
+    if sl_config.storage_type == StorageType.RCLONE
+]
+
+if _rclone_sl_names:
+    if not config.rclone_config_path.is_file():
+        _add_finding(
+            "rclone-config",
+            f"rclone config '{config.rclone_config_path}' does not exist, but there are rclone storage locations: {', '.join(_rclone_sl_names)}",
+            "Boxyard uses its own rclone config (not ~/.config/rclone); recreate it with a remote per rclone storage location.",
+            path=config.rclone_config_path,
+        )
+    else:
+        import configparser
+
+        _rclone_conf_parser = configparser.ConfigParser(interpolation=None, strict=False)
+        try:
+            _rclone_conf_parser.read_string(config.rclone_config_path.read_text())
+        except configparser.Error as e:
+            _add_finding(
+                "rclone-config",
+                f"rclone config '{config.rclone_config_path}' fails to parse: {e}",
+                "Fix the file; every rclone operation depends on it.",
+                path=config.rclone_config_path,
+            )
+        else:
+            for sl_name in _rclone_sl_names:
+                if sl_name not in _rclone_conf_parser.sections():
+                    _add_finding(
+                        "rclone-config",
+                        f"Storage location '{sl_name}' has no [{sl_name}] remote in '{config.rclone_config_path}'",
+                        f"Add a [{sl_name}] remote to the rclone config, or remove the storage location from the boxyard config.",
+                        storage_location=sl_name,
+                    )
+
+if not config.default_rclone_exclude_path.is_file():
+    _add_finding(
+        "rclone-config",
+        f"Default exclude file '{config.default_rclone_exclude_path}' does not exist",
+        "Data syncs of boxes without their own conf/.rclone_exclude will fail; re-run `boxyard init` to recreate it (existing config is preserved).",
+        path=config.default_rclone_exclude_path,
+    )
+
+# %% [markdown]
+# ## Checks: `stale-meta-mirror` and `tombstoned-box` (remote)
+#
+# Per rclone storage location:
+#
+# - **stale-meta-mirror** — list the remote boxmetas and report the ones not
+#   present in the local meta mirror; exactly what `boxyard sync-missing-meta`
+#   would fetch. A machine where this never runs silently hides newer boxes
+#   from `boxyard list` and everything built on it.
+# - **tombstoned-box** — locally registered boxes whose id has a tombstone on
+#   the remote: the box was deleted from another machine and will only ever
+#   produce `TOMBSTONED` sync errors here. Tombstone filenames are the box ids
+#   (see `_tombstones.get_tombstone_path`), so one listing suffices.
+#
+# Both are skipped when `check_remote` is False so doctor works offline, and
+# when the rclone binary is unresolvable (already a `rclone-config` finding) so
+# doctor reports instead of crashing. A failure to list the remote is a loud
+# finding rather than being treated as "no boxes".
+
+# %%
+#|export
+if not check_remote or not _rclone_available:
     checks["stale-meta-mirror"]["skipped"] = True
+    checks["tombstoned-box"]["skipped"] = True
 else:
     from boxyard._utils import rclone_lsjson
 
@@ -552,6 +774,7 @@ else:
             filter=[f"+ {const.BOX_METAFILE_REL_PATH}"],
             max_depth=2,
         )
+        _remote_reachable = _ls_remote is not None
         if _ls_remote is None:
             # rclone_lsjson conflates "path does not exist" with "remote
             # unreachable". Probe the remote root (which always exists on a
@@ -562,27 +785,55 @@ else:
                 source=sl_name,
                 source_path="",
             )
-            if _ls_root is None:
+            _remote_reachable = _ls_root is not None
+            if not _remote_reachable:
                 _add_finding(
                     "stale-meta-mirror",
                     f"Could not list remote storage location '{sl_name}'",
                     "Check connectivity and the rclone config, or run doctor with --no-remote to skip remote checks.",
                     storage_location=sl_name,
                 )
-            continue
+        else:
+            _remote_index_names = {
+                Path(f["Path"]).parts[0] for f in _ls_remote if len(Path(f["Path"]).parts) == 2
+            }
+            _missing_locally = sorted(_remote_index_names - registration_dirs_by_sl[sl_name])
+            if _missing_locally:
+                _add_finding(
+                    "stale-meta-mirror",
+                    f"{len(_missing_locally)} remote box(es) on '{sl_name}' are not mirrored locally (newest: {_missing_locally[-1]})",
+                    f"Run `boxyard sync-missing-meta -s {sl_name}` to fetch the missing boxmetas.",
+                    storage_location=sl_name,
+                    missing_index_names=_missing_locally,
+                )
 
-        _remote_index_names = {
-            Path(f["Path"]).parts[0] for f in _ls_remote if len(Path(f["Path"]).parts) == 2
-        }
-        _missing_locally = sorted(_remote_index_names - registration_dirs_by_sl[sl_name])
-        if _missing_locally:
-            _add_finding(
-                "stale-meta-mirror",
-                f"{len(_missing_locally)} remote box(es) on '{sl_name}' are not mirrored locally (newest: {_missing_locally[-1]})",
-                f"Run `boxyard sync-missing-meta -s {sl_name}` to fetch the missing boxmetas.",
-                storage_location=sl_name,
-                missing_index_names=_missing_locally,
+        if _remote_reachable:
+            # Tombstones live at <store_path>/tombstones/<box_id>.json. The
+            # remote is known reachable here, so a failed listing just means
+            # the tombstones directory doesn't exist (no box ever deleted).
+            _ls_tombstones = await rclone_lsjson(
+                config.rclone_config_path,
+                source=sl_name,
+                source_path=sl_config.store_path / "tombstones",
+                files_only=True,
             )
+            _tombstoned_ids = {
+                Path(f["Name"]).stem
+                for f in (_ls_tombstones or [])
+                if f.get("Name", "").endswith(".json")
+            }
+            for _reg_name in sorted(registration_dirs_by_sl[sl_name]):
+                if "__" not in _reg_name:
+                    continue
+                if _reg_name.split("__", 1)[0] in _tombstoned_ids:
+                    _add_finding(
+                        "tombstoned-box",
+                        f"Box '{_reg_name}' on '{sl_name}' is tombstoned on the remote (deleted from another machine) but still registered locally",
+                        f"Remove the local copy with `boxyard delete -r '{_reg_name}'`, or remove the remote tombstone to resurrect the box.",
+                        storage_location=sl_name,
+                        index_name=_reg_name,
+                        box_id=_reg_name.split("__", 1)[0],
+                    )
 
 # %% [markdown]
 # ## Check: `tree-orphans`
@@ -655,10 +906,31 @@ assert any(
     for f in _findings_by_check["orphaned-sync-records"]
 )
 
+# The real file in the group tree is found
+assert any(
+    f.get("path", "").endswith("debris.txt") for f in _findings_by_check["group-tree-debris"]
+)
+
+# The interrupted sync of box1 is found
+assert any(
+    f.get("index_name") == box_index_name1 for f in _findings_by_check["interrupted-sync"]
+)
+
+# The unknown storage-location dir is found
+assert any(
+    f.get("path", "").endswith("ghost-storage")
+    for f in _findings_by_check["unknown-storage-location"]
+)
+
 # The foreign remote box is reported as missing from the local meta mirror
 assert any(
     _foreign_index_name in f.get("missing_index_names", [])
     for f in _findings_by_check["stale-meta-mirror"]
+)
+
+# The tombstoned box is found (box2 is deleted on the remote but registered locally)
+assert any(
+    f.get("index_name") == box_index_name2 for f in _findings_by_check["tombstoned-box"]
 )
 
 # The properly created boxes cause no findings
@@ -666,13 +938,15 @@ assert not _findings_by_check["broken-registration"]
 assert not _findings_by_check["stale-cache"]
 assert not _findings_by_check["tree-orphans"]
 assert not _findings_by_check["duplicate-box-id"]
+assert not _findings_by_check["rclone-config"]
 
 # %%
-# With check_remote=False the remote check is skipped and the offline report still works
+# With check_remote=False the remote checks are skipped and the offline report still works
 from boxyard.cmds._doctor import run_doctor as _run_doctor
 
 offline_report = await _run_doctor(config_path=config_path, check_remote=False)
 assert offline_report["checks"]["stale-meta-mirror"]["skipped"]
+assert offline_report["checks"]["tombstoned-box"]["skipped"]
 assert not any(
     f["message"].startswith("Could not list")
     for f in offline_report["checks"]["stale-meta-mirror"]["findings"]
