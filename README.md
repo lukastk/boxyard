@@ -64,6 +64,7 @@ Boxes are identified by a unique ID (`{timestamp}_{subid}`, e.g. `20251122_14302
 | `list` | List all boxes |
 | `box-status` | Show sync status of a box |
 | `yard-status` | Show sync status of all boxes |
+| `doctor` | Read-only health check of the machine's boxyard state |
 | `include` | Include a remote box in the local store |
 | `exclude` | Exclude a box from the local store (keeps remote) |
 | `delete` | Delete a box locally and/or remotely |
@@ -74,6 +75,32 @@ Boxes are identified by a unique ID (`{timestamp}_{subid}`, e.g. `20251122_14302
 | `remove-from-group` | Remove a box from a group |
 | `path` | Get the local path of a box |
 | `which` | Identify which box a path belongs to |
+
+### `doctor`
+
+`boxyard doctor` runs a strictly read-only health check of the machine's boxyard state, so misuse and drift get caught mechanically. It never mutates or auto-fixes anything, and exits with code 0 when healthy and 1 when there is any finding — so it can run under cron/supervisors and be asserted by scripts and agents.
+
+```bash
+boxyard doctor                 # full check, including remote storage
+boxyard doctor --no-remote     # offline: skip checks that access remote storage
+boxyard doctor -o json         # machine-readable report
+```
+
+Checks:
+
+| Check | What it flags |
+|-------|---------------|
+| `unregistered-folder` | Directories in `user_boxes_path` that are not registered boxes (e.g. hand-created instead of via `boxyard new`) |
+| `malformed-name` | Entries in `user_boxes_path` whose names don't parse as `<timestamp>_<subid>__<name>` (legacy formats are accepted) |
+| `broken-registration` | `local_store` registrations missing `boxmeta.toml`, or with one that fails to parse/validate |
+| `duplicate-box-id` | The same box id registered more than once |
+| `stale-cache` | `boxyard_meta.json` disagreeing with a fresh scan of `local_store` |
+| `dangling-symlinks` | Group symlinks whose targets don't exist |
+| `orphaned-sync-records` | `sync_records/<index>/` with no matching registration |
+| `stale-meta-mirror` | Remote boxmetas not mirrored locally (what `sync-missing-meta` would fetch); skipped with `--no-remote` |
+| `tree-orphans` | Boxmeta `parents` referencing unknown box ids |
+
+Every finding comes with a one-line hint on how to fix it.
 
 ## Configuration
 

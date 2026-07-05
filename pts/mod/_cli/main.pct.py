@@ -2776,3 +2776,90 @@ def cli_which(
         typer.echo(f"groups: {', '.join(info['groups']) if info['groups'] else '(none)'}")
         typer.echo(f"local_data_path: {info['local_data_path']}")
         typer.echo(f"included: {info['included']}")
+
+# %% [markdown]
+# # `doctor`
+
+# %%
+#|export
+@app.command(name="doctor")
+def cli_doctor(
+    no_remote: bool = Option(
+        False,
+        "--no-remote",
+        help="Skip checks that access remote storage (the stale-meta-mirror check), so doctor works offline.",
+    ),
+    storage_locations: list[str] | None = Option(
+        None,
+        "--storage-location",
+        "-s",
+        help="Restrict the remote stale-meta-mirror check to the given storage location(s). Local checks always cover all storage locations.",
+    ),
+    output_format: Literal["text", "json"] = Option(
+        "text", "--output-format", "-o", help="The format of the output."
+    ),
+):
+    """
+    Run a strictly read-only health check of this machine's boxyard state.
+
+    Checks: unregistered/malformed folders in the user boxes path, broken or
+    duplicated registrations, a stale boxyard_meta.json cache, dangling group
+    symlinks, orphaned sync records, remote boxmetas missing from the local
+    mirror (unless --no-remote), and boxes referencing unknown parents.
+
+    Never mutates or auto-fixes anything. Exit code is 0 when healthy and 1
+    when there is at least one finding, so it can be asserted by cron jobs and
+    agents.
+    """
+    import asyncio
+    import json
+    from boxyard.cmds import run_doctor
+    from boxyard.config import get_config
+
+    config = get_config(app_state["config_path"])
+    if storage_locations is not None and any(
+        sl not in config.storage_locations for sl in storage_locations
+    ):
+        typer.echo(f"Invalid storage location: {storage_locations}", err=True)
+        raise typer.Exit(code=1)
+
+    report = asyncio.run(
+        run_doctor(
+            config_path=app_state["config_path"],
+            check_remote=not no_remote,
+            storage_locations=storage_locations,
+        )
+    )
+
+    if output_format == "json":
+        typer.echo(json.dumps(report, indent=2))
+    else:
+        _max_listed = 10
+        for check_name, check in report["checks"].items():
+            if check["skipped"]:
+                typer.echo(f"- {check_name}: skipped")
+                continue
+            findings = check["findings"]
+            if not findings:
+                typer.echo(f"✓ {check_name}: ok")
+                continue
+            typer.echo(f"✗ {check_name}: {len(findings)} finding(s)")
+            for finding in findings:
+                typer.echo(f"    - {finding['message']}")
+                missing = finding.get("missing_index_names")
+                if missing:
+                    for index_name in missing[:_max_listed]:
+                        typer.echo(f"        {index_name}")
+                    if len(missing) > _max_listed:
+                        typer.echo(
+                            f"        ... and {len(missing) - _max_listed} more (use `-o json` for the full list)"
+                        )
+                typer.echo(f"      hint: {finding['hint']}")
+        typer.echo("")
+        if report["healthy"]:
+            typer.echo("All checks passed.")
+        else:
+            typer.echo(f"{report['num_findings']} finding(s). See hints above.")
+
+    if not report["healthy"]:
+        raise typer.Exit(code=1)

@@ -13,6 +13,7 @@ def __getattr__(name):
         "modify_boxmeta": "._modify_boxmeta",
         "new_box": "._new_box",
         "rename_box": "._rename_box",
+        "run_doctor": "._doctor",
         "sync_box": "._sync_box",
         "sync_missing_boxmetas": "._sync_missing_boxmetas",
         "sync_name": "._sync_name",

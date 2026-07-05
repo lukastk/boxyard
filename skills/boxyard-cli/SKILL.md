@@ -23,7 +23,7 @@ Generated data — including large outputs — generally belongs **inside** the 
 
   If Boxyard is already installed in the environment, `boxyard ...` is also fine.
 
-- Read-only commands are safe to run without confirmation: `--help`, `list`, `tree`, `path`, `which`, `box-status`, `yard-status`, `list-groups`.
+- Read-only commands are safe to run without confirmation: `--help`, `list`, `tree`, `path`, `which`, `box-status`, `yard-status`, `list-groups`, `doctor`.
 - Ask before running commands that can modify local or remote state: `init`, `new`, `sync`, `multi-sync`, `sync-missing-meta`, `include`, `exclude`, `delete`, `rename`, `sync-name`, `add-to-group`, `remove-from-group`, `add-parent`, `remove-parent`, `create-user-symlinks`, `copy`, `force-push`.
 - Be especially careful with:
   - `boxyard new --from PATH` / `-f PATH`: moves `PATH` into Boxyard unless `--copy` is supplied.
@@ -291,6 +291,21 @@ boxyard yard-status
 ```
 
 Soft interruption is enabled by default for long operations: interrupt once or twice to stop after the current operation; repeated interrupts exit immediately.
+
+## Health check (`doctor`)
+
+`boxyard doctor` is a strictly read-only health check of the machine's whole boxyard state. It never mutates or auto-fixes anything, and exits 0 when healthy / 1 when there is any finding, so scripts and cron jobs can assert on it.
+
+**Agents: run `boxyard doctor` whenever box state looks inconsistent** — e.g. a folder in `user_boxes_path` that `boxyard list` doesn't know about, `boxyard list` missing boxes that exist on another machine, group symlinks pointing nowhere, or errors mentioning boxmeta/sync records. Every finding comes with a one-line hint on how to fix it; apply the hints rather than improvising.
+
+```bash
+boxyard doctor                       # full check, including remote storage
+boxyard doctor --no-remote           # offline: skip remote checks (stale-meta-mirror)
+boxyard doctor -o json               # machine-readable report
+boxyard doctor -s STORAGE            # restrict the remote check to one storage location
+```
+
+Checks: `unregistered-folder` (dirs in `user_boxes_path` not registered as boxes — the classic symptom of hand-creating folders instead of using `boxyard new`), `malformed-name` (names that don't parse as `<timestamp>_<subid>__<name>`; legacy formats are accepted), `broken-registration` (missing/invalid `boxmeta.toml` in the local store), `duplicate-box-id`, `stale-cache` (`boxyard_meta.json` disagrees with a fresh scan), `dangling-symlinks` (group symlinks with missing targets), `orphaned-sync-records`, `stale-meta-mirror` (remote boxmetas not mirrored locally — what `sync-missing-meta` would fetch; a machine where that never runs silently hides newer boxes from `boxyard list`), and `tree-orphans` (parents referencing unknown box ids).
 
 ## Include, exclude, copy
 
