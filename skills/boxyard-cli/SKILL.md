@@ -339,7 +339,7 @@ Groups:
 ```bash
 boxyard add-to-group --box-name NAME GROUP [OTHER_GROUP ...]
 boxyard remove-from-group --box-name NAME GROUP [OTHER_GROUP ...]
-boxyard list-groups --box-name NAME
+boxyard list-groups --box INDEX_NAME
 boxyard list-groups --all --include-virtual
 boxyard create-user-symlinks
 ```

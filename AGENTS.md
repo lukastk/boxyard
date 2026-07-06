@@ -107,7 +107,9 @@ result;
 
 - **`src/boxyard/_models.py`** - Data models: `BoxMeta`, `BoxyardMeta`, `SyncRecord`, `SyncStatus`
 - **`src/boxyard/config.py`** - Configuration: `StorageConfig`, `Config`
-- **`src/boxyard/_cli/main.py`** - CLI commands (typer-based)
+- **`src/boxyard/_cli/`** - CLI (typer-based): `app.py` (the `boxyard` entry point / Typer app per `pyproject.toml`), `main.py` (most commands), `multi_sync.py` (registers `multi-sync`)
+- **`src/boxyard/_fast.py`** - `BoxyardFast`: dependency-free query interface over `boxyard_meta.json` (parent/child lookups, groups, DAG traversal)
+- **`src/boxyard/_enums.py`** - Shared CLI enums: `BoxPart`, `SyncSetting`, `SyncDirection`, `RenameScope`, `SyncNameDirection`
 - **`src/boxyard/cmds/`** - Command implementations (init, new_box, sync_box, etc.)
 - **`src/boxyard/_remote_index.py`** - Remote-index caching
 - **`src/boxyard/_tombstones.py`** - Tombstone tracking for delete propagation
@@ -125,5 +127,5 @@ result;
 - Config file: `~/.config/boxyard/config.toml`
 - rclone config: `~/.config/boxyard/boxyard_rclone.conf`
 - Data directory: `~/.boxyard/`
-- User boxes: `~/boxes/`
-- Group symlinks: `~/box-groups/`
+- User boxes: configurable via `user_boxes_path` in `config.toml` (currently `~/dev`)
+- Group symlinks: configurable via `user_box_groups_path` in `config.toml` (currently `~/g`)
