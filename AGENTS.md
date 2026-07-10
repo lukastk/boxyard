@@ -121,6 +121,10 @@ result;
 - **index_name**: `{box_id}__{name}` - unique identifier for each box
 - **Storage locations**: local filesystem or rclone remotes (S3, SFTP, etc.)
 - **Sync records**: Track sync state between local/remote in `~/.boxyard/sync_records/`
+- **Exec-bit manifest**: `.boxyard-perms.json` at a box's DATA root records which
+  files are executable, so `+x` survives sync over backends that drop Unix mode
+  (e.g. SFTP). Generated before push / applied after pull by `_utils/perms.py`.
+  v1 is additive-only (restores `+x`, never clears it).
 
 ### Configuration Paths
 

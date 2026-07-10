@@ -123,6 +123,11 @@ async def copy_from_remote(
     if not success:
         raise RuntimeError(f"Failed to copy DATA from remote: {stderr}")
     
+    # Restore executable bits dropped by the transport (additive; no-op if no manifest).
+    from boxyard._utils.perms import apply_exec_manifest
+    
+    apply_exec_manifest(dest_path)
+    
     if verbose:
         print("DATA copied successfully.")
     if copy_meta:

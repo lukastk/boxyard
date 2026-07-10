@@ -1,3 +1,20 @@
+## [0.3.0] - 2026-07-10
+
+### 🚀 Features
+
+- Preserve the executable bit (`+x`) across sync. rclone drops Unix mode on
+  transfer and the SFTP backend can't carry mode metadata at all, so `+x` was
+  lost on every round-trip. Boxes now carry a `.boxyard-perms.json` manifest at
+  the DATA root recording which files are executable; it is (re)generated before
+  a push and re-applied after a pull. Always-on. v1 is additive-only (restores
+  `+x`, never clears it) so mixed old/new client versions stay safe during
+  rollout. New module `boxyard._utils.perms`.
+
+### 🔧 Tooling
+
+- Pin `nblite>=1.2.2` — 1.2.1 emits broken relative imports for function-export
+  modules.
+
 ## [0.1.8] - 2025-11-19
 
 ### 🚀 Features
