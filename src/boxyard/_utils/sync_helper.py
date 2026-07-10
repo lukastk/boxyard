@@ -40,6 +40,7 @@ async def sync_helper(
     verbose: bool = False,
     show_rclone_progress: bool = False,
     allow_missing_source: bool = False,
+    preserve_exec_perms: bool = False,
 ) -> tuple[SyncStatus, bool]:
     """
     Helper to execute the standard routine for syncing a local and remote folder.
@@ -179,6 +180,7 @@ async def sync_helper(
                 print(f"Source does not exist and allow_missing_source=True. Skipping sync.")
             return sync_status, False
     from boxyard._utils import rclone_sync, BisyncResult, rclone_mkdir, rclone_purge
+    from boxyard._utils.perms import generate_exec_manifest, apply_exec_manifest
     
     
     async def _sync(
@@ -254,6 +256,11 @@ async def sync_helper(
         )
     
         if res:
+            # Restore the executable bit that the transport dropped, from the manifest
+            # that was just pulled into local_path (additive-only; no-op if absent).
+            if preserve_exec_perms and sync_path_is_dir:
+                apply_exec_manifest(local_path)
+    
             # Retrieve the remote sync record and save it locally
             rec = await SyncRecord.rclone_read(
                 rclone_config_path, remote, remote_sync_record_path
@@ -261,6 +268,12 @@ async def sync_helper(
             await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
     
     elif sync_direction == SyncDirection.PUSH:
+        # Capture the current executable bits into the manifest so they travel with
+        # the data (the transport itself can't carry Unix mode over e.g. SFTP). Only
+        # rewrites when something changed, so it won't churn an otherwise-clean box.
+        if preserve_exec_perms and sync_path_is_dir:
+            generate_exec_manifest(local_path)
+    
         # Save the incomplete sync record on BOTH local and remote to signify an ongoing sync
         # This creates a "sync session" marker - if interrupted, both sides have the same incomplete ULID,
         # proving this machine owns the interrupted sync and can safely retry

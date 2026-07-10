@@ -344,6 +344,7 @@ try:
             filters_path=_rclone_filters_path,
             verbose=verbose,
             show_rclone_progress=show_rclone_progress,
+            preserve_exec_perms=True,
         )
 
     # Update remote index cache

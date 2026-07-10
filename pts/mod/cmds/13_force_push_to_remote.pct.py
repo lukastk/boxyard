@@ -26,6 +26,7 @@ from boxyard.config import get_config
 from boxyard._models import get_boxyard_meta, BoxPart, SyncRecord
 from boxyard._remote_index import find_remote_box_by_id
 from boxyard._utils.rclone import rclone_sync, rclone_mkdir, rclone_purge
+from boxyard._utils.perms import generate_exec_manifest
 from boxyard._utils.locking import BoxyardLockManager, BOX_SYNC_LOCK_TIMEOUT, acquire_lock_async
 from boxyard._utils import check_interrupted, SoftInterruption
 
@@ -239,6 +240,10 @@ try:
 
     if verbose:
         print("Syncing data to remote...")
+
+    # Capture executable bits into the manifest so +x survives the transport.
+    if source_path.is_dir():
+        generate_exec_manifest(source_path)
 
     # Perform the sync (source -> remote DATA)
     success, stdout, stderr = await rclone_sync(

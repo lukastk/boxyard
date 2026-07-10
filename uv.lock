@@ -7,7 +7,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-05-22T12:19:05.002473Z"
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P7D"
 
 [[package]]
@@ -183,7 +183,7 @@ css = [
 
 [[package]]
 name = "boxyard"
-version = "0.2.1"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "filelock" },
@@ -223,7 +223,7 @@ dev = [
     { name = "git-cliff", specifier = ">=2.10.1" },
     { name = "ipywidgets", specifier = ">=8.1.8" },
     { name = "jupyterlab", specifier = ">=4.4.0" },
-    { name = "nblite", specifier = ">=1.1.10" },
+    { name = "nblite", specifier = ">=1.2.2" },
     { name = "pytest", specifier = ">=9.0.0" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "ruff", specifier = ">=0.14.13" },
@@ -1272,7 +1272,7 @@ wheels = [
 
 [[package]]
 name = "nblite"
-version = "1.2.1"
+version = "1.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -1284,9 +1284,9 @@ dependencies = [
     { name = "rich" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/80/a5/e7a91b57e1dc17d0e546e95500388b957320588a563c20c053eb593b3353/nblite-1.2.1.tar.gz", hash = "sha256:0f5b129d93069f0f7502ddcc1f8d960af78eefb9d097b1b85bad088ec1618cbb", size = 325768, upload-time = "2026-03-15T10:50:07.001Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/03/07/2bf2266ffb05a44e429ace5240a2006c88838955f76bfd56d3853ea57f6b/nblite-1.2.2.tar.gz", hash = "sha256:4b9840ac36bf1c6ed12ff4f8a5c701b2353bece164856671cd7f8deaad4a2a2c", size = 326692, upload-time = "2026-06-20T08:52:32.432Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/27/4d/471d79351bab69bf96f12d3b689d430342857138bb45fb82cb08a19125d1/nblite-1.2.1-py3-none-any.whl", hash = "sha256:04083f525229f8d8445c08dc192286491ec63e730806c84faf226b9d33b35ca0", size = 105264, upload-time = "2026-03-15T10:50:05.235Z" },
+    { url = "https://files.pythonhosted.org/packages/95/2f/1b0723f563deb0cf08e186cc0de036e96e0f12273e89b16e068117c994c2/nblite-1.2.2-py3-none-any.whl", hash = "sha256:cc6c9596ecfa022269cdd66b05ffa774e956277b456c35aaffa0fbc8fb5b382c", size = 105672, upload-time = "2026-06-20T08:52:30.843Z" },
 ]
 
 [[package]]

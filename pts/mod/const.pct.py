@@ -46,6 +46,11 @@ BOX_DATA_REL_PATH = "data"
 BOX_METAFILE_REL_PATH = "boxmeta.toml"
 BOX_CONF_REL_PATH = "conf"
 
+# Sidecar file, stored at the root of a box's DATA part, recording which files are
+# executable so the +x bit survives sync over backends that can't carry Unix mode
+# metadata (e.g. SFTP). See _utils/perms.py. Ships as ordinary synced content.
+BOX_PERMS_MANIFEST_REL_PATH = ".boxyard-perms.json"
+
 SOFT_INTERRUPT_COUNT = 3
 
 DEFAULT_FAKE_STORE_REL_PATH = "fake_store"

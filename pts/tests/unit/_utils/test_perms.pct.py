@@ -1,0 +1,177 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # Unit tests for the exec-bit perms manifest
+
+# %%
+#|default_exp unit._utils.test_perms
+
+# %%
+#|export
+import os
+import json
+import stat
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from boxyard import const
+from boxyard._utils.perms import (
+    build_exec_manifest,
+    generate_exec_manifest,
+    apply_exec_manifest,
+)
+
+MANIFEST = const.BOX_PERMS_MANIFEST_REL_PATH
+
+
+# %%
+#|export
+@pytest.fixture
+def box(tmp_path):
+    """A DATA-like tree: an exec script, a plain file, a nested exec, a symlink."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "script.sh").write_text("#!/bin/sh\necho hi\n")
+    (tmp_path / "script.sh").chmod(0o755)
+    (tmp_path / "data.txt").write_text("plain\n")
+    (tmp_path / "data.txt").chmod(0o644)
+    (tmp_path / "sub" / "tool").write_text("#!/usr/bin/env python\n")
+    (tmp_path / "sub" / "tool").chmod(0o755)
+    os.symlink("script.sh", tmp_path / "link.sh")
+    return tmp_path
+
+
+# %%
+#|export
+class TestBuildManifest:
+    def test_lists_only_executables_sorted(self, box):
+        m = build_exec_manifest(box)
+        assert m["version"] == 1
+        assert m["executable"] == ["script.sh", "sub/tool"]
+
+    def test_excludes_symlinks(self, box):
+        # link.sh points at an executable but must not appear (it's a symlink)
+        assert "link.sh" not in build_exec_manifest(box)["executable"]
+
+    def test_prunes_unsynced_dirs(self, box):
+        # executables inside .venv / node_modules / .git must NOT be captured —
+        # boxyard doesn't sync those, so they'd be dead weight in the manifest.
+        for d in (".venv/bin", "node_modules/.bin", ".git/hooks", "sub/keep"):
+            (box / d).mkdir(parents=True, exist_ok=True)
+            f = box / d / "x"
+            f.write_text("#!/bin/sh\n")
+            f.chmod(0o755)
+        execs = build_exec_manifest(box)["executable"]
+        assert "sub/keep/x" in execs
+        assert not any(e.startswith((".venv/", "node_modules/", ".git/")) for e in execs)
+
+    def test_excludes_manifest_itself(self, box):
+        generate_exec_manifest(box)
+        (box / MANIFEST).chmod(0o755)  # even if the manifest is +x, it's excluded
+        assert MANIFEST not in build_exec_manifest(box)["executable"]
+
+
+# %%
+#|export
+class TestGenerate:
+    def test_writes_manifest(self, box):
+        assert generate_exec_manifest(box) is True
+        data = json.loads((box / MANIFEST).read_text())
+        assert data["executable"] == ["script.sh", "sub/tool"]
+
+    def test_idempotent_no_rewrite(self, box):
+        assert generate_exec_manifest(box) is True
+        before = (box / MANIFEST).stat().st_mtime_ns
+        assert generate_exec_manifest(box) is False  # unchanged -> not rewritten
+        assert (box / MANIFEST).stat().st_mtime_ns == before
+
+    def test_rewrites_on_change(self, box):
+        generate_exec_manifest(box)
+        (box / "data.txt").chmod(0o755)  # now data.txt is executable
+        assert generate_exec_manifest(box) is True
+        assert "data.txt" in json.loads((box / MANIFEST).read_text())["executable"]
+
+    def test_missing_root_is_noop(self, tmp_path):
+        assert generate_exec_manifest(tmp_path / "does_not_exist") is False
+
+    def test_no_executables_no_manifest_created(self, tmp_path):
+        # A box with nothing executable and no manifest yet stays clean (no noise).
+        (tmp_path / "a.txt").write_text("x")
+        (tmp_path / "a.txt").chmod(0o644)
+        assert generate_exec_manifest(tmp_path) is False
+        assert not (tmp_path / MANIFEST).exists()
+
+    def test_existing_manifest_kept_accurate_when_execs_removed(self, tmp_path):
+        (tmp_path / "s.sh").write_text("#!/bin/sh\n")
+        (tmp_path / "s.sh").chmod(0o755)
+        assert generate_exec_manifest(tmp_path) is True  # manifest created
+        (tmp_path / "s.sh").chmod(0o644)  # no longer executable
+        assert generate_exec_manifest(tmp_path) is True  # existing manifest updated
+        assert json.loads((tmp_path / MANIFEST).read_text())["executable"] == []
+
+
+# %%
+#|export
+class TestApply:
+    def test_restores_exec_bit(self, box):
+        generate_exec_manifest(box)
+        # simulate the transport stripping exec bits
+        (box / "script.sh").chmod(0o644)
+        (box / "sub" / "tool").chmod(0o644)
+        changed = apply_exec_manifest(box)
+        assert set(changed) == {"script.sh", "sub/tool"}
+        assert os.access(box / "script.sh", os.X_OK)
+        assert os.access(box / "sub" / "tool", os.X_OK)
+
+    def test_mirrors_read_bits(self, box):
+        generate_exec_manifest(box)
+        (box / "script.sh").chmod(0o640)  # readable by user+group, not other
+        apply_exec_manifest(box)
+        mode = stat.S_IMODE((box / "script.sh").stat().st_mode)
+        assert mode == 0o750  # x added where r was set, none for 'other'
+
+    def test_leaves_nonexec_alone(self, box):
+        generate_exec_manifest(box)
+        apply_exec_manifest(box)
+        assert not os.access(box / "data.txt", os.X_OK)
+
+    def test_additive_never_clears(self, box):
+        # manifest says only script.sh is exec; data.txt is exec on disk but NOT
+        # in the manifest -> additive apply must leave data.txt executable.
+        (box / MANIFEST).write_text(
+            json.dumps({"version": 1, "executable": ["script.sh"]})
+        )
+        (box / "data.txt").chmod(0o755)
+        apply_exec_manifest(box)
+        assert os.access(box / "data.txt", os.X_OK)  # not cleared
+
+    def test_idempotent(self, box):
+        generate_exec_manifest(box)
+        (box / "script.sh").chmod(0o644)
+        apply_exec_manifest(box)
+        assert apply_exec_manifest(box) == []
+
+    def test_no_manifest_is_noop(self, tmp_path):
+        # backward compatibility: boxes created before this feature have no manifest
+        assert apply_exec_manifest(tmp_path) == []
+
+    def test_missing_listed_file_skipped(self, box):
+        (box / MANIFEST).write_text(
+            json.dumps({"version": 1, "executable": ["script.sh", "gone.sh"]})
+        )
+        (box / "script.sh").chmod(0o644)
+        changed = apply_exec_manifest(box)
+        assert changed == ["script.sh"]  # gone.sh silently skipped
+
+    def test_corrupt_manifest_warns_and_skips(self, box, capsys):
+        (box / MANIFEST).write_text("{ not valid json")
+        (box / "script.sh").chmod(0o644)
+        assert apply_exec_manifest(box) == []
+        assert "could not parse perms manifest" in capsys.readouterr().err
