@@ -28,6 +28,7 @@ async def delete_box(
     
     box_meta = boxyard_meta.by_index_name[box_index_name]
     import shutil
+    from boxyard import const
     from boxyard._models import BoxPart, refresh_boxyard_meta, BoxMeta
     from boxyard._utils import rclone_purge
     from boxyard.config import StorageType
@@ -46,17 +47,10 @@ async def delete_box(
         # Extract box_id for tombstone and cache operations
         box_id = BoxMeta.extract_box_id(box_index_name)
         storage_location = box_meta.storage_location
+        _sl_is_remote = (
+            box_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL
+        )
     
-        # Create tombstone BEFORE deleting remote (so other machines can see it)
-        if box_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL:
-            await create_tombstone(
-                config=config,
-                storage_location=storage_location,
-                box_id=box_id,
-                last_known_name=box_meta.name,
-            )
-    
-        # Delete local box
         # Retry rmtree to handle macOS race where Finder recreates .DS_Store mid-delete
         import time
         import errno
@@ -71,18 +65,54 @@ async def delete_box(
                     else:
                         raise
     
+        # Delete the local box FIRST — before creating the tombstone or purging the
+        # remote. If a file is owned by another user (root, a container uid, ...) the
+        # rmtree fails; doing it first means we abort cleanly with no partial delete,
+        # and we surface an actionable error instead of a raw traceback.
         local_box_path = box_meta.get_local_part_path(config, BoxPart.DATA)
-        if local_box_path.exists():
-            _rmtree_retry(local_box_path)
-        _rmtree_retry(box_meta.get_local_path(config))
+        try:
+            if local_box_path.exists():
+                _rmtree_retry(local_box_path)
+            _rmtree_retry(box_meta.get_local_path(config))
+        except PermissionError as e:
+            raise PermissionError(
+                f"Cannot delete box '{box_index_name}': some local files are owned by "
+                f"another user and can't be removed ({e.filename or e}). Fix ownership and "
+                f'retry, e.g.  sudo chown -R "$USER" {local_box_path}'
+            ) from e
     
-        # Delete remote box
-        if box_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL:
+        # Create tombstone BEFORE deleting remote (so other machines can see it)
+        if _sl_is_remote:
+            await create_tombstone(
+                config=config,
+                storage_location=storage_location,
+                box_id=box_id,
+                last_known_name=box_meta.name,
+            )
+    
+            # Delete remote box
             await rclone_purge(
                 config.rclone_config_path,
                 source=storage_location,
                 source_path=box_meta.get_remote_path(config),
             )
+    
+        # Clean up the box's sync records and backups (local + remote) so a delete never
+        # leaves orphans behind (these were previously flagged by `boxyard doctor`).
+        _local_sync_dir = box_meta.get_local_sync_record_path(config, BoxPart.DATA).parent
+        if _local_sync_dir.exists():
+            _rmtree_retry(_local_sync_dir)
+        _local_backups_dir = config.local_sync_backups_path / box_meta.index_name
+        if _local_backups_dir.exists():
+            _rmtree_retry(_local_backups_dir)
+        if _sl_is_remote:
+            _store_path = box_meta.get_storage_location_config(config).store_path
+            for _rel in (const.SYNC_RECORDS_REL_PATH, const.REMOTE_BACKUP_REL_PATH):
+                await rclone_purge(
+                    config.rclone_config_path,
+                    source=storage_location,
+                    source_path=_store_path / _rel / box_meta.index_name,
+                )
     
         # Remove from remote index cache
         remove_from_remote_index_cache(config, storage_location, box_id)

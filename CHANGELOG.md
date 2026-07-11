@@ -1,3 +1,18 @@
+## [0.3.1] - 2026-07-11
+
+### 🐛 Bug Fixes
+
+- `delete` now also purges the box's sync-record and sync-backup directories
+  (local + remote); previously every delete left orphaned sync records that
+  `boxyard doctor` flagged (#13).
+- `delete` removes the local box *before* creating the tombstone / purging the
+  remote, so a permission failure aborts cleanly instead of leaving a partial
+  delete; and a file owned by another user now raises an actionable
+  `chown` hint instead of a raw traceback (#15).
+- `remove-parent --parent-id <id>` can now drop a dangling parent whose box has
+  been deleted (the exact fix `boxyard doctor` recommends for `tree-orphans`);
+  previously it errored with "Box with id … not found" (#14).
+
 ## [0.3.0] - 2026-07-10
 
 ### 🚀 Features

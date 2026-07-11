@@ -1008,13 +1008,6 @@ def cli_remove_parent(
         name_match_mode=name_match_mode, name_match_case=name_match_case,
     )
 
-    # Resolve parent
-    parent_index_name = _get_box_index_name(
-        box_name=parent_name, box_id=parent_id, box_index_name=parent_index_name,
-        name_match_mode=name_match_mode, name_match_case=name_match_case,
-        allow_no_args=False, label="parent",
-    )
-
     config = get_config(app_state["config_path"])
     boxyard_meta = get_boxyard_meta(config)
 
@@ -1023,11 +1016,26 @@ def cli_remove_parent(
         raise typer.Exit(code=1)
 
     box_meta = boxyard_meta.by_index_name[box_index_name]
-    parent_meta = boxyard_meta.by_index_name.get(parent_index_name)
-    target_parent_id = parent_meta.box_id if parent_meta else None
+
+    # Resolve the parent box_id to remove. When --parent-id is given explicitly we
+    # use it directly and do NOT require the parent box to still exist — that is the
+    # only way to drop a dangling parent left behind by a deleted parent box (the
+    # `tree-orphans` check in `boxyard doctor` points here).
+    if parent_id is not None:
+        target_parent_id = parent_id
+        parent_label = parent_id
+    else:
+        parent_index_name = _get_box_index_name(
+            box_name=parent_name, box_id=parent_id, box_index_name=parent_index_name,
+            name_match_mode=name_match_mode, name_match_case=name_match_case,
+            allow_no_args=False, label="parent",
+        )
+        parent_meta = boxyard_meta.by_index_name.get(parent_index_name)
+        target_parent_id = parent_meta.box_id if parent_meta else None
+        parent_label = parent_index_name
 
     if target_parent_id is None or target_parent_id not in box_meta.parents:
-        typer.echo(f"Box `{box_index_name}` does not have parent `{parent_index_name}`.")
+        typer.echo(f"Box `{box_index_name}` does not have parent `{parent_label}`.")
         raise typer.Exit(code=1)
     else:
         modify_boxmeta(
