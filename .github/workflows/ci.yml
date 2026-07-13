@@ -30,6 +30,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
+      - name: Install rclone
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew install rclone
+          else
+            sudo apt-get update && sudo apt-get install -y rclone
+          fi
+
       - name: Run tests
         run: uv run pytest -v -m "not integration"
 
