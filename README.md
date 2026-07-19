@@ -19,10 +19,10 @@ Requires [rclone](https://rclone.org/downloads/) to be installed and configured.
 boxyard init
 
 # Create a new box from an existing folder
-boxyard new ~/projects/my-project
+boxyard new --from ~/projects/my-project
 
 # Sync a box to remote storage
-boxyard sync my-project
+boxyard sync --box-name my-project
 
 # Check sync status
 boxyard yard-status
