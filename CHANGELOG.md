@@ -1,3 +1,39 @@
+## [0.3.2] - 2026-07-27
+
+### 🐛 Bug Fixes
+
+- Sync no longer wedges forever when the machine sleeps mid-sync. rclone
+  children spawned just before a suspend come back with dead TCP connections
+  and can spin at 100% CPU indefinitely — observed as two `lsjson` processes
+  burning a core each for 9.5 hours, with no open sockets. Because
+  `run_cmd_async` awaited `communicate()` with no timeout, both `multi-sync`
+  concurrency slots stayed occupied, the run never returned, and the supervisor
+  loop never started another cycle — so *no box synced at all* until the
+  processes were killed by hand.
+
+  Two guards now cover this:
+
+  - **A suspend watchdog.** `time.monotonic()` does not advance while the system
+    is suspended but `time.time()` does, so a divergence between them means the
+    machine slept and every in-flight rclone child is holding a dead
+    connection. Those children are killed and the caller fails loudly and
+    retries on fresh connections. This deliberately does *not* penalise long
+    transfers: a multi-hour push is untouched unless it spanned a suspend, in
+    which case it was already doomed.
+  - **A timeout on bounded operations.** `lsjson`, `mkdir`, `cat` and
+    `path-exists` do inherently finite work, so they now take a wall-clock
+    ceiling (`RCLONE_LISTING_TIMEOUT`, 10 min) and raise `CommandTimeout`
+    rather than hanging. Transfers stay unbounded, since no wall-clock limit is
+    meaningful for them.
+
+  Note that rclone's own `--timeout` (5m IO idle), `--contimeout` (1m) and
+  `--sftp-idle-timeout` (1m) were all in effect during the incident and none of
+  them fired, which is why the guard has to live on the boxyard side.
+
+- Subprocesses are now spawned in their own session and killed by process
+  group, so an rclone that has spawned children cannot leave orphans behind
+  when it is timed out or killed.
+
 ## [0.3.1] - 2026-07-11
 
 ### 🐛 Bug Fixes
