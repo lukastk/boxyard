@@ -19,8 +19,11 @@ import boxyard._utils.base as this_module
 
 # %%
 #|export
+import os
+import signal
 import subprocess
 import asyncio
+import time
 from boxyard import const
 from pathlib import Path
 from typing import Any, Coroutine
@@ -229,16 +232,122 @@ def _get_subprocess_semaphore() -> asyncio.Semaphore:
     return _subprocess_semaphore
 
 
-async def run_cmd_async(cmd: list[str]) -> subprocess.Popen:
+class CommandTimeout(Exception):
+    """A subprocess exceeded its timeout and was killed."""
+
+
+class SuspendInterruption(Exception):
+    """A subprocess was killed because the machine resumed from sleep."""
+
+
+# Subprocesses currently running, so the suspend watchdog can kill them all when
+# the machine wakes up, plus the pids it killed, so each `run_cmd_async` can tell
+# "died because we killed it" from "exited on its own".
+_live_procs: set = set()
+_suspend_killed_pids: set[int] = set()
+_suspend_watchdog: tuple[asyncio.AbstractEventLoop, asyncio.Task] | None = None
+
+
+def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Kill `proc` and anything it spawned."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        # Already reaped, or not in a group of ours — kill the process itself.
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
+async def _suspend_watchdog_loop() -> None:
+    """
+    Kill in-flight subprocesses whenever the machine resumes from sleep.
+
+    `time.monotonic()` does not advance while the system is suspended but
+    `time.time()` does, so a divergence between the two means the machine was
+    asleep — and every TCP connection held by a live rclone child is now dead.
+
+    rclone does not reliably notice this. Its own `--timeout` (5m IO idle),
+    `--contimeout` (1m) and `--sftp-idle-timeout` (1m) were all in effect when
+    two `lsjson` processes, spawned two seconds before an idle sleep, span at
+    100% CPU with no open sockets for 9.5 hours. Killing them here lets the
+    caller fail loudly and retry on fresh connections.
+    """
+    while True:
+        wall_before, mono_before = time.time(), time.monotonic()
+        await asyncio.sleep(const.SUSPEND_POLL_INTERVAL)
+        slept_for = (time.time() - wall_before) - (time.monotonic() - mono_before)
+
+        if slept_for < const.SUSPEND_DETECT_THRESHOLD:
+            continue
+
+        for proc in list(_live_procs):
+            _suspend_killed_pids.add(proc.pid)
+            _kill_process_group(proc)
+
+
+def _ensure_suspend_watchdog() -> None:
+    """Start the suspend watchdog for the running loop, if it isn't already up."""
+    global _suspend_watchdog
+    loop = asyncio.get_running_loop()
+
+    if _suspend_watchdog is not None:
+        watchdog_loop, task = _suspend_watchdog
+        if watchdog_loop is loop and not task.done():
+            return
+
+    _suspend_watchdog = (loop, loop.create_task(_suspend_watchdog_loop()))
+
+
+async def run_cmd_async(
+    cmd: list[str],
+    timeout: float | None = None,
+) -> tuple[int, str, str]:
+    """
+    Run `cmd`, returning `(returncode, stdout, stderr)`.
+
+    `timeout` is a wall-clock ceiling, and suits only operations whose work is
+    inherently bounded — listings and metadata reads. Transfers have no
+    meaningful upper bound (a big box legitimately takes hours) and should be
+    left unbounded; the suspend watchdog covers them instead.
+
+    Raises `CommandTimeout` if `timeout` is exceeded, or `SuspendInterruption`
+    if the machine resumed from sleep mid-run. Both kill the whole process
+    group first, so no orphans are left behind.
+    """
+    _ensure_suspend_watchdog()
     semaphore = _get_subprocess_semaphore()
     async with semaphore:
         proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            # Own process group, so we can take its children down with it.
+            start_new_session=True,
         )
-        stdout, stderr = await proc.communicate()
-        stdout = stdout.decode("utf-8")
-        stderr = stderr.decode("utf-8")
-        return proc.returncode, stdout, stderr
+        _live_procs.add(proc)
+        try:
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
+            except (asyncio.TimeoutError, TimeoutError):
+                _kill_process_group(proc)
+                await proc.wait()
+                raise CommandTimeout(
+                    f"`{' '.join(cmd[:2])}` exceeded its {timeout:g}s timeout "
+                    f"and was killed."
+                ) from None
+
+            if proc.pid in _suspend_killed_pids:
+                raise SuspendInterruption(
+                    f"`{' '.join(cmd[:2])}` was killed because the machine "
+                    f"resumed from sleep; its connections were dead."
+                )
+
+            return proc.returncode, stdout.decode("utf-8"), stderr.decode("utf-8")
+        finally:
+            _live_procs.discard(proc)
+            _suspend_killed_pids.discard(proc.pid)
 
 # %%
 await run_cmd_async(["echo", "hello", "world"])

@@ -387,13 +387,14 @@ async def rclone_mkdir(
     rclone_config_path: str,
     source: str,
     source_path: str,
+    timeout: float | None = const.RCLONE_LISTING_TIMEOUT,
 ) -> dict | None:
     """
     Create a directory in rclone. Will not fail if the directory already exists. If parent directories are missing, they will be created.
     """
     source_str = f"{source}:{source_path}" if source else source_path
     cmd = [get_rclone_binary(), "mkdir", "--config", rclone_config_path, source_str]
-    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    ret_code, stdout, stderr = await run_cmd_async(cmd, timeout=timeout)
     if ret_code != 0:
         raise Exception(stderr)
 
@@ -408,6 +409,7 @@ async def rclone_lsjson(
     max_depth: int | None = None,
     symlinks: bool = True,
     filter: list[str] = [],
+    timeout: float | None = const.RCLONE_LISTING_TIMEOUT,
 ) -> dict | None:
     source_str = f"{source}:{source_path}" if source else source_path
     cmd = [get_rclone_binary(), "lsjson", "--config", rclone_config_path, source_str]
@@ -427,7 +429,7 @@ async def rclone_lsjson(
     for f in filter:
         cmd.append("--filter")
         cmd.append(f)
-    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    ret_code, stdout, stderr = await run_cmd_async(cmd, timeout=timeout)
     if ret_code != 0:
         return None
     return json.loads(stdout)
@@ -474,10 +476,11 @@ async def rclone_cat(
     rclone_config_path: str,
     source: str,
     source_path: str,
+    timeout: float | None = const.RCLONE_LISTING_TIMEOUT,
 ) -> tuple[bool, str | None]:
     source_str = f"{source}:{source_path}" if source else source_path
     cmd = [get_rclone_binary(), "cat", "--config", rclone_config_path, source_str]
-    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    ret_code, stdout, stderr = await run_cmd_async(cmd, timeout=timeout)
     if ret_code == 0:
         return True, stdout
     else:

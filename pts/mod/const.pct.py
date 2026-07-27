@@ -53,6 +53,19 @@ BOX_PERMS_MANIFEST_REL_PATH = ".boxyard-perms.json"
 
 SOFT_INTERRUPT_COUNT = 3
 
+# How often the suspend watchdog compares the wall and monotonic clocks, and how
+# far they must diverge before we conclude the machine was suspended. The
+# threshold only needs to sit above normal clock slew (NTP steps a few seconds at
+# most); real sleeps are minutes to hours. See `_utils.base.run_cmd_async`.
+SUSPEND_POLL_INTERVAL = 5.0
+SUSPEND_DETECT_THRESHOLD = 60.0
+
+# Wall-clock ceiling for rclone calls whose work is inherently bounded (listings
+# and metadata reads). Deliberately generous — a large listing over a slow link
+# is normal, a listing that runs for ten minutes is not. Transfers are NOT
+# bounded by this; see `_utils.base.run_cmd_async`.
+RCLONE_LISTING_TIMEOUT = 600.0
+
 DEFAULT_FAKE_STORE_REL_PATH = "fake_store"
 
 # %% [markdown]
