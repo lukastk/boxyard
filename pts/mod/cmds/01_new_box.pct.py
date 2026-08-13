@@ -22,12 +22,13 @@ from nblite import nbl_export, show_doc; nbl_export();
 from pathlib import Path
 import subprocess
 import re
+import sys
 from datetime import datetime
 import asyncio
 
 from boxyard._utils.locking import BoxyardLockManager, LockAcquisitionError, GLOBAL_LOCK_TIMEOUT
 from filelock import Timeout
-from boxyard._models import generate_unique_box_id
+from boxyard._models import generate_unique_box_id, validate_box_name
 
 
 def _extract_box_name_from_git_url(url: str) -> str:
@@ -51,6 +52,29 @@ def _extract_box_name_from_git_url(url: str) -> str:
 
     # Fallback: just take the last path component
     return url.split("/")[-1]
+
+
+def _rollback_new_box(
+    box_path: Path,
+    box_data_path: Path,
+    moved_from_path: Path | None,
+) -> None:
+    """
+    Undo a partially-created box.
+
+    A box is registered by the directories it occupies, so a creation that
+    fails part-way (a failed `git clone`, an interrupted copy) would otherwise
+    leave a broken registration behind — and every retry would add another.
+    """
+    import shutil
+
+    if moved_from_path is not None and box_data_path.exists():
+        # `from_path` was moved into the box — put it back where it came from.
+        box_data_path.rename(moved_from_path)
+    elif box_data_path.exists():
+        shutil.rmtree(box_data_path)
+    if box_path.exists():
+        shutil.rmtree(box_path)
 
 # %%
 #|set_func_signature
@@ -146,6 +170,10 @@ if from_path is not None and box_name is None:
 
 if git_clone_url is not None and box_name is None:
     box_name = _extract_box_name_from_git_url(git_clone_url)
+
+# The name is used verbatim as a directory name, so reject anything that is not
+# a single path component before any of the box is created.
+validate_box_name(box_name)
 
 if from_path is None and copy_from_path:
     raise ValueError("`from_path` must be provided if `copy_from_path` is True.")
@@ -246,10 +274,12 @@ box_meta = BoxMeta(
     groups=config.default_box_groups,
 )
 
-box_meta.save(config)
-
 # %% [markdown]
-# Create the box folder
+# Create the box folder, populate it, and `git init` it.
+#
+# Everything that puts the box on disk happens under one rollback: a box is
+# registered by the directories it occupies, so a partial creation would leave
+# a broken registration behind.
 
 # %%
 #|export
@@ -258,51 +288,63 @@ from boxyard._models import BoxPart
 box_path = box_meta.get_local_path(config)
 box_data_path = box_meta.get_local_part_path(config, BoxPart.DATA)
 box_conf_path = box_meta.get_local_part_path(config, BoxPart.CONF)
-box_path.mkdir(parents=True, exist_ok=True)
-box_conf_path.mkdir(parents=True, exist_ok=True)
 
-if git_clone_url is not None:
-    if verbose:
-        print(f"Cloning {git_clone_url}")
-    res = subprocess.run(
-        ["git", "clone", git_clone_url, str(box_data_path)],
-        check=True,
-        stdout=subprocess.DEVNULL if not verbose else None,
-        stderr=subprocess.DEVNULL if not verbose else None,
-    )
-    if res.returncode != 0:
-        raise RuntimeError(f"Failed to clone box from {git_clone_url}")
-elif from_path is not None:
-    if copy_from_path:
-        import shutil
+_moved_from_path = None  # Set once `from_path` has been moved into the box.
+try:
+    box_meta.save(config)
+    box_path.mkdir(parents=True, exist_ok=True)
+    box_conf_path.mkdir(parents=True, exist_ok=True)
 
-        shutil.copytree(
-            from_path, box_data_path
-        )  # TESTREF: test_new_box_copy_from_path
-    else:
-        from_path.rename(box_data_path)
-else:
-    box_data_path.mkdir(parents=True, exist_ok=True)
-
-# %% [markdown]
-# Run `git init`
-
-# %%
-#|export
-# Skip git init when cloning (already a git box) or when .git exists
-if initialise_git and git_clone_url is None and not (box_data_path / ".git").exists():
-    if verbose:
-        print("Initialising git box")
-    res = subprocess.run(
-        ["git", "init"],
-        check=True,
-        cwd=box_data_path,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    if res.returncode != 0:
+    if git_clone_url is not None:
         if verbose:
-            print("Warning: Failed to initialise git box")
+            print(f"Cloning {git_clone_url}")
+        res = subprocess.run(
+            ["git", "clone", git_clone_url, str(box_data_path)],
+            check=True,
+            stdout=subprocess.DEVNULL if not verbose else None,
+            stderr=subprocess.DEVNULL if not verbose else None,
+        )
+        if res.returncode != 0:
+            raise RuntimeError(f"Failed to clone box from {git_clone_url}")
+    elif from_path is not None:
+        if copy_from_path:
+            import shutil
+
+            shutil.copytree(
+                from_path, box_data_path
+            )  # TESTREF: test_new_box_copy_from_path
+        else:
+            from_path.rename(box_data_path)
+            _moved_from_path = from_path
+    else:
+        box_data_path.mkdir(parents=True, exist_ok=True)
+
+    # Skip git init when cloning (already a git box) or when .git exists
+    if initialise_git and git_clone_url is None and not (box_data_path / ".git").exists():
+        if verbose:
+            print("Initialising git box")
+        res = subprocess.run(
+            ["git", "init"],
+            check=True,
+            cwd=box_data_path,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if res.returncode != 0:
+            if verbose:
+                print("Warning: Failed to initialise git box")
+except BaseException:
+    try:
+        _rollback_new_box(box_path, box_data_path, _moved_from_path)
+    except Exception as cleanup_error:
+        print(
+            f"Warning: failed to clean up the partially-created box "
+            f"'{box_meta.index_name}': {cleanup_error}",
+            file=sys.stderr,
+        )
+    if _global_lock.is_locked:
+        _global_lock.release()
+    raise
 
 # %% [markdown]
 # Refresh the boxyard meta file

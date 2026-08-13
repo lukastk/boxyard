@@ -37,6 +37,37 @@ from boxyard.config import BoxGroupConfig, BoxTimestampFormat
 from boxyard._enums import BoxPart
 
 # %%
+#|export
+def validate_box_name(name: str) -> None:
+    """
+    Raise `ValueError` if `name` cannot be used as a box name.
+
+    A box's `index_name` (`{box_id}__{name}`) is interpolated straight into
+    filesystem paths, so a name that is not a single path component would
+    spread the box over a nested directory tree — and the top level of that
+    tree does not parse as a box registration, which breaks every subsequent
+    `create_boxyard_meta` for the whole yard.
+    """
+    if not isinstance(name, str) or not name:
+        raise ValueError("Box name must be a non-empty string.")
+    if name != name.strip():
+        raise ValueError(
+            f"Box name must not have leading or trailing whitespace: {name!r}"
+        )
+    if name in (".", ".."):
+        raise ValueError(f"Box name must not be {name!r}.")
+    if name.startswith("."):
+        raise ValueError(f"Box name must not start with a '.': {name!r}")
+    for forbidden in ("/", "\\", "\0"):
+        if forbidden in name:
+            raise ValueError(
+                f"Box name must be a single path component, but {name!r} contains "
+                f"{forbidden!r}. Names are used verbatim as directory names."
+            )
+    if Path(name).name != name:
+        raise ValueError(f"Box name must be a single path component: {name!r}")
+
+# %%
 #|exporti
 def _create_box_subid(character_set: str, length: int) -> str:
     return "".join(random.choices(character_set, k=length))
@@ -436,16 +467,41 @@ class BoxyardMeta(const.StrictModel):
 # %%
 #|export
 def create_boxyard_meta(config: boxyard.config.Config) -> BoxyardMeta:
-    """Create a dict of all box metas. To be saved in `config.boxyard_meta_path`."""
+    """
+    Create a dict of all box metas. To be saved in `config.boxyard_meta_path`.
+
+    Registrations that cannot be loaded (e.g. a directory in the local store
+    with no `boxmeta.toml`) are reported on stderr and skipped, rather than
+    failing the refresh: a single broken registration must not make the rest
+    of the yard unusable. `boxyard doctor` reports them in full.
+    """
+    import sys
+
     box_metas = []
+    broken_registrations = []
     for storage_location_name in config.storage_locations:
         local_storage_location_path = config.local_store_path / storage_location_name
         for box_path in local_storage_location_path.glob("*"):
             if box_path.is_file():
                 continue
-            box_metas.append(
-                BoxMeta.load(config, storage_location_name, box_path.name)
-            )
+            try:
+                box_metas.append(
+                    BoxMeta.load(config, storage_location_name, box_path.name)
+                )
+            except Exception as e:
+                broken_registrations.append(
+                    (f"{storage_location_name}/{box_path.name}", e)
+                )
+
+    if broken_registrations:
+        print(
+            f"Warning: skipped {len(broken_registrations)} unreadable box "
+            f"registration(s) — run `boxyard doctor` for details:",
+            file=sys.stderr,
+        )
+        for registration, error in broken_registrations:
+            print(f"  - {registration}: {error}", file=sys.stderr)
+
     return BoxyardMeta(box_metas=box_metas)
 
 # %%

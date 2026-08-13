@@ -145,6 +145,65 @@ assert "python" in box_meta4.groups
 assert "api" in box_meta4.groups
 
 # %% [markdown]
+# ## Test that an invalid box name is rejected before anything is created
+
+# %%
+#|export
+def _yard_contents():
+    return (
+        sorted(p.name for p in (config.local_store_path / remote_name).glob("*")),
+        sorted(p.name for p in config.user_boxes_path.glob("*")),
+    )
+
+yard_before = _yard_contents()
+
+# A name spanning several path components used to spread the box over a nested
+# directory tree, leaving a top-level directory with no boxmeta.toml — which
+# then broke every later meta refresh for the whole yard.
+with pytest.raises(ValueError):
+    new_box(  # TESTREF: test_new_box_rejects_path_separator
+        config_path=config_path,
+        box_name="/github.com/user/repo",
+        storage_location=remote_name,
+    )
+
+assert _yard_contents() == yard_before
+
+# %% [markdown]
+# ## Test that a failed `git clone` rolls the box back
+
+# %%
+#|export
+missing_repo = Path(tempfile.mkdtemp()) / "definitely-not-a-repo.git"
+
+with pytest.raises(Exception):
+    new_box(  # TESTREF: test_new_box_rolls_back_failed_clone
+        config_path=config_path,
+        git_clone_url=str(missing_repo),
+        storage_location=remote_name,
+    )
+
+# The half-created box must not survive the failure.
+assert _yard_contents() == yard_before
+
+# %% [markdown]
+# ## Test that one unreadable registration doesn't break the whole yard
+
+# %%
+#|export
+from boxyard._models import refresh_boxyard_meta
+
+broken_registration = config.local_store_path / remote_name / "20260101_brok3n__no-boxmeta"
+broken_registration.mkdir(parents=True)
+
+# TESTREF: test_refresh_skips_broken_registration
+boxyard_meta = refresh_boxyard_meta(config)
+assert box1 in boxyard_meta.by_index_name
+assert "20260101_brok3n__no-boxmeta" not in boxyard_meta.by_index_name
+
+broken_registration.rmdir()
+
+# %% [markdown]
 # ## Cleanup
 
 # %%
