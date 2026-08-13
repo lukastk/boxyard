@@ -1,3 +1,34 @@
+## [0.3.3] - 2026-08-11
+
+### 🐛 Bug Fixes
+
+- A single bad box name no longer bricks the whole yard. A box's `index_name`
+  (`{box_id}__{name}`) is interpolated straight into filesystem paths, so a name
+  that was not a single path component spread the box over a nested directory
+  tree — `boxyard new -n "/github.com/user/repo"` created
+  `local_store/<loc>/<box_id>__/github.com/user/repo/boxmeta.toml`. The top
+  level of that tree, `<box_id>__`, then looked like a box registration with no
+  `boxmeta.toml`, and since `create_boxyard_meta` scans registrations at depth 1
+  and let `BoxMeta.load` raise, *every* later command that refreshed the meta
+  died — for all boxes, permanently, until the directory was removed by hand.
+
+  Three independent fixes, each of which alone would have prevented the outage:
+
+  - **Box names are validated.** `validate_box_name` rejects anything that is
+    not a single path component (separators, `.`/`..`, a leading dot,
+    leading/trailing whitespace, empty, NUL), and `new_box` / `rename_box` call
+    it before any of the box exists.
+  - **The meta refresh survives an unreadable registration.**
+    `create_boxyard_meta` now reports each one it cannot load on stderr,
+    pointing at `boxyard doctor`, and builds the meta from the rest instead of
+    failing the whole yard.
+  - **Box creation is transactional.** Writing the boxmeta, creating the
+    directories, cloning or moving in the contents, and `git init` now run under
+    one rollback: on failure the box directories are removed (a moved-in
+    `from_path` is put back where it came from), the global lock is released,
+    and the error is re-raised. Previously a failed `git clone` left a
+    fully-registered box behind, so each retry silently added another duplicate.
+
 ## [0.3.2] - 2026-07-27
 
 ### 🐛 Bug Fixes

@@ -7,6 +7,7 @@ from ..config import get_config, StorageType
 from .._utils.locking import BoxyardLockManager, LockAcquisitionError, BOX_SYNC_LOCK_TIMEOUT, acquire_lock_async
 from .._remote_index import update_remote_index_cache, find_remote_box_by_id
 from .._enums import RenameScope
+from .._models import validate_box_name
 from .. import const
 
 async def rename_box(
@@ -46,7 +47,9 @@ async def rename_box(
     box_id = BoxMeta.extract_box_id(box_index_name)
     storage_location = box_meta.storage_location
     
-    # Compute new index name
+    # Compute new index name. The name is used verbatim as a directory name, so it
+    # has to be a single path component.
+    validate_box_name(new_name)
     new_index_name = f"{box_id}__{new_name}"
     
     if verbose:
