@@ -1,6 +1,6 @@
 # Go rewrite — current state
 
-Branch: `feat/go-rewrite`. Python `main` is at **v0.4.2**.
+Branch: `feat/go-rewrite`. Python `main` is at **v0.4.3**.
 Last updated: 2026-08-22 (overnight session).
 
 Design rationale is in [`research/go-rewrite.md`](research/go-rewrite.md);
@@ -14,7 +14,7 @@ fixed.** Proving the Go implementation correct only means something if the
 thing it is compared against is itself correct — and the fixes have to reach
 the five machines still running Python anyway.
 
-Nine bugs found so far this way, all released in v0.4.0–v0.4.2. Every one was
+Twelve bugs found so far this way, all released in v0.4.0–v0.4.3. Every one was
 *silent*: it produced wrong state rather than an error.
 
 ## Ported and verified
@@ -35,16 +35,19 @@ Nine bugs found so far this way, all released in v0.4.0–v0.4.2. Every one was
 | `internal/tombstones` | `_tombstones.py` | byte-compatible, Python-parseable |
 | `internal/remoteindex` | `_remote_index.py` | ported test suite |
 | `internal/symlinks` | `create_user_box_group_symlinks` | 19 scenarios run through the real Python builder |
-| `internal/runner` | `run_cmd_async` + suspend watchdog | injectable clock |
+| `internal/runner` | `run_cmd_async` + suspend watchdog | separate wall/monotonic seams; mutation-checked |
+| `internal/rclone` | `_utils/rclone.py` | all 65 Python argv tests ported + real-rclone round trip |
 | `internal/cli` | `_cli/main.py` — **`which` only** | byte-identical in all 3 output modes |
 
 `boxyard which -i` on the real 583-box yard: **185 ms → 6.3 ms (29×)**.
 
 ## In progress
 
-- `internal/rclone` — the argv builder and subcommand wrappers. An agent is
-  mid-write; the package does not compile yet, which is why `go build ./...`
-  may fail on it alone.
+Nothing. The next step is wiring: `rclone.Client` takes a `Location`, while
+`syncengine.Storage`, `tombstones.Store` and `remoteindex.Store` take
+`(remote, path)` — a small adapter at the composition layer satisfies all
+three. Do **not** collapse errors into empty results there; that is precisely
+the bug fixed in v0.4.3.
 
 ## Not started
 
