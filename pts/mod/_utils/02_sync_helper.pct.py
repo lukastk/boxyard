@@ -398,6 +398,21 @@ if sync_direction == SyncDirection.PULL:
         rec = await SyncRecord.rclone_read(
             rclone_config_path, remote, remote_sync_record_path
         )
+        if rec is None:
+            # Reachable if the remote record is deleted between the status
+            # probe and here -- another machine running `delete`, say. Without
+            # this guard the next line raises `AttributeError: 'NoneType'
+            # object has no attribute 'rclone_save'`, which tells the user
+            # nothing about what actually happened.
+            #
+            # The local sync record is deliberately left INCOMPLETE, so the
+            # condition is SYNC_FROM_REMOTE_INCOMPLETE next time and this
+            # machine can safely retry the pull.
+            raise SyncFailed(
+                f"Pull succeeded but the remote sync record at "
+                f"'{remote_sync_record_path}' has disappeared. The local sync "
+                f"record is left incomplete; retry the pull."
+            )
         await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
 
 elif sync_direction == SyncDirection.PUSH:
