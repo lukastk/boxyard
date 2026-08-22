@@ -197,6 +197,37 @@ ansi_escape = re.compile(
 )
 
 
+# rclone signals "the thing is not there" with a specific exit code: 3 for a
+# missing directory and 4 for a missing file. EVERY OTHER non-zero exit is a
+# real failure -- a network blip is exit 1, an auth failure exit 1, and so on.
+#
+# Conflating the two is dangerous, not merely imprecise. `rclone_lsjson` and
+# `rclone_cat` used to return None for any non-zero exit, so a transient SFTP
+# failure was reported as "the remote path does not exist". That made
+# `scan_and_rebuild_remote_index_cache` persist an EMPTY index after a blip,
+# and made `SyncRecord.rclone_read` report "no remote sync record" when it had
+# merely failed to read one -- which the sync state machine reads as a
+# different world.
+RCLONE_EXIT_DIR_NOT_FOUND = 3
+RCLONE_EXIT_FILE_NOT_FOUND = 4
+RCLONE_ABSENT_EXIT_CODES = (RCLONE_EXIT_DIR_NOT_FOUND, RCLONE_EXIT_FILE_NOT_FOUND)
+
+
+class RcloneFailed(Exception):
+    """An rclone command failed for a reason other than the path being absent."""
+
+    def __init__(self, cmd: list[str], ret_code: int, stdout: str, stderr: str):
+        self.cmd = cmd
+        self.ret_code = ret_code
+        self.stdout = stdout
+        self.stderr = stderr
+        super().__init__(
+            f"`rclone {cmd[1] if len(cmd) > 1 else '?'}` failed with exit code "
+            f"{ret_code} (this is NOT 'path not found'; the remote may be "
+            f"unreachable).\n{stderr.strip()}"
+        )
+
+
 def _remove_ansi_escape(text: str) -> str:
     return ansi_escape.sub("", text)
 
@@ -258,6 +289,11 @@ async def rclone_copyto(
     source_spec = f"{source}:{source_path}" if source else source_path
     dest_spec = f"{dest}:{dest_path}" if dest else dest_path
     cmd = [get_rclone_binary(), "copyto", "--config", rclone_config_path, source_spec, dest_spec]
+    # `dry_run` was accepted and then never emitted, so a caller asking for a
+    # dry run silently WROTE. No current call site passes True, which is why
+    # nothing has broken, but the parameter was a live trap.
+    if dry_run:
+        cmd.append("--dry-run")
     if progress:
         cmd.append("--progress")
     if not return_command:
@@ -431,8 +467,10 @@ async def rclone_lsjson(
         cmd.append("--filter")
         cmd.append(f)
     ret_code, stdout, stderr = await run_cmd_async(cmd, timeout=timeout)
+    if ret_code in RCLONE_ABSENT_EXIT_CODES:
+        return None  # Genuinely not there.
     if ret_code != 0:
-        return None
+        raise RcloneFailed(cmd, ret_code, stdout, stderr)
     return json.loads(stdout)
 
 # %% pts/mod/_utils/01_rclone.pct.py 30
@@ -484,8 +522,9 @@ async def rclone_cat(
     ret_code, stdout, stderr = await run_cmd_async(cmd, timeout=timeout)
     if ret_code == 0:
         return True, stdout
-    else:
-        return False, None
+    if ret_code in RCLONE_ABSENT_EXIT_CODES:
+        return False, None  # Genuinely not there.
+    raise RcloneFailed(cmd, ret_code, stdout, stderr)
 
 # %% pts/mod/_utils/01_rclone.pct.py 39
 async def rclone_move(
