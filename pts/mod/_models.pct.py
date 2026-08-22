@@ -37,6 +37,30 @@ from boxyard.config import BoxGroupConfig, BoxTimestampFormat
 from boxyard._enums import BoxPart
 
 # %%
+#|exporti
+def _validate_single_path_component(value: str, label: str) -> None:
+    """
+    Raise `ValueError` unless `value` can be used verbatim as one directory name.
+
+    This is the shared, safety-critical half of `validate_box_name` and
+    `validate_box_index_name`: a value that is not a single path component
+    spreads whatever it names across a nested tree, or (with `..`) escapes the
+    directory it was meant to stay inside.
+    """
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be a non-empty string.")
+    if value in (".", ".."):
+        raise ValueError(f"{label} must not be {value!r}.")
+    for forbidden in ("/", "\\", "\0"):
+        if forbidden in value:
+            raise ValueError(
+                f"{label} must be a single path component, but {value!r} contains "
+                f"{forbidden!r}. Names are used verbatim as directory names."
+            )
+    if Path(value).name != value:
+        raise ValueError(f"{label} must be a single path component: {value!r}")
+
+# %%
 #|export
 def validate_box_name(name: str) -> None:
     """
@@ -47,25 +71,37 @@ def validate_box_name(name: str) -> None:
     spread the box over a nested directory tree — and the top level of that
     tree does not parse as a box registration, which breaks every subsequent
     `create_boxyard_meta` for the whole yard.
+
+    This is the policy for *new* box names, so it is stricter than
+    `validate_box_index_name`: on top of the path-component rule it also
+    forbids surrounding whitespace and a leading '.'.
     """
-    if not isinstance(name, str) or not name:
-        raise ValueError("Box name must be a non-empty string.")
+    _validate_single_path_component(name, "Box name")
     if name != name.strip():
         raise ValueError(
             f"Box name must not have leading or trailing whitespace: {name!r}"
         )
-    if name in (".", ".."):
-        raise ValueError(f"Box name must not be {name!r}.")
     if name.startswith("."):
         raise ValueError(f"Box name must not start with a '.': {name!r}")
-    for forbidden in ("/", "\\", "\0"):
-        if forbidden in name:
-            raise ValueError(
-                f"Box name must be a single path component, but {name!r} contains "
-                f"{forbidden!r}. Names are used verbatim as directory names."
-            )
-    if Path(name).name != name:
-        raise ValueError(f"Box name must be a single path component: {name!r}")
+
+# %%
+#|export
+def validate_box_index_name(index_name: str) -> None:
+    """
+    Raise `ValueError` if `index_name` cannot be used as one directory name.
+
+    An `index_name` (`{box_id}__{name}`) is interpolated straight into paths —
+    the per-box lock directory `<data>/locks/boxes/{index_name}/` among them —
+    so one containing a separator would nest the lock inside a tree, and one
+    containing `..` would place it outside the locks directory altogether.
+
+    Deliberately weaker than `validate_box_name`: it enforces only the
+    path-component rule, not the cosmetic policy (no leading '.', no
+    surrounding whitespace) that applies when *creating* a box. Box names went
+    unvalidated before v0.3.3, so a long-lived yard may hold boxes whose names
+    would fail today's policy — those boxes must still be lockable.
+    """
+    _validate_single_path_component(index_name, "Box index name")
 
 # %%
 #|exporti
@@ -158,7 +194,16 @@ class BoxMeta(const.StrictModel):
                     f"Invalid box timestamp format: {config.box_timestamp_format}"
                 )
         else:
-            if "_" in creation_timestamp_utc:
+            # Format the caller's datetime with the config's timestamp format --
+            # the same rule `new_box` applies when it builds a BoxMeta directly.
+            #
+            # This branch used to test `"_" in creation_timestamp_utc`, a
+            # membership test against a datetime, and then call .strftime() on
+            # what that check implied was a string. It was broken for BOTH input
+            # types (TypeError for a datetime, AttributeError for a str) and
+            # unreachable, because `new_box` constructs BoxMeta directly rather
+            # than going through create().
+            if config.box_timestamp_format == BoxTimestampFormat.DATE_AND_TIME:
                 creation_timestamp_utc = creation_timestamp_utc.strftime(
                     const.BOX_TIMESTAMP_FORMAT
                 )
@@ -330,8 +375,12 @@ class BoxMeta(const.StrictModel):
         """
         import re
 
-        pattern = r"^[A-Za-z0-9_\-/]+$"
-        if not isinstance(group_name, str) or not re.match(pattern, group_name):
+        # fullmatch, not match: Python's `$` also matches immediately BEFORE a
+        # trailing newline, so `re.match(r"^[...]+$", "proj\n")` succeeds and a
+        # group name containing a newline would be written into a directory
+        # name in the group symlink tree.
+        pattern = r"[A-Za-z0-9_\-/]+"
+        if not isinstance(group_name, str) or not re.fullmatch(pattern, group_name):
             raise ValueError(
                 f"Invalid group name '{group_name}'. "
                 "Allowed characters: alphanumeric, '_', '-', '/'."
@@ -339,6 +388,22 @@ class BoxMeta(const.StrictModel):
 
     @model_validator(mode="after")
     def validate_box_meta(self):
+        # `creator_hostname` is the only free-text field written to
+        # boxmeta.toml -- it comes from `scutil --get ComputerName` or
+        # `platform.node()`, so its content is not otherwise constrained.
+        #
+        # Reject control characters, because `toml` 0.10.2 SILENTLY CORRUPTS
+        # them rather than escaping them: dumping "del\x7fchar" produces
+        # `"delx7fchar"`, which round-trips back as the wrong string with no
+        # error raised. Failing loudly here is far better than writing a
+        # quietly-wrong boxmeta.toml to a shared remote.
+        for ch in self.creator_hostname:
+            if ord(ch) < 0x20 or ord(ch) == 0x7F:
+                raise ValueError(
+                    f"creator_hostname must not contain control characters, "
+                    f"but contains {ch!r}: {self.creator_hostname!r}"
+                )
+
         if len(self.groups) != len(set(self.groups)):
             raise ValueError("Groups must be unique.")
 

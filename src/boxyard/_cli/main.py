@@ -52,10 +52,29 @@ def entrypoint(
         help="The path to the config file. Will be '~/.config/boxyard/config.toml' if not provided.",
     ),
 ):
+    import os
+
     from .. import const
-    app_state["config_path"] = (
-        config_path if config_path is not None else const.DEFAULT_CONFIG_PATH
-    )
+
+    # Config path precedence: the --config flag, then the BOXYARD_CONFIG_PATH
+    # environment variable, then the default location.
+    #
+    # The env var used to be read in only two places, neither of which chose
+    # the config the CLI loaded: `_utils/rclone.py` (to find `rclone_path`) and
+    # a message in `init` telling the user to set it. So
+    # `boxyard init --config <path>` instructed you to set a variable that the
+    # CLI then silently ignored, and every subsequent command operated on the
+    # default config instead.
+    if config_path is not None:
+        _resolved_config_path = config_path
+    else:
+        _env_config_path = os.environ.get(const.ENV_VAR_BOXYARD_CONFIG_PATH)
+        _resolved_config_path = (
+            Path(_env_config_path).expanduser()
+            if _env_config_path
+            else const.DEFAULT_CONFIG_PATH
+        )
+    app_state["config_path"] = _resolved_config_path
     if ctx.invoked_subcommand is not None:
         return
     typer.echo(ctx.get_help())

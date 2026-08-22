@@ -497,3 +497,63 @@ class TestBoxPathInference:
 
         result = get_box_index_name_from_sub_path(mock_config, deep_dir)
         assert result == "20251116_123456_abc12__mybox"
+
+# %% [markdown]
+# ## Regression: the CLI must honour `BOXYARD_CONFIG_PATH`
+
+# %%
+#|export
+class TestConfigPathResolution:
+    """
+    The `--config` flag, then `BOXYARD_CONFIG_PATH`, then the default.
+
+    The env var used to be read only when resolving `rclone_path` and in an
+    `init` message telling the user to set it -- so `boxyard init --config
+    <path>` instructed the user to set a variable the CLI then ignored, and
+    every command silently operated on the default config instead.
+    """
+
+    def _invoke(self, config_path):
+        from unittest.mock import MagicMock
+        from boxyard._cli.main import entrypoint, app_state
+
+        ctx = MagicMock()
+        ctx.invoked_subcommand = "list"  # so entrypoint returns without printing help
+        app_state.pop("config_path", None)
+        entrypoint(ctx, config_path=config_path)
+        return app_state["config_path"]
+
+    def test_env_var_is_used_when_flag_absent(self, monkeypatch, tmp_path):
+        from pathlib import Path
+
+        cfg = tmp_path / "custom.toml"
+        monkeypatch.setenv("BOXYARD_CONFIG_PATH", str(cfg))
+        assert Path(self._invoke(None)) == cfg
+
+    def test_env_var_is_tilde_expanded(self, monkeypatch):
+        from pathlib import Path
+
+        monkeypatch.setenv("BOXYARD_CONFIG_PATH", "~/somewhere/config.toml")
+        resolved = Path(self._invoke(None))
+        assert "~" not in str(resolved)
+        assert resolved.is_absolute()
+
+    def test_flag_beats_env_var(self, monkeypatch, tmp_path):
+        from pathlib import Path
+
+        env_cfg = tmp_path / "from_env.toml"
+        flag_cfg = tmp_path / "from_flag.toml"
+        monkeypatch.setenv("BOXYARD_CONFIG_PATH", str(env_cfg))
+        assert Path(self._invoke(flag_cfg)) == flag_cfg
+
+    def test_default_used_when_neither_given(self, monkeypatch):
+        from boxyard import const
+
+        monkeypatch.delenv("BOXYARD_CONFIG_PATH", raising=False)
+        assert self._invoke(None) == const.DEFAULT_CONFIG_PATH
+
+    def test_empty_env_var_falls_back_to_default(self, monkeypatch):
+        from boxyard import const
+
+        monkeypatch.setenv("BOXYARD_CONFIG_PATH", "")
+        assert self._invoke(None) == const.DEFAULT_CONFIG_PATH

@@ -71,6 +71,30 @@ class VirtualBoxGroupConfig(const.StrictModel):
             self._filter_func = get_group_filter_func(self.filter_expr)
         return self._filter_func(groups)
 
+    @model_validator(mode="after")
+    def validate_filter_expr(self):
+        """
+        Reject a malformed `filter_expr` when the config is loaded, rather than
+        when the group is first evaluated.
+
+        The evaluation below is load-bearing, not a smoke test:
+        `get_group_filter_func` only TOKENIZES eagerly and re-parses the token
+        stream on every call, so a structural error such as `"(a AND b"`
+        compiles fine and only raises when the predicate is invoked. That meant
+        a typo in config.toml surfaced far from its cause -- during symlink
+        building -- instead of at load.
+
+        The parser never consults the group set for control flow (there is no
+        short-circuiting; the right-hand side is always evaluated before
+        combining), so any input exercises the whole parse. `[]` is as good as
+        anything.
+        """
+        try:
+            self.is_in_group([])
+        except Exception as e:
+            raise ValueError(f"Invalid `filter_expr` {self.filter_expr!r}: {e}") from e
+        return self
+
 
 class BoxTimestampFormat(Enum):
     DATE_AND_TIME = "date_and_time"

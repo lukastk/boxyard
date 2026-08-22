@@ -24,12 +24,24 @@ import pytest
 
 from boxyard import const
 from boxyard._utils.perms import (
+    PermsManifestError,
     build_exec_manifest,
     generate_exec_manifest,
     apply_exec_manifest,
 )
 
 MANIFEST = const.BOX_PERMS_MANIFEST_REL_PATH
+
+# Root can read a 0o000 directory and write a read-only file, so the failures
+# these tests provoke simply cannot happen under uid 0.
+requires_unprivileged = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses filesystem permissions",
+)
+
+requires_mkfifo = pytest.mark.skipif(
+    not hasattr(os, "mkfifo"), reason="platform has no mkfifo"
+)
 
 
 # %%
@@ -48,6 +60,24 @@ def box(tmp_path):
     return tmp_path
 
 
+def write_manifest(box, obj):
+    """Write a manifest verbatim.
+
+    Takes a str (written as-is, for corrupt/hand-made content) or an object to
+    dump — i.e. whatever another boxyard version, or a corrupted transfer, might
+    leave in the box.
+    """
+    text = obj if isinstance(obj, str) else json.dumps(obj)
+    (box / MANIFEST).write_text(text)
+
+
+def make_exec(path, mode=0o755):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n")
+    path.chmod(mode)
+    return path
+
+
 # %%
 #|export
 class TestBuildManifest:
@@ -60,22 +90,86 @@ class TestBuildManifest:
         # link.sh points at an executable but must not appear (it's a symlink)
         assert "link.sh" not in build_exec_manifest(box)["executable"]
 
+    @requires_mkfifo
+    def test_excludes_non_regular_files(self, box):
+        # os.walk lists fifos, sockets and device nodes among `filenames`. None of
+        # them is transferred by rclone and none has an exec bit worth restoring,
+        # so a +x fifo must not become a manifest entry.
+        os.mkfifo(box / "pipe", 0o755)
+        assert "pipe" not in build_exec_manifest(box)["executable"]
+        assert build_exec_manifest(box)["executable"] == ["script.sh", "sub/tool"]
+
     def test_prunes_unsynced_dirs(self, box):
         # executables inside .venv / node_modules / .git must NOT be captured —
         # boxyard doesn't sync those, so they'd be dead weight in the manifest.
         for d in (".venv/bin", "node_modules/.bin", ".git/hooks", "sub/keep"):
-            (box / d).mkdir(parents=True, exist_ok=True)
-            f = box / d / "x"
-            f.write_text("#!/bin/sh\n")
-            f.chmod(0o755)
+            make_exec(box / d / "x")
         execs = build_exec_manifest(box)["executable"]
         assert "sub/keep/x" in execs
         assert not any(e.startswith((".venv/", "node_modules/", ".git/")) for e in execs)
+
+    @pytest.mark.parametrize("pruned", [".pixi/envs", "sub/.trunk", "sub/__pycache__"])
+    def test_prunes_every_name_in_the_list_at_any_depth(self, box, pruned):
+        make_exec(box / pruned / "x")
+        assert build_exec_manifest(box)["executable"] == ["script.sh", "sub/tool"]
+
+    def test_does_not_prune_names_that_merely_start_with_a_pruned_name(self, box):
+        # Pruning matches whole directory names. Real manifests in the wild carry
+        # .venv-scallop/bin/* entries.
+        make_exec(box / ".venv-scallop" / "bin" / "f2py")
+        assert build_exec_manifest(box)["executable"] == [
+            ".venv-scallop/bin/f2py",
+            "script.sh",
+            "sub/tool",
+        ]
+
+    def test_skips_ds_store(self, box):
+        make_exec(box / ".DS_Store")
+        make_exec(box / "sub" / ".DS_Store")
+        assert build_exec_manifest(box)["executable"] == ["script.sh", "sub/tool"]
+
+    def test_only_the_owner_execute_bit_counts(self, box):
+        make_exec(box / "group-x", 0o645)  # r-x for other, but not for owner
+        make_exec(box / "owner-x", 0o744)
+        execs = build_exec_manifest(box)["executable"]
+        assert "owner-x" in execs
+        assert "group-x" not in execs
 
     def test_excludes_manifest_itself(self, box):
         generate_exec_manifest(box)
         (box / MANIFEST).chmod(0o755)  # even if the manifest is +x, it's excluded
         assert MANIFEST not in build_exec_manifest(box)["executable"]
+
+    def test_does_not_exclude_a_nested_manifest(self, box):
+        # Only the manifest at the DATA root governs the box; one deeper in the
+        # tree is ordinary content whose exec bit is worth preserving.
+        make_exec(box / "sub" / MANIFEST)
+        assert f"sub/{MANIFEST}" in build_exec_manifest(box)["executable"]
+
+    def test_empty_tree_builds_an_empty_manifest(self, tmp_path):
+        assert build_exec_manifest(tmp_path) == {"version": 1, "executable": []}
+
+    @requires_unprivileged
+    def test_unreadable_directory_raises(self, box):
+        # A partial walk would write a SHRUNKEN manifest, push it to the remote,
+        # and permanently lose the exec bits of everything it failed to see.
+        # Failing the build is the whole point.
+        make_exec(box / "sub" / "nested" / "x")
+        (box / "sub" / "nested").chmod(0o000)
+        try:
+            with pytest.raises(PermissionError):
+                build_exec_manifest(box)
+        finally:
+            (box / "sub" / "nested").chmod(0o755)  # so tmp_path cleanup works
+
+    def test_missing_root_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            build_exec_manifest(tmp_path / "does_not_exist")
+
+    def test_root_that_is_a_file_raises(self, tmp_path):
+        (tmp_path / "a-file").write_text("x")
+        with pytest.raises(NotADirectoryError):
+            build_exec_manifest(tmp_path / "a-file")
 
 
 # %%
@@ -116,6 +210,19 @@ class TestGenerate:
         assert generate_exec_manifest(tmp_path) is True  # existing manifest updated
         assert json.loads((tmp_path / MANIFEST).read_text())["executable"] == []
 
+    @requires_unprivileged
+    def test_unreadable_directory_propagates(self, box):
+        # generate must not quietly write the shrunken manifest either.
+        generate_exec_manifest(box)
+        before = (box / MANIFEST).read_text()
+        (box / "sub").chmod(0o000)
+        try:
+            with pytest.raises(PermissionError):
+                generate_exec_manifest(box)
+        finally:
+            (box / "sub").chmod(0o755)
+        assert (box / MANIFEST).read_text() == before  # nothing was overwritten
+
 
 # %%
 #|export
@@ -137,6 +244,34 @@ class TestApply:
         mode = stat.S_IMODE((box / "script.sh").stat().st_mode)
         assert mode == 0o750  # x added where r was set, none for 'other'
 
+    @pytest.mark.parametrize(
+        "start,expected",
+        [
+            (0o644, 0o755),
+            (0o664, 0o775),
+            (0o640, 0o750),
+            (0o600, 0o700),
+            (0o604, 0o705),
+            (0o755, 0o755),  # already right: untouched
+            (0o200, 0o200),  # no read bits at all: nothing to mirror
+        ],
+    )
+    def test_read_bit_mirroring_table(self, tmp_path, start, expected):
+        make_exec(tmp_path / "s.sh")
+        generate_exec_manifest(tmp_path)
+        (tmp_path / "s.sh").chmod(start)
+        apply_exec_manifest(tmp_path)
+        assert stat.S_IMODE((tmp_path / "s.sh").stat().st_mode) == expected
+
+    def test_preserves_setuid(self, tmp_path):
+        make_exec(tmp_path / "s.sh")
+        generate_exec_manifest(tmp_path)
+        (tmp_path / "s.sh").chmod(0o4644)
+        if not stat.S_IMODE((tmp_path / "s.sh").stat().st_mode) & stat.S_ISUID:
+            pytest.skip("this filesystem does not keep the setuid bit")
+        apply_exec_manifest(tmp_path)
+        assert stat.S_IMODE((tmp_path / "s.sh").stat().st_mode) == 0o4755
+
     def test_leaves_nonexec_alone(self, box):
         generate_exec_manifest(box)
         apply_exec_manifest(box)
@@ -145,9 +280,7 @@ class TestApply:
     def test_additive_never_clears(self, box):
         # manifest says only script.sh is exec; data.txt is exec on disk but NOT
         # in the manifest -> additive apply must leave data.txt executable.
-        (box / MANIFEST).write_text(
-            json.dumps({"version": 1, "executable": ["script.sh"]})
-        )
+        write_manifest(box, {"version": 1, "executable": ["script.sh"]})
         (box / "data.txt").chmod(0o755)
         apply_exec_manifest(box)
         assert os.access(box / "data.txt", os.X_OK)  # not cleared
@@ -162,16 +295,155 @@ class TestApply:
         # backward compatibility: boxes created before this feature have no manifest
         assert apply_exec_manifest(tmp_path) == []
 
-    def test_missing_listed_file_skipped(self, box):
-        (box / MANIFEST).write_text(
-            json.dumps({"version": 1, "executable": ["script.sh", "gone.sh"]})
+    def test_missing_root_is_noop(self, tmp_path):
+        assert apply_exec_manifest(tmp_path / "does_not_exist") == []
+
+    @pytest.mark.parametrize("entry", ["gone.sh", "link.sh", "sub"])
+    def test_unusable_entries_are_skipped(self, box, entry):
+        # missing file / symlink / directory: the manifest describes the whole
+        # box, but a local checkout may legitimately lack files via rclone
+        # excludes, and neither a symlink nor a directory is ours to chmod.
+        write_manifest(box, {"version": 1, "executable": ["script.sh", entry]})
+        (box / "script.sh").chmod(0o644)
+        assert apply_exec_manifest(box) == ["script.sh"]
+
+
+# %%
+#|export
+class TestApplyRejectsBadManifests:
+    """A manifest that is present but unusable must be loud.
+
+    Skipping it silently means the exec bits are never restored, and the next
+    push regenerates the manifest from the un-restored tree — turning a local
+    read failure into permanent permission loss on every machine.
+    """
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "{ not valid json",
+            '{"version": 1, "executable": [',
+            "",
+            "[1, 2, 3]",  # valid JSON, wrong shape
+            '"a string"',
+        ],
+    )
+    def test_corrupt_manifest_raises(self, box, content):
+        write_manifest(box, content)
+        (box / "script.sh").chmod(0o644)
+        with pytest.raises(PermsManifestError) as exc:
+            apply_exec_manifest(box)
+        assert MANIFEST in str(exc.value)
+        assert not os.access(box / "script.sh", os.X_OK)  # nothing applied
+
+    @pytest.mark.parametrize(
+        "obj",
+        [
+            {"version": 1},  # no executable key
+            {"version": 1, "executable": "script.sh"},  # not a list
+            {"version": 1, "executable": {"script.sh": True}},
+        ],
+    )
+    def test_bad_executable_key_raises(self, box, obj):
+        write_manifest(box, obj)
+        with pytest.raises(PermsManifestError, match="executable"):
+            apply_exec_manifest(box)
+
+    @pytest.mark.parametrize(
+        "obj",
+        [
+            {"executable": []},  # version missing entirely
+            {"version": "1", "executable": []},
+            {"version": 0, "executable": []},
+            {"version": True, "executable": []},
+            {"version": None, "executable": []},
+        ],
+    )
+    def test_missing_or_invalid_version_raises(self, box, obj):
+        write_manifest(box, obj)
+        with pytest.raises(PermsManifestError, match="version"):
+            apply_exec_manifest(box)
+
+    def test_future_version_is_applied_not_refused(self, box):
+        # During a rollout a newer machine pushes a v2 manifest that older
+        # machines pull. Refusing it would break their syncs for the length of
+        # the rollout, and reading it with v1 rules cannot do harm: v1 only ever
+        # ADDS +x, so the worst case is failing to apply something.
+        write_manifest(box, {"version": 99, "executable": ["script.sh"]})
+        (box / "script.sh").chmod(0o644)
+        assert apply_exec_manifest(box) == ["script.sh"]
+
+    def test_unknown_keys_are_tolerated(self, box):
+        # Same reason as a future version: a v2 writer may add keys, and this is
+        # the one boxyard format written by versions other than the one reading.
+        write_manifest(
+            box,
+            {"version": 1, "executable": ["script.sh"], "not_executable": ["x"]},
         )
         (box / "script.sh").chmod(0o644)
-        changed = apply_exec_manifest(box)
-        assert changed == ["script.sh"]  # gone.sh silently skipped
+        assert apply_exec_manifest(box) == ["script.sh"]
 
-    def test_corrupt_manifest_warns_and_skips(self, box, capsys):
-        (box / MANIFEST).write_text("{ not valid json")
+    def test_non_string_entry_raises(self, box):
+        write_manifest(box, {"version": 1, "executable": ["script.sh", 17]})
+        with pytest.raises(PermsManifestError, match="non-string"):
+            apply_exec_manifest(box)
+
+    def test_absolute_entry_is_refused_and_left_untouched(self, box, tmp_path_factory):
+        # pathlib's join DISCARDS the root for an absolute entry: `box / "/x"` is
+        # "/x". The manifest comes off a shared remote, so this must never chmod.
+        outside = tmp_path_factory.mktemp("outside") / "victim"
+        outside.write_text("x")
+        outside.chmod(0o644)
+        write_manifest(box, {"version": 1, "executable": [outside.as_posix()]})
+        with pytest.raises(PermsManifestError, match="not a path inside the box"):
+            apply_exec_manifest(box)
+        assert stat.S_IMODE(outside.stat().st_mode) == 0o644
+
+    @pytest.mark.parametrize(
+        "entry", ["../victim", "sub/../../victim", "../../etc/shadow", "sub/.."]
+    )
+    def test_dotdot_entry_is_refused(self, box, entry):
+        write_manifest(box, {"version": 1, "executable": [entry]})
+        with pytest.raises(PermsManifestError, match="not a path inside the box"):
+            apply_exec_manifest(box)
+
+    def test_escaping_entry_does_not_touch_the_file_it_names(self, box, tmp_path):
+        victim = box.parent / "victim"
+        victim.write_text("x")
+        victim.chmod(0o644)
+        write_manifest(box, {"version": 1, "executable": ["../victim"]})
+        with pytest.raises(PermsManifestError):
+            apply_exec_manifest(box)
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+
+    def test_validates_the_whole_manifest_before_changing_anything(self, box):
+        # A bad entry after a good one must not leave the box half-applied.
+        write_manifest(box, {"version": 1, "executable": ["script.sh", "../escape"]})
         (box / "script.sh").chmod(0o644)
-        assert apply_exec_manifest(box) == []
-        assert "could not parse perms manifest" in capsys.readouterr().err
+        with pytest.raises(PermsManifestError):
+            apply_exec_manifest(box)
+        assert stat.S_IMODE((box / "script.sh").stat().st_mode) == 0o644
+
+    def test_manifest_with_undecodable_bytes_raises(self, box):
+        # A garbled transfer can leave bytes that are not text at all. That is
+        # the same class of problem as unparseable JSON, so it must surface the
+        # same way rather than as a bare UnicodeDecodeError.
+        (box / MANIFEST).write_bytes(b'{"version": 1, "executable": ["\xff.sh"]}')
+        with pytest.raises(PermsManifestError, match="could not read"):
+            apply_exec_manifest(box)
+
+    def test_manifest_that_is_a_directory_raises(self, box):
+        # Present but unreadable is not the same as absent.
+        (box / MANIFEST).mkdir()
+        with pytest.raises(PermsManifestError, match="could not read"):
+            apply_exec_manifest(box)
+
+    @requires_unprivileged
+    def test_unreadable_manifest_raises(self, box):
+        generate_exec_manifest(box)
+        (box / MANIFEST).chmod(0o000)
+        try:
+            with pytest.raises(PermsManifestError, match="could not read"):
+                apply_exec_manifest(box)
+        finally:
+            (box / MANIFEST).chmod(0o644)
