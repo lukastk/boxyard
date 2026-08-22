@@ -1,3 +1,26 @@
+## [0.4.2] - 2026-08-22
+
+### 🐛 Bug Fixes
+
+- **Same-named boxes were silently dropped from a group's symlink tree.** When
+  two boxes resolved to the same title in a group, the CONFLICT suffix that was
+  supposed to disambiguate them never did. Two compounding faults: the threshold
+  was `> 1`, but the counter holds how many boxes have *already* taken the
+  title, so the second box to want `"foo"` saw `1`, failed the test, and took
+  `"foo"` as well; and the increment landed on the *rewritten* key, so once a
+  box became `"foo (CONFLICT 2)"` the count for `"foo"` stopped rising and every
+  later box computed that same suffix.
+
+  N boxes sharing a title therefore produced only **two** distinct names, and
+  symlink creation resolved each collision last-one-wins — so five same-named
+  boxes yielded two symlinks and three boxes were simply absent from the group,
+  with no warning. Since every `active/*` group uses
+  `box_title_mode = "name"`, this meant real work could quietly go missing
+  from `~/g`.
+
+  Numbering is now sequential and every box gets its own symlink: `foo`,
+  `foo (CONFLICT 1)`, `foo (CONFLICT 2)`, …
+
 ## [0.4.1] - 2026-08-22
 
 Two more silent failures, of the same family as the v0.4.0 permissions bug: a
