@@ -256,41 +256,34 @@ func boxTitle(bm *models.BoxMeta, mode config.BoxGroupTitleMode) (string, error)
 // bugs. It is deliberately not fixed here; see the report accompanying this
 // port and the `# TODO` on the Python line.
 //
-// The Python is:
+// The original Python had two compounding bugs:
 //
-//	if title_counter[title] > 1:
-//	    title = f"{title} (CONFLICT {title_counter[title]})"
-//	title_counter[title] += 1
+//		if title_counter[title] > 1:
+//		    title = f"{title} (CONFLICT {title_counter[title]})"
+//		title_counter[title] += 1
 //
-// Two things are wrong with it, and they compound:
+//	  - The threshold was `> 1` where it should be `> 0`. The counter holds how
+//	    many boxes have ALREADY taken this title, so the SECOND box to want
+//	    "foo" saw a count of 1, did not trigger, and took "foo" as well.
+//	  - The increment landed on the possibly-REWRITTEN title rather than the
+//	    original. Once a box became "foo (CONFLICT 2)", the count for "foo"
+//	    stopped rising and every later box computed the identical suffix.
 //
-//   - The threshold is `> 1` where it should be `> 0`. The counter holds how
-//     many boxes have ALREADY taken this title, so the SECOND box to want
-//     "foo" sees a count of 1, does not trigger, and takes "foo" as well.
-//   - The increment is applied to the possibly-REWRITTEN title, not to the
-//     original. Once a box is renamed to "foo (CONFLICT 2)", the count for
-//     "foo" stops rising, so it is pinned at 2 forever and every later box
-//     computes the identical suffix.
+// So N boxes sharing a title produced only TWO distinct names, and
+// createSymlinks resolved each collision last-one-wins — silently dropping the
+// rest from the group. Since every `active/*` group uses
+// `box_title_mode = "name"`, that meant real work quietly missing from ~/g.
 //
-// The result for N boxes all wanting the title "foo", in oldest-first order:
-//
-//	box 1 -> "foo"
-//	box 2 -> "foo"                (collides with box 1)
-//	box 3 -> "foo (CONFLICT 2)"
-//	box 4 -> "foo (CONFLICT 2)"   (collides with box 3)
-//	box N -> "foo (CONFLICT 2)"   (... and so does every one after it)
-//
-// So the mechanism never actually disambiguates anything: it produces at most
-// two distinct names, and createSymlinks then resolves each collision by
-// last-one-wins, silently dropping the older box from the group. The intended
-// behaviour is almost certainly `> 0` plus incrementing the original title,
-// which yields "foo", "foo (CONFLICT 1)", "foo (CONFLICT 2)", ...
-func conflictTitle(counter map[string]int, title string) string {
-	if counter[title] > 1 {
-		title = fmt.Sprintf("%s (CONFLICT %d)", title, counter[title])
+// Fixed in Python (v0.4.2) rather than reproduced here, per the project rule.
+// Both implementations now yield "foo", "foo (CONFLICT 1)",
+// "foo (CONFLICT 2)", ... — one distinct name per box.
+func conflictTitle(counter map[string]int, base string) string {
+	seen := counter[base]
+	counter[base]++
+	if seen == 0 {
+		return base
 	}
-	counter[title]++
-	return title
+	return fmt.Sprintf("%s (CONFLICT %d)", base, seen)
 }
 
 // --- removal --------------------------------------------------------------

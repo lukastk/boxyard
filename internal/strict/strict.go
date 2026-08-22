@@ -116,6 +116,21 @@ func UnmarshalJSON(data []byte, v any) error {
 	return validate(v)
 }
 
+// MarshalJSONIndent encodes v the way Python's json.dumps(..., indent=2) does:
+// two-space indent, ": " between key and value, and no HTML escaping. Used for
+// the CLI's `-j`/`--output-format json` output, which is consumed by
+// mysystem's TypeScript and by shell pipelines through jq.
+func MarshalJSONIndent(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
 // ReadTOMLFile reads path and decodes it strictly into v. A missing file is
 // returned as-is (wrapping fs.ErrNotExist) so callers can distinguish "absent"
 // — which is sometimes a legitimate state — from "present but malformed",

@@ -396,6 +396,42 @@ func LoadBoxMeta(cfg *config.Config, storageLocationName, boxIndexName string) (
 	return bm, nil
 }
 
+// IndexNameFromSubPath returns the index name of the box containing subPath,
+// or "" if the path is not inside a box.
+//
+// The path is resolved first, so a symlink into a box — which is how the whole
+// group tree under ~/g works — is recognised.
+func IndexNameFromSubPath(cfg *config.Config, subPath string) (string, error) {
+	p, err := config.ExpandUser(subPath)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		// A path that does not exist cannot be inside a box.
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	root, err := filepath.EvalSymlinks(cfg.UserBoxesPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	if resolved == root {
+		// In the boxes root, but not inside any box.
+		return "", nil
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return "", nil
+	}
+	return strings.SplitN(rel, string(filepath.Separator), 2)[0], nil
+}
+
 // SortByCreation orders boxes oldest-first, the order the symlink builder uses.
 func SortByCreation(metas []*BoxMeta) {
 	sort.SliceStable(metas, func(i, j int) bool {
