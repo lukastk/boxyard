@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // syncRecordShape mirrors the Python SyncRecord's field order exactly. Field
@@ -197,6 +198,32 @@ func TestReadFileDistinguishesAbsentFromMalformed(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), bad) {
 		t.Errorf("error should name the offending path, got: %v", err)
+	}
+}
+
+// pydantic omits the fractional part when the microsecond component is zero.
+// A ULID lands on a whole second roughly once in a thousand, so a fixed
+// six-digit layout silently diverges from the Python implementation for those
+// records — found by differential testing, not by reading the code.
+func TestFormatPydanticTime(t *testing.T) {
+	cases := []struct {
+		name string
+		in   time.Time
+		want string
+	}{
+		{"whole second omits the fraction", time.Date(2026, 6, 1, 11, 9, 0, 0, time.UTC), "2026-06-01T11:09:00Z"},
+		{"milliseconds pad to six digits", time.Date(2026, 6, 1, 11, 9, 0, 415000000, time.UTC), "2026-06-01T11:09:00.415000Z"},
+		{"one millisecond", time.Date(2026, 6, 1, 11, 9, 0, 1000000, time.UTC), "2026-06-01T11:09:00.001000Z"},
+		{"999 milliseconds", time.Date(2026, 6, 1, 11, 9, 0, 999000000, time.UTC), "2026-06-01T11:09:00.999000Z"},
+		{"microsecond precision is kept", time.Date(2026, 6, 1, 11, 9, 0, 123456000, time.UTC), "2026-06-01T11:09:00.123456Z"},
+		{"non-UTC is converted", time.Date(2026, 6, 1, 12, 9, 0, 0, time.FixedZone("x", 3600)), "2026-06-01T11:09:00Z"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := FormatPydanticTime(c.in); got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 

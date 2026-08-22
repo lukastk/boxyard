@@ -83,11 +83,14 @@ const (
 	DefaultMaxConcurrentRclone  = 3
 )
 
-// SyncRecordTimestampLayout is the exact wire format pydantic emits for a sync
-// record's timestamp: RFC3339 with six fractional digits and a literal Z.
-// Go's time.RFC3339Nano trims trailing zeros and would break byte-compatibility
-// with records written by the Python implementation.
-const SyncRecordTimestampLayout = "2006-01-02T15:04:05.000000Z"
+// Timestamp layouts matching pydantic's serialisation of a timezone-aware UTC
+// datetime. Which one applies depends on the microsecond component: pydantic
+// OMITS the fractional part entirely when it is zero. Use
+// strict.FormatPydanticTime rather than either of these directly.
+const (
+	PydanticTimestampLayout            = "2006-01-02T15:04:05.000000Z"
+	PydanticTimestampLayoutWholeSecond = "2006-01-02T15:04:05Z"
+)
 
 // Environment variables.
 const (

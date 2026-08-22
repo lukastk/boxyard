@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -141,6 +142,27 @@ func ReadJSONFile(path string, v any) error {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	return nil
+}
+
+// FormatPydanticTime renders a time the way pydantic serialises a timezone-aware
+// UTC datetime: RFC3339 with SIX fractional digits, but with the fractional
+// part OMITTED ENTIRELY when the microsecond component is zero.
+//
+// That conditional is easy to miss and impossible to guess. A ULID carries
+// milliseconds, so a sync record's timestamp normally looks like
+// "2026-06-01T11:09:00.415000Z" — but roughly one ULID in a thousand lands on
+// a whole second, and pydantic then writes "2026-06-01T11:09:00Z". A fixed
+// six-digit layout produces ".000000Z" for those and silently diverges from
+// every record the Python implementation writes.
+//
+// Go's own layouts cannot express this: ".000000" always pads and ".999999"
+// trims ALL trailing zeros, so 415000µs would become ".415".
+func FormatPydanticTime(t time.Time) string {
+	t = t.UTC()
+	if t.Nanosecond() == 0 {
+		return t.Format("2006-01-02T15:04:05Z")
+	}
+	return t.Format("2006-01-02T15:04:05.000000Z")
 }
 
 // MarshalJSONCompact encodes v the way pydantic's model_dump_json does: no

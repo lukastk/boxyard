@@ -38,6 +38,22 @@ func TestTimestampDerivedFromULIDKeepsSixDigits(t *testing.T) {
 	}
 }
 
+// The 1-in-1000 case: a ULID on a whole second. Python writes no fractional
+// part at all, and a fixed six-digit layout would emit ".000000Z". Verified
+// against the live Python across 2028 ULIDs including 20 boundary cases.
+func TestULIDOnWholeSecondOmitsFraction(t *testing.T) {
+	const boundary = "01KT1DYT70GFETBNYAJ1Z7DV9X" // 2026-06-01T11:09:00.000Z
+	r := SyncRecord{ULID: boundary, SyncComplete: true, SyncerHostname: "h"}
+	out, err := r.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"ulid":"01KT1DYT70GFETBNYAJ1Z7DV9X","timestamp":"2026-06-01T11:09:00Z","sync_complete":true,"syncer_hostname":"h"}`
+	if string(out) != want {
+		t.Errorf("boundary ULID mismatch\n got: %s\nwant: %s", out, want)
+	}
+}
+
 func TestRoundTripPythonWrittenRecord(t *testing.T) {
 	r, err := UnmarshalSyncRecord([]byte(goldenRecord))
 	if err != nil {

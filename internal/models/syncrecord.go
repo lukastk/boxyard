@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lukastk/boxyard/internal/boxconst"
 	"github.com/lukastk/boxyard/internal/strict"
 	"github.com/lukastk/boxyard/internal/sysinfo"
 	"github.com/oklog/ulid/v2"
@@ -29,11 +28,14 @@ type SyncRecord struct {
 }
 
 // ulidTimestamp renders a ULID's embedded millisecond time the way pydantic
-// serialises the Python ULID's .datetime: RFC3339 in UTC with SIX fractional
-// digits and a literal Z. A ULID carries milliseconds, so the last three digits
-// are always zero — "2026-06-01T11:09:00.415000Z".
+// serialises the Python ULID's .datetime.
+//
+// Usually that is six fractional digits — "2026-06-01T11:09:00.415000Z" —
+// because a ULID carries milliseconds. But a ULID landing on a whole second
+// has a zero microsecond component, and pydantic then omits the fraction
+// entirely. See strict.FormatPydanticTime.
 func ulidTimestamp(u ulid.ULID) string {
-	return ulid.Time(u.Time()).UTC().Format(boxconst.SyncRecordTimestampLayout)
+	return strict.FormatPydanticTime(ulid.Time(u.Time()))
 }
 
 // NewSyncRecord creates a record stamped with a fresh ULID and this machine's
