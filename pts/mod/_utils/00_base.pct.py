@@ -191,21 +191,42 @@ def check_last_time_modified(path: str | Path) -> float | None:
 
         while stack:
             current = stack.pop()
+            # A directory we cannot read must NOT be skipped silently.
+            #
+            # This walk answers "when did this box last change?", and the answer
+            # drives the sync decision. Swallowing a permission or I/O error
+            # here lowers the reported mtime, so a box with real local changes
+            # underneath an unreadable directory looks SYNCED and is never
+            # pushed -- data loss by omission, with no error anywhere. The same
+            # failure mode was fixed in `_utils/perms.py`, where a swallowed
+            # walk error silently shrank the permissions manifest.
+            #
+            # A directory that VANISHES mid-walk is different: that race is real
+            # and legitimate (a build directory being cleaned, a temp file
+            # going away), so it is tolerated.
             try:
-                with os.scandir(current) as entries:
-                    for entry in entries:
-                        if entry.is_file(follow_symlinks=False):
-                            try:
-                                stat_result = entry.stat()
-                                mtime = stat_result.st_mtime
-                                if max_mtime is None or mtime > max_mtime:
-                                    max_mtime = mtime
-                            except (OSError, PermissionError):
-                                continue
-                        elif entry.is_dir(follow_symlinks=False):
-                            stack.append(entry.path)
-            except (OSError, PermissionError):
+                entries = list(os.scandir(current))
+            except FileNotFoundError:
                 continue
+            except OSError as e:
+                raise OSError(
+                    f"Cannot determine when '{path}' last changed: "
+                    f"'{current}' could not be read ({e}). Fix the permissions, "
+                    f"or exclude it from the box."
+                ) from e
+
+            for entry in entries:
+                if entry.is_file(follow_symlinks=False):
+                    try:
+                        stat_result = entry.stat()
+                    except FileNotFoundError:
+                        # The file went away between scandir and stat.
+                        continue
+                    mtime = stat_result.st_mtime
+                    if max_mtime is None or mtime > max_mtime:
+                        max_mtime = mtime
+                elif entry.is_dir(follow_symlinks=False):
+                    stack.append(entry.path)
 
     return (
         datetime.fromtimestamp(max_mtime, tz=timezone.utc)

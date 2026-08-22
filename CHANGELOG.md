@@ -1,3 +1,49 @@
+## [0.4.2] - 2026-08-22
+
+### 🐛 Bug Fixes
+
+- **Same-named boxes were silently dropped from a group's symlink tree.** When
+  two boxes resolved to the same title in a group, the CONFLICT suffix that was
+  supposed to disambiguate them never did. Two compounding faults: the threshold
+  was `> 1`, but the counter holds how many boxes have *already* taken the
+  title, so the second box to want `"foo"` saw `1`, failed the test, and took
+  `"foo"` as well; and the increment landed on the *rewritten* key, so once a
+  box became `"foo (CONFLICT 2)"` the count for `"foo"` stopped rising and every
+  later box computed that same suffix.
+
+  N boxes sharing a title therefore produced only **two** distinct names, and
+  symlink creation resolved each collision last-one-wins — so five same-named
+  boxes yielded two symlinks and three boxes were simply absent from the group,
+  with no warning. Since every `active/*` group uses
+  `box_title_mode = "name"`, this meant real work could quietly go missing
+  from `~/g`.
+
+  Numbering is now sequential and every box gets its own symlink: `foo`,
+  `foo (CONFLICT 1)`, `foo (CONFLICT 2)`, …
+
+## [0.4.1] - 2026-08-22
+
+Two more silent failures, of the same family as the v0.4.0 permissions bug: a
+swallowed error producing wrong behaviour instead of an error.
+
+### 🐛 Bug Fixes
+
+- **A box with changes under an unreadable directory was never pushed.**
+  `check_last_time_modified` swallowed every `OSError` from `os.scandir`. That
+  walk answers "when did this box last change?", and the answer drives the sync
+  decision — so those changes lowered nothing, the box reported an older mtime,
+  looked `SYNCED`, and was silently left unsynced. It now raises, naming the
+  directory to fix. A directory or file that *vanishes* mid-walk is a real race
+  and is still tolerated.
+
+- **A remote sync record disappearing mid-pull raised an opaque
+  `AttributeError`.** `sync_helper` read the remote record after a successful
+  pull and called `.rclone_save` on it without a `None` check, so a box deleted
+  from another machine mid-sync produced `'NoneType' object has no attribute
+  'rclone_save'`. It now raises `SyncFailed` with an explanation. The local
+  record is already incomplete at that point, so the next run sees
+  `SYNC_FROM_REMOTE_INCOMPLETE` and can safely retry.
+
 ## [0.4.0] - 2026-08-22
 
 Nine bugs, found by building a second implementation and comparing the two.
