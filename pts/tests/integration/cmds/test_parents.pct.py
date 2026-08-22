@@ -172,12 +172,19 @@ assert meta_c.box_id in root_ids
 
 # %%
 #|export
-import toml
+import tomllib
+import tomli_w
+
+
+def _load_toml(path):
+    """Read a TOML file. `tomllib.load` needs a binary handle."""
+    with open(path, "rb") as f:
+        return tomllib.load(f)
 
 # Enable single_parent in config
-config_data = toml.load(config_path)
+config_data = _load_toml(config_path)
 config_data["single_parent"] = True
-config_path.write_text(toml.dumps(config_data))
+config_path.write_text(tomli_w.dumps(config_data))
 
 # Try to add two parents to box_d (already has B and C as parents via our previous setup)
 # First restore C as parent of D
@@ -190,7 +197,7 @@ with pytest.raises(ValueError, match="single_parent"):
 
 # Restore config
 config_data["single_parent"] = False
-config_path.write_text(toml.dumps(config_data))
+config_path.write_text(tomli_w.dumps(config_data))
 
 # %% [markdown]
 # ## Test delete with children protection

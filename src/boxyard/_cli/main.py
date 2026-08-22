@@ -230,9 +230,21 @@ def cli_init(
     ),
 ):
     """
-    Create a new box.
+    Initialise boxyard's config and data directories.
     """
     from ..cmds import init_boxyard
+
+    # `init` has its own `--config-path`, which predates the global `--config`.
+    # Keep it (it is the documented flag for this command and takes
+    # precedence), but fall back to the SAME resolution every other command
+    # uses -- global `--config`, then BOXYARD_CONFIG_PATH, then the default --
+    # instead of jumping straight to the default.
+    #
+    # Without this, `boxyard --config <sandbox> init` silently initialised the
+    # DEFAULT config instead of the one named, which is exactly the class of
+    # surprise the BOXYARD_CONFIG_PATH fix exists to remove.
+    if config_path is None:
+        config_path = app_state.get("config_path")
 
     init_boxyard(
         config_path=config_path,

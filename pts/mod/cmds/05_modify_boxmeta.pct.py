@@ -191,7 +191,7 @@ refresh_boxyard_meta(config)
 # Check that the boxmeta has successfully updated on remote after syncing
 
 # %%
-import toml
+import tomllib
 from boxyard.cmds import sync_box
 from boxyard._models import BoxPart
 
@@ -200,11 +200,13 @@ await sync_box(
     box_index_name=box_index_name,
     sync_choices=[BoxPart.META],
 )
-boxmeta_dump = toml.load(
-    remote_rclone_path
-    / "boxyard"
-    / const.REMOTE_BOXES_REL_PATH
-    / box_index_name
-    / const.BOX_METAFILE_REL_PATH
+boxmeta_dump = tomllib.loads(
+    (
+        remote_rclone_path
+        / "boxyard"
+        / const.REMOTE_BOXES_REL_PATH
+        / box_index_name
+        / const.BOX_METAFILE_REL_PATH
+    ).read_text(encoding="utf-8")
 )
 assert boxmeta_dump["groups"] == ["group1", "group2"]

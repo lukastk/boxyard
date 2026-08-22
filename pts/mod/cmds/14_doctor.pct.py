@@ -268,13 +268,13 @@ _incomplete_rec_path.write_text(
 (_test_config.local_store_path / "ghost-storage").mkdir(parents=True)
 
 # A remote box that is not mirrored locally (as if created by another machine)
-import toml as _toml
+import tomli_w as _tomli_w
 
 _foreign_index_name = "20990101_aaaaaa__foreign-box"
 _foreign_box_path = remote_rclone_path / "boxyard" / const.REMOTE_BOXES_REL_PATH / _foreign_index_name
 _foreign_box_path.mkdir(parents=True)
 (_foreign_box_path / const.BOX_METAFILE_REL_PATH).write_text(
-    _toml.dumps({"storage_location": "my_remote", "creator_hostname": "other-machine", "groups": [], "parents": []})
+    _tomli_w.dumps({"storage_location": "my_remote", "creator_hostname": "other-machine", "groups": [], "parents": []})
 )
 
 # A tombstone on the remote for a box that is still registered locally

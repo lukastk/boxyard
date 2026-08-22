@@ -5,7 +5,7 @@ __all__ = ['BoxGroupConfig', 'BoxGroupTitleMode', 'BoxTimestampFormat', 'Config'
 # %% pts/mod/config.pct.py 3
 from pydantic import model_validator
 from pathlib import Path
-import toml
+import tomllib
 import os
 from enum import Enum
 
@@ -176,12 +176,13 @@ def get_config(path: Path | None = None) -> Config:
     if path is None:
         path = const.DEFAULT_CONFIG_PATH
     path = Path(path).expanduser()
-    config_dict = {"config_path": path, **toml.load(path)}
+    with open(path, "rb") as _f:
+        config_dict = {"config_path": path, **tomllib.load(_f)}
 
     # Additively merge default_box_groups from env var (TOML list string, e.g. '["ctx/mac", "ctx/linux"]')
     env_groups = os.environ.get(const.ENV_VAR_DEFAULT_BOX_GROUPS)
     if env_groups:
-        extra = toml.loads(f"v = {env_groups}")["v"]
+        extra = tomllib.loads(f"v = {env_groups}")["v"]
         existing = config_dict.get("default_box_groups", [])
         config_dict["default_box_groups"] = list(dict.fromkeys(existing + extra))
 

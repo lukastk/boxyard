@@ -22,7 +22,7 @@ from nblite import nbl_export, show_doc; nbl_export();
 # %%
 #|export
 import json
-import toml
+import tomllib
 from pathlib import Path
 from collections import deque
 
@@ -69,7 +69,8 @@ class BoxyardFast:
         config_path = Path(config_path or _DEFAULT_CONFIG_PATH).expanduser()
         config = {}
         if config_path.exists():
-            config = toml.load(config_path)
+            with open(config_path, "rb") as f:
+                config = tomllib.load(f)
 
         if path is None:
             data_path = config.get("boxyard_data_path", "~/.boxyard")

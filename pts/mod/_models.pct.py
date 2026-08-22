@@ -20,7 +20,8 @@ from nblite import nbl_export, show_doc; nbl_export();
 #|export
 from pydantic import Field, model_validator
 from pathlib import Path
-import toml
+import tomllib
+import tomli_w
 from datetime import datetime, timezone
 import random
 from ulid import ULID
@@ -329,7 +330,7 @@ class BoxMeta(const.StrictModel):
         del model_dump["name"]
         # Atomic write: temp file + rename
         tmp_path = save_path.with_suffix(".tmp")
-        tmp_path.write_text(toml.dumps(model_dump))
+        tmp_path.write_text(tomli_w.dumps(model_dump))
         tmp_path.rename(save_path)
 
     @classmethod
@@ -360,7 +361,7 @@ class BoxMeta(const.StrictModel):
 
         return BoxMeta(
             **{
-                **toml.loads(boxmeta_path.read_text()),
+                **tomllib.loads(boxmeta_path.read_text(encoding="utf-8")),
                 "creation_timestamp_utc": creation_timestamp,
                 "box_subid": box_subid,
                 "name": name,
@@ -392,11 +393,14 @@ class BoxMeta(const.StrictModel):
         # boxmeta.toml -- it comes from `scutil --get ComputerName` or
         # `platform.node()`, so its content is not otherwise constrained.
         #
-        # Reject control characters, because `toml` 0.10.2 SILENTLY CORRUPTS
-        # them rather than escaping them: dumping "del\x7fchar" produces
-        # `"delx7fchar"`, which round-trips back as the wrong string with no
-        # error raised. Failing loudly here is far better than writing a
-        # quietly-wrong boxmeta.toml to a shared remote.
+        # Reject control characters. This began as a guard against `toml`
+        # 0.10.2, which SILENTLY CORRUPTED them -- dumping "del\x7fchar"
+        # produced `"delx7fchar"`, round-tripping back wrong with no error.
+        # That library is gone (see `tomli_w` below, which escapes them
+        # correctly), but the rule is kept on its own merits: a control
+        # character in a machine name is meaningless, and it would corrupt the
+        # output of `boxyard list` and `doctor`, which print this value.
+        # Keeping it also keeps the Go implementation trivially in step.
         for ch in self.creator_hostname:
             if ord(ch) < 0x20 or ord(ch) == 0x7F:
                 raise ValueError(

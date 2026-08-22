@@ -557,3 +557,58 @@ class TestConfigPathResolution:
 
         monkeypatch.setenv("BOXYARD_CONFIG_PATH", "")
         assert self._invoke(None) == const.DEFAULT_CONFIG_PATH
+
+# %% [markdown]
+# ## Regression: `init` must use the same config-path resolution as everything else
+
+# %%
+#|export
+class TestInitConfigPathResolution:
+    """
+    `init` has its own `--config-path` flag, which predates the global
+    `--config`. It used to ignore the global flag and BOXYARD_CONFIG_PATH
+    entirely and jump straight to the default, so
+    `boxyard --config <sandbox> init` initialised the WRONG config.
+    """
+
+    def _invoke_init(self, monkeypatch, init_flag, global_flag, env):
+        from unittest.mock import MagicMock, patch
+        from boxyard._cli.main import cli_init, entrypoint, app_state
+
+        if env is None:
+            monkeypatch.delenv("BOXYARD_CONFIG_PATH", raising=False)
+        else:
+            monkeypatch.setenv("BOXYARD_CONFIG_PATH", str(env))
+
+        ctx = MagicMock()
+        ctx.invoked_subcommand = "init"
+        app_state.pop("config_path", None)
+        entrypoint(ctx, config_path=global_flag)
+
+        with patch("boxyard.cmds.init_boxyard") as mock_init:
+            cli_init(config_path=init_flag, data_path=None)
+        return mock_init.call_args.kwargs["config_path"]
+
+    def test_init_flag_wins(self, monkeypatch, tmp_path):
+        from pathlib import Path
+
+        chosen = self._invoke_init(monkeypatch, tmp_path / "init.toml", tmp_path / "global.toml", tmp_path / "env.toml")
+        assert Path(chosen) == tmp_path / "init.toml"
+
+    def test_falls_back_to_global_flag(self, monkeypatch, tmp_path):
+        from pathlib import Path
+
+        chosen = self._invoke_init(monkeypatch, None, tmp_path / "global.toml", tmp_path / "env.toml")
+        assert Path(chosen) == tmp_path / "global.toml"
+
+    def test_falls_back_to_env_var(self, monkeypatch, tmp_path):
+        from pathlib import Path
+
+        chosen = self._invoke_init(monkeypatch, None, None, tmp_path / "env.toml")
+        assert Path(chosen) == tmp_path / "env.toml"
+
+    def test_falls_back_to_default(self, monkeypatch):
+        from boxyard import const
+
+        chosen = self._invoke_init(monkeypatch, None, None, None)
+        assert chosen == const.DEFAULT_CONFIG_PATH
