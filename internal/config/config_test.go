@@ -142,11 +142,6 @@ func TestRejectionsMatchPython(t *testing.T) {
 			wantInErr: "filter_expr",
 		},
 		{
-			name:      "virtual group with unparseable filter_expr",
-			body:      strings.Replace(validBaseline, "virtual_box_groups = {}", `virtual_box_groups = {active = {filter_expr = "AND AND"}}`, 1),
-			wantInErr: "filter_expr",
-		},
-		{
 			name:      "invalid group name",
 			body:      strings.Replace(validBaseline, "box_groups = {}", `box_groups = {"bad name" = {}}`, 1),
 			wantInErr: "group name",
@@ -276,6 +271,21 @@ func TestBoxGroupTitleModeDefaultsToIndexName(t *testing.T) {
 	}
 }
 
+// Verified against the live Python: an unparseable filter_expr does NOT fail
+// get_config; the ValueError surfaces from is_in_group. Being stricter here
+// would brick the Go machine on a config the five Python machines accept.
+func TestUnparseableFilterExprDefersToEvaluation(t *testing.T) {
+	body := strings.Replace(validBaseline, "virtual_box_groups = {}",
+		`virtual_box_groups = {bad = {filter_expr = "(a AND b"}}`, 1)
+	cfg, err := loadWithEnv(t, body, "")
+	if err != nil {
+		t.Fatalf("load should succeed as Python's does, got: %v", err)
+	}
+	if _, err := cfg.VirtualBoxGroups["bad"].IsInGroup([]string{"a"}); err == nil {
+		t.Fatal("IsInGroup should surface the compile failure, as Python's is_in_group does")
+	}
+}
+
 func TestVirtualGroupFilterIsCompiledAtLoad(t *testing.T) {
 	body := strings.Replace(validBaseline, "virtual_box_groups = {}",
 		`virtual_box_groups = {active = {filter_expr = "(NOT archived) AND (NOT null)"}}`, 1)
@@ -284,11 +294,15 @@ func TestVirtualGroupFilterIsCompiledAtLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := cfg.VirtualBoxGroups["active"]
-	if !g.IsInGroup([]string{"proj"}) {
+	in, err := g.IsInGroup([]string{"proj"})
+	if err != nil {
+		t.Fatalf("IsInGroup: %v", err)
+	}
+	if !in {
 		t.Error("box with no archived/null groups should be in 'active'")
 	}
-	if g.IsInGroup([]string{"archived"}) {
-		t.Error("archived box should not be in 'active'")
+	if in, err = g.IsInGroup([]string{"archived"}); err != nil || in {
+		t.Errorf("archived box should not be in 'active' (in=%v err=%v)", in, err)
 	}
 }
 

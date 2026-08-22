@@ -44,8 +44,13 @@ type Sandbox struct {
 	DataPath       string // boxyard_data_path
 	UserBoxesPath  string // user_boxes_path
 	UserGroupsPath string // user_box_groups_path
-	RemotePrefix   string // remote store_path, e.g. "boxyard-gotest/run-a1b2c3"
-	RcloneConfig   string // path to the rclone config (the real one; read-only use)
+	RemotePrefix   string // EFFECTIVE full remote path, e.g. "boxyard-gotest/run-a1b2c3"
+	RcloneConfig   string // path to the sandbox's own generated rclone config
+
+	// storePath is the store_path written into the sandbox config. It is
+	// relative to the alias remote's root, so RemotePrefix is always
+	// RequiredRemotePrefix + storePath. See sandbox.go.
+	storePath string
 }
 
 // expand resolves a leading ~ and makes the path absolute and clean.
