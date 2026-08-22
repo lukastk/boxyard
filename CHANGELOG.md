@@ -1,3 +1,26 @@
+## [0.4.1] - 2026-08-22
+
+Two more silent failures, of the same family as the v0.4.0 permissions bug: a
+swallowed error producing wrong behaviour instead of an error.
+
+### 🐛 Bug Fixes
+
+- **A box with changes under an unreadable directory was never pushed.**
+  `check_last_time_modified` swallowed every `OSError` from `os.scandir`. That
+  walk answers "when did this box last change?", and the answer drives the sync
+  decision — so those changes lowered nothing, the box reported an older mtime,
+  looked `SYNCED`, and was silently left unsynced. It now raises, naming the
+  directory to fix. A directory or file that *vanishes* mid-walk is a real race
+  and is still tolerated.
+
+- **A remote sync record disappearing mid-pull raised an opaque
+  `AttributeError`.** `sync_helper` read the remote record after a successful
+  pull and called `.rclone_save` on it without a `None` check, so a box deleted
+  from another machine mid-sync produced `'NoneType' object has no attribute
+  'rclone_save'`. It now raises `SyncFailed` with an explanation. The local
+  record is already incomplete at that point, so the next run sees
+  `SYNC_FROM_REMOTE_INCOMPLETE` and can safely retry.
+
 ## [0.4.0] - 2026-08-22
 
 Nine bugs, found by building a second implementation and comparing the two.
