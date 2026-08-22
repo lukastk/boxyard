@@ -10,21 +10,50 @@ package parity
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
+// pythonImpl locates the Python boxyard to compare against.
+//
+// It defaults to THIS REPO'S virtualenv, not the user's installed
+// ~/.local/bin/boxyard. Two reasons: the repo's build is the one carrying the
+// fixes parity is meant to be asserted against, and the installed binary is
+// what the user's live supervisor runs — the comparison should not depend on,
+// or be perturbed by, their working setup.
 func pythonImpl(t *testing.T) Impl {
 	t.Helper()
 	bin := os.Getenv("BOXYARD_PY_BIN")
 	if bin == "" {
-		home, _ := os.UserHomeDir()
-		bin = home + "/.local/bin/boxyard"
+		repoRoot, err := findRepoRoot()
+		if err != nil {
+			t.Skipf("cannot locate the repo root: %v", err)
+		}
+		bin = filepath.Join(repoRoot, ".venv", "bin", "boxyard")
 	}
 	if _, err := os.Stat(bin); err != nil {
-		t.Skipf("python boxyard not found at %s", bin)
+		t.Skipf("python boxyard not found at %s (run `uv sync` in the repo)", bin)
 	}
 	return Impl{Name: "python", Bin: bin}
+}
+
+// findRepoRoot walks up from the working directory looking for pyproject.toml.
+func findRepoRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "pyproject.toml")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", os.ErrNotExist
+		}
+		dir = parent
+	}
 }
 
 // newProvisionedSandbox builds a sandbox, guards it, provisions it, and
