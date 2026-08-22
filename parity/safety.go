@@ -19,9 +19,14 @@
 package parity
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -51,6 +56,12 @@ type Sandbox struct {
 	// relative to the alias remote's root, so RemotePrefix is always
 	// RequiredRemotePrefix + storePath. See sandbox.go.
 	storePath string
+
+	// isolationVerified records that a binary was OBSERVED reading this
+	// sandbox rather than the real config. Run refuses until it is set. See
+	// VerifyIsolation in harness.go for why config validation alone is not
+	// sufficient.
+	isolationVerified bool
 }
 
 // expand resolves a leading ~ and makes the path absolute and clean.
@@ -219,61 +230,171 @@ func AssertSandboxed(s *Sandbox) error {
 }
 
 // Canary captures the observable state of the user's real boxyard so a parity
-// run can prove afterwards that it changed nothing. Cheap enough to take on
-// every run: it stats a handful of files, it does not walk 583 boxes.
+// run can prove afterwards that it changed nothing.
+//
+// It compares CONTENT, not timestamps. The user's supervisor runs
+// `boxyard multi-sync` continuously on this machine and rewrites
+// boxyard_meta.json with byte-identical content on a 20-minute cycle, so an
+// mtime-based canary false-positives constantly — and a canary that cries wolf
+// is worse than none, because it trains you to ignore it.
+//
+// Directories are compared by their ENTRY SET rather than a count, so the
+// report can name exactly what appeared or vanished. That specificity is the
+// point: "a box named parity-probe appeared in ~/dev" is actionable, where
+// "count went 117 -> 118" is a puzzle.
 type Canary struct {
-	entries map[string]string
+	files map[string]string   // path -> content hash, or a sentinel
+	dirs  map[string][]string // path -> sorted entry names
+	boxes map[string][]string // meta path -> sorted box index names
 }
 
-func canaryTargets() ([]string, error) {
+func canaryTargets() (files []string, dirs []string, err error) {
 	local, _, err := realConfigPaths()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cfgPath, err := expand(RealConfigPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	targets := []string{cfgPath}
+	files = append(files, cfgPath)
 	for _, p := range local {
-		targets = append(targets, p)
-		// The metadata file is the single most damage-revealing artifact.
-		if strings.HasSuffix(p, ".boxyard") {
-			targets = append(targets, filepath.Join(p, "boxyard_meta.json"))
+		fi, err := os.Lstat(p)
+		if err != nil {
+			// A configured path that does not exist is still worth watching:
+			// its sudden appearance would be an escape.
+			files = append(files, p)
+			continue
+		}
+		if fi.IsDir() {
+			dirs = append(dirs, p)
+			// The metadata file is the single most damage-revealing artifact.
+			meta := filepath.Join(p, "boxyard_meta.json")
+			if _, err := os.Stat(meta); err == nil {
+				files = append(files, meta)
+			}
+		} else {
+			files = append(files, p)
 		}
 	}
-	return targets, nil
+	return files, dirs, nil
 }
 
-func stamp(path string) string {
+// hashFile returns a content hash, or a sentinel for absent/unreadable paths.
+func hashFile(path string) string {
 	fi, err := os.Lstat(path)
 	if err != nil {
 		return "ABSENT"
 	}
 	if fi.IsDir() {
-		ents, err := os.ReadDir(path)
-		if err != nil {
-			return "DIR-UNREADABLE"
-		}
-		return fmt.Sprintf("DIR n=%d", len(ents))
+		return "IS-DIR"
 	}
-	return fmt.Sprintf("FILE size=%d mtime=%d", fi.Size(), fi.ModTime().UnixNano())
+	if fi.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "SYMLINK-UNREADABLE"
+		}
+		return "SYMLINK->" + target
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "UNREADABLE"
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "UNREADABLE"
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func dirEntries(path string) []string {
+	ents, err := os.ReadDir(path)
+	if err != nil {
+		return []string{"<unreadable>"}
+	}
+	names := make([]string, 0, len(ents))
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names
+}
+
+// boxNames reads the index names out of a boxyard_meta.json, so a change to it
+// can be reported as "these boxes appeared/vanished".
+func boxNames(metaPath string) []string {
+	raw, err := os.ReadFile(metaPath)
+	if err != nil {
+		return nil
+	}
+	var meta struct {
+		BoxMetas []struct {
+			Timestamp string `json:"creation_timestamp_utc"`
+			Subid     string `json:"box_subid"`
+			Name      string `json:"name"`
+		} `json:"box_metas"`
+	}
+	if json.Unmarshal(raw, &meta) != nil {
+		return nil
+	}
+	names := make([]string, 0, len(meta.BoxMetas))
+	for _, b := range meta.BoxMetas {
+		names = append(names, b.Timestamp+"_"+b.Subid+"__"+b.Name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // TakeCanary snapshots the real boxyard's observable state.
 func TakeCanary() (*Canary, error) {
-	targets, err := canaryTargets()
+	files, dirs, err := canaryTargets()
 	if err != nil {
 		return nil, err
 	}
-	c := &Canary{entries: map[string]string{}}
-	for _, t := range targets {
-		c.entries[t] = stamp(t)
+	c := &Canary{
+		files: map[string]string{},
+		dirs:  map[string][]string{},
+		boxes: map[string][]string{},
+	}
+	for _, f := range files {
+		c.files[f] = hashFile(f)
+		if strings.HasSuffix(f, "boxyard_meta.json") {
+			c.boxes[f] = boxNames(f)
+		}
+	}
+	for _, d := range dirs {
+		c.dirs[d] = dirEntries(d)
 	}
 	return c, nil
 }
 
-// Verify re-stats every canary target and reports any drift. A non-nil error
+// diffSets reports entries added to and removed from a sorted set.
+func diffSets(before, after []string) (added, removed []string) {
+	b := make(map[string]bool, len(before))
+	for _, x := range before {
+		b[x] = true
+	}
+	a := make(map[string]bool, len(after))
+	for _, x := range after {
+		a[x] = true
+	}
+	for x := range a {
+		if !b[x] {
+			added = append(added, x)
+		}
+	}
+	for x := range b {
+		if !a[x] {
+			removed = append(removed, x)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	return added, removed
+}
+
+// Verify re-reads every canary target and reports any drift. A non-nil error
 // here means the parity run touched real data and must be treated as an
 // incident, not a test failure.
 func (c *Canary) Verify() error {
@@ -281,13 +402,52 @@ func (c *Canary) Verify() error {
 		return fmt.Errorf("parity guard: nil canary")
 	}
 	var drift []string
-	for path, before := range c.entries {
-		if after := stamp(path); after != before {
-			drift = append(drift, fmt.Sprintf("  %s\n    before: %s\n    after:  %s", path, before, after))
+
+	for path, before := range c.dirs {
+		added, removed := diffSets(before, dirEntries(path))
+		if len(added) == 0 && len(removed) == 0 {
+			continue
 		}
+		msg := "  " + path
+		if len(added) > 0 {
+			msg += "\n    APPEARED: " + strings.Join(added, ", ")
+		}
+		if len(removed) > 0 {
+			msg += "\n    VANISHED: " + strings.Join(removed, ", ")
+		}
+		drift = append(drift, msg)
 	}
+
+	for path, before := range c.files {
+		after := hashFile(path)
+		if after == before {
+			continue
+		}
+		msg := "  " + path + "\n    content changed"
+		// For the metadata file, say WHICH boxes changed. The user's
+		// supervisor legitimately rewrites this file, so an unexplained
+		// content change with no box-set change is far less alarming than one
+		// that names a box the parity run created.
+		if boxesBefore, ok := c.boxes[path]; ok {
+			added, removed := diffSets(boxesBefore, boxNames(path))
+			switch {
+			case len(added) == 0 && len(removed) == 0:
+				msg += " but the box set is IDENTICAL (most likely the user's supervisor rewriting it)"
+			default:
+				if len(added) > 0 {
+					msg += "\n    BOXES ADDED: " + strings.Join(added, ", ")
+				}
+				if len(removed) > 0 {
+					msg += "\n    BOXES REMOVED: " + strings.Join(removed, ", ")
+				}
+			}
+		}
+		drift = append(drift, msg)
+	}
+
 	if len(drift) > 0 {
-		return fmt.Errorf("PARITY RUN MODIFIED THE REAL BOXYARD — investigate immediately:\n%s", strings.Join(drift, "\n"))
+		sort.Strings(drift)
+		return fmt.Errorf("PARITY RUN MAY HAVE MODIFIED THE REAL BOXYARD — investigate:\n%s", strings.Join(drift, "\n"))
 	}
 	return nil
 }

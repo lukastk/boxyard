@@ -71,3 +71,78 @@ field.
 
 Worth keeping in mind as a pattern: "compile early, report at Python's moment"
 gets the diagnostics of eager validation without the parity break.
+
+---
+
+## 5. `BOXYARD_CONFIG_PATH` (Go honours it; Python ignores it)
+
+**Go:** `config.Load` honours `BOXYARD_CONFIG_PATH`.
+**Python:** the CLI ignores it entirely.
+
+This is a **latent bug in the Python implementation**, found the hard way — see
+the incident note below.
+
+`src/boxyard/_cli/main.py`'s `entrypoint` callback sets
+`app_state["config_path"]` from the `--config` flag, falling back to
+`const.DEFAULT_CONFIG_PATH` unconditionally. The env var is read in only two
+places, neither of which affects which config the CLI loads:
+
+- `_utils/rclone.py:42`, to find the `rclone_path` key;
+- `cmds/_init_boxyard.py:26`, in a *message* telling the user to set it.
+
+So `boxyard init --config <path>` instructs you to set `BOXYARD_CONFIG_PATH`,
+and the CLI then silently ignores it and operates on the default config.
+
+Nothing in the rig currently sets the variable (`mysystem-shell/lib/helpers.sh`
+reads it, with a fallback, only to locate the config for its own direct
+parsing), so honouring it in Go is currently unobservable. **But this is a
+mixed-fleet hazard the moment anyone follows `init`'s advice**: Go would use
+the named config while the five Python machines used the default one.
+
+The right resolution is to fix Python so both honour it, rather than to
+preserve the bug in Go. Flagged for a decision.
+
+---
+
+# Incident: a parity run created a real box in ~/dev (2026-08-22)
+
+Recorded here because the fix shaped the harness design.
+
+**What happened.** The first end-to-end smoke test pointed the Python boxyard at
+a sandbox config via `BOXYARD_CONFIG_PATH`. Because the CLI ignores that
+variable (above), it used the real config: `boxyard list` returned all 583 real
+boxes, and `boxyard new` created a real box, `20260822_ql2jkb__parity-probe`, in
+`~/dev`, in `~/.boxyard/local_store`, in `boxyard_meta.json`, and as two group
+symlinks under `~/g`.
+
+**Blast radius.** Local only. The test aborted before its `sync` step, so
+nothing reached the real remote, and no existing box was touched. The box was
+empty apart from an auto-`git init`.
+
+**Detection.** The canary — not the guard. `AssertSandboxed` passed, correctly:
+the sandbox *was* well-formed. The canary caught it afterwards by noticing
+`~/dev` had gained an entry.
+
+**Cleanup.** The box was removed directly rather than with `boxyard delete`,
+because `delete` writes a tombstone to the real remote and that would have left
+permanent litter for a box that was never there. `refresh_boxyard_meta` +
+`create-user-symlinks` restored the yard; `doctor` reported `stale-cache: ok`
+and the entry count returned to its baseline.
+
+**The lesson, and the fix.** *A guard that only inspects configuration cannot
+catch a binary that never reads it.* The guard proved the sandbox was
+well-formed; nothing proved the process used it.
+
+So the harness gained a second gate, `VerifyIsolation`, which must pass before
+`Run` will execute anything at all. It runs a read-only probe and checks both
+directions: positively, that a fresh sandbox lists zero boxes; and negatively —
+the half that matters — that the output contains none of the real yard's box
+names, sampled live from the real metadata. Invocations now also pass `--config`
+explicitly, which is the only mechanism that actually redirects the Python CLI.
+
+The canary was hardened at the same time. It had compared mtime and directory
+*counts*, which false-positived constantly because the user's supervisor
+rewrites `boxyard_meta.json` with byte-identical content every 20 minutes. It
+now compares content hashes and directory *entry sets*, and names what appeared
+or vanished — "a box named parity-probe appeared in ~/dev" rather than "count
+went 117 to 118". A canary that cries wolf is worse than none.

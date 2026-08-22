@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/lukastk/boxyard/internal/boxconst"
 )
 
 // RealRcloneConfigPath is the user's rclone config. The parity suite copies the
@@ -174,6 +176,14 @@ func (s *Sandbox) Provision() error {
 		return err
 	}
 	if err := os.WriteFile(s.ConfigPath, []byte(s.configTOML()), 0o644); err != nil {
+		return err
+	}
+	// `boxyard init` writes this alongside config.toml, and sync fails without
+	// it ("reload filter options: no such file or directory"). The sandbox
+	// writes its own config rather than running init, so it must write this
+	// too.
+	excludePath := filepath.Join(filepath.Dir(s.ConfigPath), "default.rclone_exclude")
+	if err := os.WriteFile(excludePath, []byte(boxconst.DefaultRcloneExclude), 0o644); err != nil {
 		return err
 	}
 	return nil

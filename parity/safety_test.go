@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // validSandbox builds a sandbox that the guard should accept, rooted in a
@@ -197,13 +198,12 @@ func TestIsUnder(t *testing.T) {
 }
 
 func TestCanaryDetectsDrift(t *testing.T) {
-	// Build a canary over a file we control, then mutate it.
 	dir := t.TempDir()
 	f := filepath.Join(dir, "watched")
 	if err := os.WriteFile(f, []byte("before"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c := &Canary{entries: map[string]string{f: stamp(f)}}
+	c := &Canary{files: map[string]string{f: hashFile(f)}, dirs: map[string][]string{}, boxes: map[string][]string{}}
 	if err := c.Verify(); err != nil {
 		t.Fatalf("canary reported drift with no change: %v", err)
 	}
@@ -215,13 +215,33 @@ func TestCanaryDetectsDrift(t *testing.T) {
 	}
 }
 
+// The false positive that made the first version of this canary useless: the
+// user's supervisor rewrites boxyard_meta.json with identical content every 20
+// minutes, which an mtime-based check flags as an escape.
+func TestCanaryIgnoresIdenticalRewrite(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "watched")
+	if err := os.WriteFile(f, []byte("same"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &Canary{files: map[string]string{f: hashFile(f)}, dirs: map[string][]string{}, boxes: map[string][]string{}}
+	// Rewrite byte-identical content, moving mtime.
+	time.Sleep(10 * time.Millisecond)
+	if err := os.WriteFile(f, []byte("same"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Verify(); err != nil {
+		t.Errorf("canary false-positived on a byte-identical rewrite: %v", err)
+	}
+}
+
 func TestCanaryDetectsDeletion(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "watched")
 	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c := &Canary{entries: map[string]string{f: stamp(f)}}
+	c := &Canary{files: map[string]string{f: hashFile(f)}, dirs: map[string][]string{}, boxes: map[string][]string{}}
 	if err := os.Remove(f); err != nil {
 		t.Fatal(err)
 	}
@@ -230,20 +250,67 @@ func TestCanaryDetectsDeletion(t *testing.T) {
 	}
 }
 
-// The canary must actually be watching the real yard's metadata file.
+// A directory canary must NAME what appeared — this is the check that would
+// have identified the stray box created in ~/dev.
+func TestCanaryNamesAppearedEntries(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "existing"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &Canary{files: map[string]string{}, dirs: map[string][]string{dir: dirEntries(dir)}, boxes: map[string][]string{}}
+	if err := c.Verify(); err != nil {
+		t.Fatalf("unexpected drift: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "20260822_ql2jkb__parity-probe"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := c.Verify()
+	if err == nil {
+		t.Fatal("canary MISSED a new directory entry")
+	}
+	if !strings.Contains(err.Error(), "parity-probe") {
+		t.Errorf("canary should NAME the entry that appeared, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "APPEARED") {
+		t.Errorf("canary should say what happened, got: %v", err)
+	}
+}
+
+func TestDiffSets(t *testing.T) {
+	added, removed := diffSets([]string{"a", "b"}, []string{"b", "c"})
+	if len(added) != 1 || added[0] != "c" {
+		t.Errorf("added = %v, want [c]", added)
+	}
+	if len(removed) != 1 || removed[0] != "a" {
+		t.Errorf("removed = %v, want [a]", removed)
+	}
+	added, removed = diffSets([]string{"a"}, []string{"a"})
+	if len(added) != 0 || len(removed) != 0 {
+		t.Errorf("identical sets reported drift: +%v -%v", added, removed)
+	}
+}
+
+// The canary must actually be watching the real yard's metadata file and the
+// real boxes directory.
 func TestCanaryWatchesRealMetadata(t *testing.T) {
 	c, err := TakeCanary()
 	if err != nil {
 		t.Fatalf("TakeCanary: %v", err)
 	}
 	var watchesMeta bool
-	for p := range c.entries {
+	for p := range c.files {
 		if strings.HasSuffix(p, "boxyard_meta.json") {
 			watchesMeta = true
 		}
 	}
 	if !watchesMeta {
-		t.Errorf("canary does not watch boxyard_meta.json; watched: %v", c.entries)
+		t.Errorf("canary does not watch boxyard_meta.json; watched: %v", c.files)
+	}
+	if len(c.dirs) == 0 {
+		t.Error("canary watches no directories, so a new box in ~/dev would go unnoticed")
+	}
+	if len(c.boxes) == 0 {
+		t.Error("canary recorded no box set, so it cannot name a box that appears")
 	}
 	if err := c.Verify(); err != nil {
 		t.Fatalf("canary reported drift on a no-op run: %v", err)
