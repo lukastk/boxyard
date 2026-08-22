@@ -1,3 +1,29 @@
+## [0.4.3] - 2026-08-22
+
+### 🐛 Bug Fixes
+
+- **A network blip was reported as "the remote path does not exist".**
+  `rclone_lsjson` returned `None`, and `rclone_cat` returned `(False, None)`,
+  for *any* non-zero exit. But rclone signals absence with a specific code — 3
+  for a missing directory, 4 for a missing file — and everything else is a real
+  failure; an unreachable remote is exit 1.
+
+  That conflation is not merely imprecise, it reports a *different* world:
+  `scan_and_rebuild_remote_index_cache` persisted an **empty** index after a
+  transient SFTP failure, wiping the cache and forcing further (also failing)
+  full scans; and `SyncRecord.rclone_read` reported "no remote sync record" when
+  it had only failed to read one, which the sync state machine treats as a
+  materially different situation. `_doctor.py` already carried a comment working
+  around the behaviour.
+
+  Both wrappers now report absence only for exit 3/4 and raise `RcloneFailed`
+  otherwise. **This is a behaviour change**: an operation that previously
+  degraded silently now fails loudly, which is the point.
+
+- **`rclone_copyto` ignored `dry_run`.** The parameter was accepted and never
+  emitted, so a caller asking for a dry run would silently **write**. No call
+  site passes `True`, so nothing was broken in practice, but it was a live trap.
+
 ## [0.4.2] - 2026-08-22
 
 ### 🐛 Bug Fixes
