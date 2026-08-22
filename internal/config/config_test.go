@@ -271,18 +271,16 @@ func TestBoxGroupTitleModeDefaultsToIndexName(t *testing.T) {
 	}
 }
 
-// Verified against the live Python: an unparseable filter_expr does NOT fail
-// get_config; the ValueError surfaces from is_in_group. Being stricter here
-// would brick the Go machine on a config the five Python machines accept.
-func TestUnparseableFilterExprDefersToEvaluation(t *testing.T) {
-	body := strings.Replace(validBaseline, "virtual_box_groups = {}",
-		`virtual_box_groups = {bad = {filter_expr = "(a AND b"}}`, 1)
-	cfg, err := loadWithEnv(t, body, "")
-	if err != nil {
-		t.Fatalf("load should succeed as Python's does, got: %v", err)
-	}
-	if _, err := cfg.VirtualBoxGroups["bad"].IsInGroup([]string{"a"}); err == nil {
-		t.Fatal("IsInGroup should surface the compile failure, as Python's is_in_group does")
+// Python originally accepted a malformed filter_expr at load and only raised
+// from is_in_group. That was fixed in Python rather than reproduced here, so
+// both implementations now reject it at load.
+func TestUnparseableFilterExprFailsAtLoad(t *testing.T) {
+	for _, expr := range []string{"(a AND b", "AND AND", ""} {
+		body := strings.Replace(validBaseline, "virtual_box_groups = {}",
+			`virtual_box_groups = {bad = {filter_expr = "`+expr+`"}}`, 1)
+		if _, err := loadWithEnv(t, body, ""); err == nil {
+			t.Errorf("malformed filter_expr %q loaded successfully", expr)
+		}
 	}
 }
 
@@ -294,15 +292,11 @@ func TestVirtualGroupFilterIsCompiledAtLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := cfg.VirtualBoxGroups["active"]
-	in, err := g.IsInGroup([]string{"proj"})
-	if err != nil {
-		t.Fatalf("IsInGroup: %v", err)
-	}
-	if !in {
+	if !g.IsInGroup([]string{"proj"}) {
 		t.Error("box with no archived/null groups should be in 'active'")
 	}
-	if in, err = g.IsInGroup([]string{"archived"}); err != nil || in {
-		t.Errorf("archived box should not be in 'active' (in=%v err=%v)", in, err)
+	if g.IsInGroup([]string{"archived"}) {
+		t.Error("archived box should not be in 'active'")
 	}
 }
 

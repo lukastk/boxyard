@@ -138,10 +138,9 @@ type VirtualBoxGroupConfig struct {
 	BoxTitleMode BoxGroupTitleMode `toml:"box_title_mode"`
 	FilterExpr   string            `toml:"filter_expr"`
 
-	// filter is compiled once at load. filterErr holds a compile failure
-	// instead of surfacing it as a load error — see IsInGroup.
-	filter    func([]string) bool
-	filterErr error
+	// filter is compiled once during validation, so a malformed expression is
+	// a config-load error rather than a surprise at symlink-build time.
+	filter func([]string) bool
 }
 
 func (g *VirtualBoxGroupConfig) normalizeAndValidate(name string) error {
@@ -155,21 +154,16 @@ func (g *VirtualBoxGroupConfig) normalizeAndValidate(name string) error {
 	if g.FilterExpr == "" {
 		return strict.Missing("VirtualBoxGroupConfig["+name+"]", "filter_expr")
 	}
-	// A filter_expr that is PRESENT but unparseable must NOT fail the load.
+	// A malformed filter_expr is a config-load error in both implementations.
 	//
-	// Verified against the live Python: get_config() accepts a config with
-	// filter_expr = "(a AND b" and only raises ValueError when is_in_group is
-	// called. Failing early here would be stricter than Python, and during the
-	// migration window a config that works on the five Python machines would
-	// brick the one running Go. So the error is compiled once and carried,
-	// then surfaced at the same moment Python surfaces it.
-	//
-	// (A MISSING filter_expr is different: Python requires the field, so that
-	// stays a load error, above.)
+	// Python originally deferred this: get_group_filter_func only tokenizes
+	// eagerly and re-parses on each call, so "(a AND b" compiled fine and
+	// raised only when the predicate was first invoked, during symlink
+	// building. That was fixed in Python (VirtualBoxGroupConfig now validates
+	// in a model_validator) rather than reproduced here.
 	f, err := groupexpr.Parse(g.FilterExpr)
 	if err != nil {
-		g.filterErr = fmt.Errorf("virtual box group %q has an invalid filter_expr: %w", name, err)
-		return nil
+		return strict.Invalid("VirtualBoxGroupConfig["+name+"]", "filter_expr", err.Error())
 	}
 	g.filter = f
 	return nil
@@ -178,16 +172,14 @@ func (g *VirtualBoxGroupConfig) normalizeAndValidate(name string) error {
 // IsInGroup reports whether a box with these groups belongs to this virtual
 // group.
 //
-// It returns an error when filter_expr failed to compile, mirroring the Python,
-// where the ValueError surfaces from is_in_group rather than from get_config.
-func (g *VirtualBoxGroupConfig) IsInGroup(groups []string) (bool, error) {
-	if g.filterErr != nil {
-		return false, g.filterErr
-	}
+// It cannot fail: Load rejects a config whose filter_expr does not compile, so
+// by the time a caller holds one of these the predicate exists.
+func (g *VirtualBoxGroupConfig) IsInGroup(groups []string) bool {
 	if g.filter == nil {
-		return false, fmt.Errorf("virtual box group used before its filter_expr was compiled")
+		// Only reachable if the value was built by hand rather than loaded.
+		panic("VirtualBoxGroupConfig used before its filter_expr was compiled")
 	}
-	return g.filter(groups), nil
+	return g.filter(groups)
 }
 
 // Config is boxyard's whole configuration.
