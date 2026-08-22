@@ -227,6 +227,57 @@ func TestFormatPydanticTime(t *testing.T) {
 	}
 }
 
+// Python has two JSON writers with different defaults and boxyard uses both:
+// pydantic emits raw UTF-8, the standard library escapes non-ASCII. Getting
+// them the wrong way round silently diverges on every box created on the Mac,
+// whose hostname contains U+2019.
+func TestMarshalJSONIndentEscapesNonASCII(t *testing.T) {
+	cases := []struct {
+		name string
+		in   map[string]string
+		want string
+	}{
+		{"right single quote", map[string]string{"h": "Lukas’s MacBook Pro"}, `{
+  "h": "Lukas\u2019s MacBook Pro"
+}`},
+		{"CJK", map[string]string{"n": "find-〇〇式"}, `{
+  "n": "find-\u3007\u3007\u5f0f"
+}`},
+		{"astral plane uses a surrogate pair", map[string]string{"e": "a🚀b"}, `{
+  "e": "a\ud83d\ude80b"
+}`},
+		{"ASCII is untouched", map[string]string{"h": "mymain"}, `{
+  "h": "mymain"
+}`},
+		{"HTML characters are not escaped", map[string]string{"h": "a<b>&c"}, `{
+  "h": "a<b>&c"
+}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := MarshalJSONIndent(c.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != c.want {
+				t.Errorf("\n got: %s\nwant: %s", got, c.want)
+			}
+		})
+	}
+}
+
+// The compact (pydantic) encoder must NOT escape non-ASCII — the two writers
+// differ, and this is the half that stays literal.
+func TestMarshalJSONCompactKeepsNonASCIILiteral(t *testing.T) {
+	got, err := MarshalJSONCompact(map[string]string{"h": "Lukas’s MacBook Pro"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "Lukas’s") {
+		t.Errorf("pydantic-style output should keep UTF-8 literal, got: %s", got)
+	}
+}
+
 func TestRequireNonZero(t *testing.T) {
 	if err := RequireNonZero("T", "f", "x"); err != nil {
 		t.Errorf("non-zero string rejected: %v", err)

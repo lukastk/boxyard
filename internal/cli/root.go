@@ -73,6 +73,8 @@ func NewRootCommand() *cobra.Command {
 	// the parity suite exists to prevent.
 	root.AddCommand(
 		newWhichCommand(),
+		newListCommand(),
+		newListGroupsCommand(),
 	)
 	return root
 }

@@ -37,6 +37,7 @@ import (
 	"io"
 	"os"
 	"time"
+	"unicode/utf16"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -117,9 +118,20 @@ func UnmarshalJSON(data []byte, v any) error {
 }
 
 // MarshalJSONIndent encodes v the way Python's json.dumps(..., indent=2) does:
-// two-space indent, ": " between key and value, and no HTML escaping. Used for
-// the CLI's `-j`/`--output-format json` output, which is consumed by
-// mysystem's TypeScript and by shell pipelines through jq.
+// two-space indent, ": " between key and value, no HTML escaping, and
+// NON-ASCII ESCAPED as \uXXXX.
+//
+// That last part is the trap. Python has two JSON writers with different
+// defaults, and boxyard uses both:
+//
+//   - pydantic's model_dump_json emits raw UTF-8, and is what writes sync
+//     records, tombstones and boxyard_meta.json — see MarshalJSONCompact.
+//   - the standard library's json.dumps defaults to ensure_ascii=True, and is
+//     what writes the CLI's `-j` / `--output-format json` output.
+//
+// So `boxyard list -o json` renders a hostname as "Lukas\u2019s MacBook Pro"
+// while boxyard_meta.json renders the same value literally. Using one encoder
+// for both silently diverges on every box created on the user's Mac.
 func MarshalJSONIndent(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -128,7 +140,48 @@ func MarshalJSONIndent(v any) ([]byte, error) {
 	if err := enc.Encode(v); err != nil {
 		return nil, err
 	}
-	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+	return ensureASCII(bytes.TrimRight(buf.Bytes(), "\n")), nil
+}
+
+// ensureASCII escapes every rune outside PRINTABLE ASCII as \uXXXX, using
+// surrogate pairs beyond the basic multilingual plane, exactly as Python's
+// json.dumps(ensure_ascii=True) does.
+//
+// Note the boundary: Python's rule is "not in 0x20..0x7E", so DEL (0x7F) is
+// escaped even though it is ASCII — Go's encoder leaves it raw.
+//
+// Only runes at 0x7F and above are rewritten here, NOT everything outside
+// printable ASCII. Bytes below 0x20 inside a string have already been escaped
+// by the encoder (as \n, \t or \u00XX), so the only raw control bytes left in
+// the document are the newlines that SetIndent emits between elements — and
+// escaping those would corrupt the structure rather than the content.
+func ensureASCII(b []byte) []byte {
+	if !needsEscaping(b) {
+		return b
+	}
+	var out bytes.Buffer
+	out.Grow(len(b))
+	for _, r := range string(b) {
+		switch {
+		case r < 0x7F:
+			out.WriteByte(byte(r))
+		case r > 0xFFFF:
+			hi, lo := utf16.EncodeRune(r)
+			fmt.Fprintf(&out, "\\u%04x\\u%04x", hi, lo)
+		default:
+			fmt.Fprintf(&out, "\\u%04x", r)
+		}
+	}
+	return out.Bytes()
+}
+
+func needsEscaping(b []byte) bool {
+	for _, c := range b {
+		if c >= 0x7F {
+			return true
+		}
+	}
+	return false
 }
 
 // ReadTOMLFile reads path and decodes it strictly into v. A missing file is

@@ -25,6 +25,7 @@ import (
 	"github.com/lukastk/boxyard/internal/boxconst"
 	"github.com/lukastk/boxyard/internal/config"
 	"github.com/lukastk/boxyard/internal/models"
+	"github.com/lukastk/boxyard/internal/strict"
 )
 
 // Entry is one item from a remote listing.
@@ -77,10 +78,12 @@ func Save(cfg *config.Config, storageLocation string, cache map[string]string) e
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
-	// Two-space indent, matching the Python. Key ORDER differs — Go sorts map
-	// keys, Python preserves insertion order — which is harmless: the file is
-	// local, never synced, and read only as a map.
-	body, err := json.MarshalIndent(cache, "", "  ")
+	// Two-space indent with non-ASCII escaped, matching Python's json.dumps —
+	// box names do contain non-ASCII (the yard has a "find-〇〇式" box). Key
+	// ORDER still differs (Go sorts map keys, Python preserves insertion
+	// order), which is harmless: the file is local, never synced, and read
+	// only as a map.
+	body, err := strict.MarshalJSONIndent(cache)
 	if err != nil {
 		return err
 	}

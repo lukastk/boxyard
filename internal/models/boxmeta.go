@@ -41,7 +41,7 @@ type BoxMeta struct {
 // normalizeSlices replaces nil slices with empty ones. Go marshals a nil slice
 // as `null` where pydantic emits `[]`, and boxyard_meta.json is read by
 // mysystem's TypeScript BoxyardService as well as by both implementations.
-func (b *BoxMeta) normalizeSlices() {
+func (b *BoxMeta) NormalizeSlices() {
 	if b.Groups == nil {
 		b.Groups = []string{}
 	}

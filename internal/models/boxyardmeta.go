@@ -81,7 +81,7 @@ func ReportBroken(w *os.File, broken []BrokenRegistration) {
 // Marshal renders the registry as boxyard_meta.json.
 func (m *BoxyardMeta) Marshal() ([]byte, error) {
 	for _, bm := range m.BoxMetas {
-		bm.normalizeSlices()
+		bm.NormalizeSlices()
 	}
 	if m.BoxMetas == nil {
 		m.BoxMetas = []*BoxMeta{}
@@ -141,7 +141,7 @@ func GetBoxyardMeta(cfg *config.Config, forceCreate bool) (*BoxyardMeta, error) 
 		return nil, err
 	}
 	for _, bm := range meta.BoxMetas {
-		bm.normalizeSlices()
+		bm.NormalizeSlices()
 	}
 	return &meta, nil
 }
@@ -152,7 +152,7 @@ func unmarshalMeta(data []byte, m *BoxyardMeta) error {
 		return err
 	}
 	for _, bm := range m.BoxMetas {
-		bm.normalizeSlices()
+		bm.NormalizeSlices()
 	}
 	return nil
 }
