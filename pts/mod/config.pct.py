@@ -20,7 +20,7 @@ from nblite import nbl_export, show_doc; nbl_export();
 #|export
 from pydantic import model_validator
 from pathlib import Path
-import toml
+import tomllib
 import os
 from enum import Enum
 
@@ -70,6 +70,30 @@ class VirtualBoxGroupConfig(const.StrictModel):
 
             self._filter_func = get_group_filter_func(self.filter_expr)
         return self._filter_func(groups)
+
+    @model_validator(mode="after")
+    def validate_filter_expr(self):
+        """
+        Reject a malformed `filter_expr` when the config is loaded, rather than
+        when the group is first evaluated.
+
+        The evaluation below is load-bearing, not a smoke test:
+        `get_group_filter_func` only TOKENIZES eagerly and re-parses the token
+        stream on every call, so a structural error such as `"(a AND b"`
+        compiles fine and only raises when the predicate is invoked. That meant
+        a typo in config.toml surfaced far from its cause -- during symlink
+        building -- instead of at load.
+
+        The parser never consults the group set for control flow (there is no
+        short-circuiting; the right-hand side is always evaluated before
+        combining), so any input exercises the whole parse. `[]` is as good as
+        anything.
+        """
+        try:
+            self.is_in_group([])
+        except Exception as e:
+            raise ValueError(f"Invalid `filter_expr` {self.filter_expr!r}: {e}") from e
+        return self
 
 
 class BoxTimestampFormat(Enum):
@@ -172,12 +196,13 @@ def get_config(path: Path | None = None) -> Config:
     if path is None:
         path = const.DEFAULT_CONFIG_PATH
     path = Path(path).expanduser()
-    config_dict = {"config_path": path, **toml.load(path)}
+    with open(path, "rb") as _f:
+        config_dict = {"config_path": path, **tomllib.load(_f)}
 
     # Additively merge default_box_groups from env var (TOML list string, e.g. '["ctx/mac", "ctx/linux"]')
     env_groups = os.environ.get(const.ENV_VAR_DEFAULT_BOX_GROUPS)
     if env_groups:
-        extra = toml.loads(f"v = {env_groups}")["v"]
+        extra = tomllib.loads(f"v = {env_groups}")["v"]
         existing = config_dict.get("default_box_groups", [])
         config_dict["default_box_groups"] = list(dict.fromkeys(existing + extra))
 

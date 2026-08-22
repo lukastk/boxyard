@@ -415,7 +415,6 @@ show_doc(this_module.enable_soft_interruption)
 
 # %%
 #|export
-import signal
 import sys
 
 _interrupted = False

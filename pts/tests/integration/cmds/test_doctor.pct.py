@@ -27,7 +27,14 @@ import shutil
 import string
 
 import pytest
-import toml
+import tomllib
+import tomli_w
+
+
+def _load_toml(path):
+    """Read a TOML file. `tomllib.load` needs a binary handle."""
+    with open(path, "rb") as f:
+        return tomllib.load(f)
 
 from boxyard import const
 from boxyard.cmds import new_box, run_doctor, sync_box
@@ -110,7 +117,7 @@ def _write_registration(
     reg_path = config.local_store_path / storage_location / index_name
     reg_path.mkdir(parents=True)
     (reg_path / const.BOX_METAFILE_REL_PATH).write_text(
-        toml.dumps(
+        tomli_w.dumps(
             {
                 "storage_location": storage_location,
                 "creator_hostname": "test-host",
@@ -222,9 +229,9 @@ def test_doctor_stale_cache(temp_boxyard):
     _write_registration(config, remote_name, "20990101_aaaaaa__hand-registered")
     # Registration modified behind boxyard's back: cache entry out of date
     bm_path = config.local_store_path / remote_name / box1 / const.BOX_METAFILE_REL_PATH
-    bm_data = toml.loads(bm_path.read_text())
+    bm_data = tomllib.loads(bm_path.read_text())
     bm_data["groups"] = ["drifted-group"]
-    bm_path.write_text(toml.dumps(bm_data))
+    bm_path.write_text(tomli_w.dumps(bm_data))
 
     report = _doctor(config_path, check_remote=False)
     messages = [f["message"] for f in _findings(report, "stale-cache")]
@@ -360,12 +367,12 @@ def test_doctor_rclone_config(temp_boxyard):
     assert not _findings(report, "rclone-config")
 
     # An rclone-type storage location with no matching remote in boxyard_rclone.conf
-    config_dump = toml.load(config_path)
+    config_dump = _load_toml(config_path)
     config_dump["storage_locations"]["phantom"] = {
         "storage_type": "rclone",
         "store_path": "phantom-store",
     }
-    config_path.write_text(toml.dumps(config_dump))
+    config_path.write_text(tomli_w.dumps(config_dump))
 
     report = _doctor(config_path, check_remote=False)
     messages = [f["message"] for f in _findings(report, "rclone-config")]
@@ -467,7 +474,7 @@ def test_doctor_stale_meta_mirror(temp_boxyard):
     )
     foreign_path.mkdir(parents=True)
     (foreign_path / const.BOX_METAFILE_REL_PATH).write_text(
-        toml.dumps(
+        tomli_w.dumps(
             {
                 "storage_location": remote_name,
                 "creator_hostname": "other-machine",
@@ -508,9 +515,9 @@ def test_doctor_tree_orphans(temp_boxyard):
     box1 = new_box(config_path=config_path, box_name="child-box", storage_location=remote_name)
 
     bm_path = config.local_store_path / remote_name / box1 / const.BOX_METAFILE_REL_PATH
-    bm_data = toml.loads(bm_path.read_text())
+    bm_data = tomllib.loads(bm_path.read_text())
     bm_data["parents"] = ["20990101_ffffff"]
-    bm_path.write_text(toml.dumps(bm_data))
+    bm_path.write_text(tomli_w.dumps(bm_data))
 
     report = _doctor(config_path, check_remote=False)
     findings = _findings(report, "tree-orphans")

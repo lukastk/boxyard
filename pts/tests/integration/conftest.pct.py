@@ -20,7 +20,14 @@ import subprocess
 from pathlib import Path
 import tempfile
 import shutil
-import toml
+import tomllib
+import tomli_w
+
+
+def _load_toml(path):
+    """Read a TOML file. `tomllib.load` needs a binary handle."""
+    with open(path, "rb") as f:
+        return tomllib.load(f)
 import inspect
 import pytest
 
@@ -88,7 +95,7 @@ def _setup_boxyard_from_fixture(tmp_path: Path, config_name: str):
     init_boxyard(config_path=config_path, data_path=test_data_dir, verbose=False)
 
     # Now customize config.toml with our fixture settings
-    config_data = toml.load(fixture_config_dir / "config.toml")
+    config_data = _load_toml(fixture_config_dir / "config.toml")
 
     # Override paths to use temp directory
     config_data["boxyard_data_path"] = str(test_data_dir)
@@ -96,7 +103,7 @@ def _setup_boxyard_from_fixture(tmp_path: Path, config_name: str):
     config_data["user_box_groups_path"] = str(test_user_groups)
 
     with open(config_path, "w") as f:
-        toml.dump(config_data, f)
+        f.write(tomli_w.dumps(config_data))
 
     # Copy and customize rclone config
     rclone_config_path = test_config_dir / "boxyard_rclone.conf"
@@ -229,7 +236,7 @@ def temp_boxyard(tmp_path):
     config = get_config(config_path)
 
     # Add a storage location
-    config_dump = toml.load(config_path)
+    config_dump = _load_toml(config_path)
     config_dump["user_boxes_path"] = (test_folder_path / "user_boxes").as_posix()
     config_dump["user_box_groups_path"] = (
         test_folder_path / "user_box_groups"
@@ -250,7 +257,7 @@ def temp_boxyard(tmp_path):
     """)
     )
 
-    config_path.write_text(toml.dumps(config_dump))
+    config_path.write_text(tomli_w.dumps(config_dump))
 
     # Reload config
     config = get_config(config_path)
@@ -289,7 +296,7 @@ def create_boxyards(remote_name="my_remote", num_boxyards=1):
         config = get_config(config_path)
 
         # Add a storage location
-        config_dump = toml.load(config_path)
+        config_dump = _load_toml(config_path)
         config_dump["user_boxes_path"] = (test_folder_path / "user_boxes").as_posix()
         config_dump["user_box_groups_path"] = (
             test_folder_path / "user_box_groups"
@@ -310,7 +317,7 @@ def create_boxyards(remote_name="my_remote", num_boxyards=1):
         """)
         )
 
-        config_path.write_text(toml.dumps(config_dump))
+        config_path.write_text(tomli_w.dumps(config_dump))
 
         # Load config
         config = get_config(config_path)

@@ -1,3 +1,88 @@
+## [0.4.0] - 2026-08-22
+
+Nine bugs, found by building a second implementation and comparing the two.
+Most were silent: they produced wrong state rather than an error, which is
+exactly the failure mode this codebase's "loud errors, never silent fallbacks"
+rule exists to prevent.
+
+### 🐛 Bug Fixes
+
+- **The CLI ignored `BOXYARD_CONFIG_PATH`.** The entrypoint read the `--config`
+  flag and otherwise went straight to the default, while the variable was
+  consulted only when resolving `rclone_path` and in an `init` message telling
+  the user to set it. So `boxyard init --config <path>` instructed you to set a
+  variable that every subsequent command then discarded, silently operating on
+  the default config. Resolution is now flag, then env var, then default.
+
+- **`boxyard init` ignored the global `--config` too**, keeping its own
+  `--config-path` and defaulting independently of it. `--config-path` still
+  wins when given, but it now falls back to the same resolution as every other
+  command.
+
+- **A shrunken permissions manifest could permanently lose exec bits.**
+  `os.walk` swallowed unreadable directories, so every file beneath one was
+  silently dropped from `.boxyard-perms.json`; the shrunken manifest was then
+  pushed, and every machine that pulled it lost the `+x` bits it no longer
+  mentioned. Walk errors now raise. A file vanishing between `readdir` and
+  `stat` is still tolerated — that race is real.
+
+- **The permissions manifest could chmod paths outside the box.**
+  `apply_exec_manifest` did not reject entries that were absolute or contained
+  `..`, and `pathlib` join lets an absolute entry *replace* the root. Manifests
+  arrive from a shared remote, so entries are now validated — all of them,
+  before any chmod, so a bad manifest cannot half-apply. A corrupt manifest
+  raises rather than warning; an absent one remains a legitimate no-op.
+
+- **The manifest listed non-regular files.** `_iter_regular_files` excluded
+  only symlinks, but `os.walk` also yields fifos, sockets and devices. rclone
+  does not transfer those, so their exec bits were pure noise.
+
+- **A box lock could escape the locks directory.** `box_sync_lock_path` did no
+  validation, so an index name containing `/` nested the lock inside a tree and
+  one containing `..` placed it outside `~/.boxyard/locks` entirely. Index
+  names are now validated as a single path component — deliberately more
+  leniently than `validate_box_name`, since box names went unvalidated before
+  v0.3.3 and legacy boxes must still be lockable.
+
+- **`cleanup_stale_locks` always returned `[]`.** `filelock`'s own `release()`
+  unlinks the lock file, so the following `unlink()` raised `FileNotFoundError`
+  — which a blanket `except OSError` swallowed, taking the `removed.append()`
+  on the next line with it. Files *were* deleted; callers were told nothing
+  had been. `auto_cleanup_stale_locks(verbose=True)` could therefore never
+  print anything. Only "the file disappeared underneath us" is tolerated now.
+
+- **A malformed `filter_expr` did not fail at config load.**
+  `get_group_filter_func` only tokenizes eagerly and re-parses on every call,
+  so `"(a AND b"` compiled fine and raised only when the virtual group was
+  first evaluated — during symlink building, far from the typo that caused it.
+
+- **`validate_group_name` accepted a trailing newline.** Python's `$` also
+  matches immediately before one, so `"proj\n"` passed and would have been used
+  verbatim as a directory name in the group tree. Now uses `re.fullmatch`.
+
+- **`BoxMeta.create` was broken whenever an explicit timestamp was passed** —
+  for every input type, a `TypeError` for a datetime and an `AttributeError`
+  for a string. Unreachable, because `new_box` builds its `BoxMeta` directly,
+  so nothing ever caught it.
+
+### 🔧 Changes
+
+- **Replaced the `toml` dependency with `tomllib` + `tomli_w`.** `toml` 0.10.2
+  has been unmaintained since 2020 and silently corrupts control characters:
+  dumping `"del\x7fchar"` produced `"delx7fchar"`, round-tripping back to the
+  wrong string with no error. `tomllib` is in the standard library on the
+  Python versions boxyard supports, which as a side effect makes `_fast.py`
+  genuinely dependency-free for the first time.
+
+  Written TOML now formats lists one per line rather than `[ "a", "b",]`. This
+  is cosmetic and causes no resync: `boxmeta.toml` is only rewritten when a box
+  is modified, and both formats parse.
+
+- `creator_hostname` now rejects control characters. This began as a workaround
+  for the `toml` corruption above and is kept on its own merits: such a
+  character in a machine name is meaningless and would corrupt the output of
+  `list` and `doctor`, which print it.
+
 ## [0.3.3] - 2026-08-11
 
 ### 🐛 Bug Fixes

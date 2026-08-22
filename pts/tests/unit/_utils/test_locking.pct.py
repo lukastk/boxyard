@@ -1,0 +1,771 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # Unit Tests for `_utils.locking`
+#
+# Boxyard serialises concurrent operations — the supervisor sync loop,
+# interactive commands, and multi-sync's parallel workers — with advisory file
+# locks under `<boxyard_data_path>/locks/`.
+#
+# **Safety:** every test roots its own `BoxyardLockManager` at pytest's
+# `tmp_path`. Taking a lock under the user's real `~/.boxyard/locks` would stall
+# a running supervisor, so `_assert_sandboxed` fails closed on anything that
+# could be, or contain, real boxyard data.
+
+# %%
+#|default_exp unit._utils.test_locking
+
+# %%
+#|export
+import asyncio
+import fcntl
+import os
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from filelock import FileLock, Timeout
+
+from boxyard._utils.locking import (
+    BOX_SYNC_LOCK_TIMEOUT,
+    GLOBAL_LOCK_TIMEOUT,
+    LOCK_POLL_INTERVAL,
+    BoxyardLockManager,
+    LockAcquisitionError,
+    async_box_sync_lock,
+    async_global_lock,
+    auto_cleanup_stale_locks,
+    cleanup_stale_locks,
+)
+
+# %% [markdown]
+# ## Safety guard and helpers
+
+# %%
+#|export
+def _assert_sandboxed(path) -> None:
+    """
+    Fail unless `path` is provably outside every path the real boxyard owns.
+
+    Fails closed: if the home directory cannot be resolved, the test stops
+    rather than proceeding on an unverified path.
+    """
+    resolved = Path(path).expanduser().resolve()
+    home = Path.home().resolve()
+
+    assert resolved != Path(resolved.root), f"lock root {resolved} is the filesystem root"
+    assert resolved != home, f"lock root {resolved} is the home directory"
+
+    for rel in (".boxyard", "dev", "g", ".config/boxyard"):
+        forbidden = home / rel
+        assert not resolved.is_relative_to(forbidden), f"lock root {resolved} is inside real boxyard path {forbidden}"
+        assert not forbidden.is_relative_to(resolved), f"lock root {resolved} contains real boxyard path {forbidden}"
+
+
+# %%
+#|export
+@pytest.fixture
+def data_path(tmp_path):
+    """A sandboxed boxyard data directory."""
+    path = tmp_path / "boxyard_data"
+    path.mkdir()
+    _assert_sandboxed(path)
+    return path
+
+
+@pytest.fixture
+def lock_manager(data_path):
+    """A lock manager rooted at a sandboxed temp directory."""
+    return BoxyardLockManager(data_path)
+
+
+# %%
+#|export
+def _is_held(path: Path) -> bool:
+    """
+    Report whether `path` is currently flock-ed by anyone.
+
+    Deliberately uses raw `fcntl` rather than `FileLock`: filelock's `release()`
+    *unlinks* the lock file, so probing with it would destroy the very evidence
+    several of these tests assert on. This probe neither creates nor removes.
+    """
+    if not path.exists():
+        return False
+    fd = os.open(path, os.O_RDWR)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+def _wait_until(predicate, timeout=5.0, message="condition"):
+    """Poll `predicate` until it is true, or fail the test."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    pytest.fail(f"timed out after {timeout}s waiting for {message}")
+
+
+def _age_file(path: Path, hours: float) -> None:
+    """Backdate a file's mtime so staleness checks see it as old."""
+    when = time.time() - hours * 3600
+    os.utime(path, (when, when))
+
+
+# %% [markdown]
+# ## Constants
+
+# %%
+#|export
+def test_lock_timeout_constants():
+    assert GLOBAL_LOCK_TIMEOUT == 30
+    assert BOX_SYNC_LOCK_TIMEOUT == 600
+    assert LOCK_POLL_INTERVAL == 0.1
+
+
+# %% [markdown]
+# ## Lock path layout and `index_name` validation
+#
+# `box_sync_lock_path` interpolates `index_name` straight into a path, so an
+# unvalidated name containing a separator nests the lock inside a tree, and one
+# containing `..` escapes the locks directory entirely.
+
+# %%
+#|export
+def test_lock_path_layout(lock_manager, data_path):
+    assert lock_manager.locks_path == data_path / "locks"
+    assert lock_manager.global_lock_path == data_path / "locks" / "global.lock"
+    assert lock_manager.box_sync_lock_path("20251122_143022_a7kx9__demo") == (
+        data_path / "locks" / "boxes" / "20251122_143022_a7kx9__demo" / "sync.lock"
+    )
+
+
+# %%
+#|export
+@pytest.mark.parametrize(
+    "index_name",
+    [
+        "",
+        ".",
+        "..",
+        "a/b",
+        "../escape",
+        "../../../../etc/passwd",
+        "trailing/",
+        "/leading",
+        "back\\slash",
+        "with\0null",
+    ],
+)
+def test_box_sync_lock_path_rejects_non_component_names(lock_manager, index_name):
+    with pytest.raises(ValueError):
+        lock_manager.box_sync_lock_path(index_name)
+
+
+# %%
+#|export
+def test_box_sync_lock_rejects_non_component_names_at_every_entry_point(lock_manager):
+    """Validation must guard the context managers, not just the path helper."""
+    with pytest.raises(ValueError):
+        with lock_manager.box_sync_lock("../escape"):
+            pass
+
+    with pytest.raises(ValueError):
+        with lock_manager.multiple_box_sync_locks(["fine-box", "../escape"]):
+            pass
+
+    async def _async_attempt():
+        async with async_box_sync_lock(lock_manager, "../escape"):
+            pass
+
+    with pytest.raises(ValueError):
+        asyncio.run(_async_attempt())
+
+
+# %%
+#|export
+def test_rejected_index_names_create_nothing_on_disk(lock_manager, data_path):
+    """A rejected name must not leave a directory behind — least of all outside the yard."""
+    for bad in ("../escape", "a/b", ".."):
+        with pytest.raises(ValueError):
+            lock_manager.box_sync_lock_path(bad)
+    assert list(data_path.iterdir()) == []
+    assert not (data_path.parent / "escape").exists()
+
+
+# %%
+#|export
+@pytest.mark.parametrize(
+    "index_name",
+    [
+        "20251122_143022_a7kx9__demo",
+        "20260101_zzzzz__box with spaces",
+        "20260101_zzzzz__lukastk.github.io",
+        ".legacy-leading-dot",
+        "legacy-trailing-space ",
+    ],
+)
+def test_box_sync_lock_path_accepts_legacy_index_names(lock_manager, index_name):
+    """
+    Index-name validation enforces only the path-component rule.
+
+    Box names went unvalidated before v0.3.3, so a long-lived yard may hold
+    boxes whose names would fail today's `validate_box_name` policy. Those
+    boxes must still be lockable, or they could never be synced or deleted.
+    """
+    assert lock_manager.box_sync_lock_path(index_name).name == "sync.lock"
+
+
+# %% [markdown]
+# ## Acquire / release round trips
+
+# %%
+#|export
+def test_global_lock_round_trip_creates_directories_on_demand(lock_manager):
+    assert not lock_manager.locks_path.exists()
+
+    with lock_manager.global_lock():
+        assert lock_manager.locks_path.is_dir()
+        assert lock_manager.global_lock_path.exists()
+        assert _is_held(lock_manager.global_lock_path)
+
+    assert not _is_held(lock_manager.global_lock_path)
+
+    # And the lock is reusable.
+    with lock_manager.global_lock():
+        assert _is_held(lock_manager.global_lock_path)
+
+
+# %%
+#|export
+def test_box_sync_lock_round_trip_creates_directories_on_demand(lock_manager):
+    index_name = "20251122_143022_a7kx9__demo"
+    lock_path = lock_manager.box_sync_lock_path(index_name)
+    assert not lock_path.parent.exists()
+
+    with lock_manager.box_sync_lock(index_name):
+        assert lock_path.parent.is_dir()
+        assert _is_held(lock_path)
+
+    assert not _is_held(lock_path)
+
+
+# %%
+#|export
+def test_different_locks_do_not_contend(lock_manager):
+    """The global lock and per-box locks are independent of each other."""
+    with lock_manager.global_lock():
+        with lock_manager.box_sync_lock("box-a", timeout=1):
+            with lock_manager.box_sync_lock("box-b", timeout=1):
+                assert _is_held(lock_manager.box_sync_lock_path("box-a"))
+                assert _is_held(lock_manager.box_sync_lock_path("box-b"))
+
+
+# %% [markdown]
+# ## Contention and timeouts
+
+# %%
+#|export
+def test_global_lock_times_out_while_held(data_path):
+    holder = BoxyardLockManager(data_path)
+    waiter = BoxyardLockManager(data_path)
+
+    with holder.global_lock():
+        started = time.time()
+        with pytest.raises(LockAcquisitionError) as excinfo:
+            with waiter.global_lock(timeout=0.3):
+                pass
+        elapsed = time.time() - started
+
+    error = excinfo.value
+    assert error.lock_type == "global"
+    assert error.lock_path == waiter.global_lock_path
+    assert error.timeout == 0.3
+    assert elapsed >= 0.3, "returned before the timeout elapsed"
+
+    message = str(error)
+    assert "global" in message
+    assert "0.3" in message
+    assert str(waiter.global_lock_path) in message
+    assert "Another boxyard operation may be in progress" in message
+
+
+# %%
+#|export
+def test_box_sync_lock_timeout_message_names_the_box_and_the_operations(data_path):
+    holder = BoxyardLockManager(data_path)
+    waiter = BoxyardLockManager(data_path)
+    index_name = "20251122_143022_a7kx9__demo"
+
+    with holder.box_sync_lock(index_name):
+        with pytest.raises(LockAcquisitionError) as excinfo:
+            with waiter.box_sync_lock(index_name, timeout=0.2):
+                pass
+
+    error = excinfo.value
+    assert error.lock_type == f"box sync ({index_name})"
+    assert error.lock_path == waiter.box_sync_lock_path(index_name)
+
+    message = str(error)
+    assert index_name in message
+    assert "sync, include, exclude, or delete" in message
+
+
+# %%
+#|export
+def test_acquisition_blocks_until_the_holder_releases(data_path):
+    """A waiter must not acquire early, and must acquire once the holder lets go."""
+    holder = BoxyardLockManager(data_path)
+    waiter = BoxyardLockManager(data_path)
+    index_name = "blocking-box"
+    hold_for = 0.5
+    result = {}
+
+    def _wait_for_lock():
+        started = time.time()
+        try:
+            with waiter.box_sync_lock(index_name, timeout=10):
+                result["elapsed"] = time.time() - started
+        except Exception as exc:  # noqa: BLE001 - recorded and re-asserted below
+            result["error"] = exc
+
+    with holder.box_sync_lock(index_name):
+        thread = threading.Thread(target=_wait_for_lock)
+        thread.start()
+        time.sleep(hold_for)
+
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "waiter never returned"
+    assert "error" not in result, result.get("error")
+    assert result["elapsed"] >= hold_for, "waiter acquired while the lock was still held"
+
+
+# %% [markdown]
+# ## `multiple_box_sync_locks`
+#
+# The names are sorted and de-duplicated before any lock is taken. That ordering
+# is the deadlock-avoidance guarantee: every caller in every process walks the
+# same global order, so two callers with overlapping sets can never each hold a
+# lock the other is waiting for.
+
+# %%
+#|export
+def test_multiple_box_sync_locks_acquires_in_sorted_order(data_path):
+    """
+    Ask for `["ccc", "aaa", "bbb"]` while `"bbb"` is held elsewhere.
+
+    Under sorted acquisition the call takes `"aaa"`, parks on `"bbb"`, and never
+    reaches `"ccc"`. Observing exactly that — `"aaa"` held while `"ccc"`'s lock
+    file does not yet exist — is only possible if acquisition is sorted.
+    """
+    mgr = BoxyardLockManager(data_path)
+    blocker = BoxyardLockManager(data_path)
+    path_a = mgr.box_sync_lock_path("aaa")
+    path_c = mgr.box_sync_lock_path("ccc")
+    result = {}
+
+    def _acquire_all():
+        try:
+            with mgr.multiple_box_sync_locks(["ccc", "aaa", "bbb"], timeout=10):
+                result["held"] = sorted(
+                    name for name in ("aaa", "bbb", "ccc") if _is_held(mgr.box_sync_lock_path(name))
+                )
+        except Exception as exc:  # noqa: BLE001 - recorded and re-asserted below
+            result["error"] = exc
+
+    with blocker.box_sync_lock("bbb"):
+        thread = threading.Thread(target=_acquire_all)
+        thread.start()
+        _wait_until(lambda: _is_held(path_a), message='"aaa" to be locked by the multi-lock call')
+        assert not path_c.exists(), '"ccc" was touched while parked on "bbb" — acquisition is not sorted'
+
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "multi-lock call never returned"
+    assert "error" not in result, result.get("error")
+    assert result["held"] == ["aaa", "bbb", "ccc"]
+
+    for name in ("aaa", "bbb", "ccc"):
+        assert not _is_held(mgr.box_sync_lock_path(name)), f"{name} still held after release"
+
+
+# %%
+#|export
+def test_multiple_box_sync_locks_deduplicates(lock_manager):
+    """
+    Without de-duplication a repeated name blocks on itself: two distinct
+    `FileLock` objects over one path contend even inside a single process.
+    """
+    started = time.time()
+    with lock_manager.multiple_box_sync_locks(["dup", "dup", "dup"], timeout=2):
+        assert _is_held(lock_manager.box_sync_lock_path("dup"))
+    elapsed = time.time() - started
+
+    assert elapsed < 1, "a repeated name appears to be blocking on itself"
+
+
+# %%
+#|export
+def test_multiple_box_sync_locks_unwinds_on_partial_failure(data_path):
+    """Locks taken before a failure are released in reverse order; the caller ends up holding nothing."""
+    mgr = BoxyardLockManager(data_path)
+    blocker = BoxyardLockManager(data_path)
+
+    with blocker.box_sync_lock("bbb"):
+        with pytest.raises(LockAcquisitionError) as excinfo:
+            with mgr.multiple_box_sync_locks(["ccc", "aaa", "bbb"], timeout=0.3):
+                pytest.fail("must not enter the body when a lock could not be taken")
+
+        assert "bbb" in str(excinfo.value)
+        assert not _is_held(mgr.box_sync_lock_path("aaa")), '"aaa" still held after the unwind'
+        assert not _is_held(mgr.box_sync_lock_path("ccc"))
+
+    # The yard is usable again.
+    with mgr.box_sync_lock("aaa", timeout=1):
+        assert _is_held(mgr.box_sync_lock_path("aaa"))
+
+
+# %%
+#|export
+def test_multiple_box_sync_locks_with_no_names(lock_manager):
+    with lock_manager.multiple_box_sync_locks([]):
+        pass
+    assert not lock_manager.locks_path.exists()
+
+
+# %%
+#|export
+def test_multiple_box_sync_locks_no_deadlock_under_opposite_orders(data_path):
+    """
+    The textbook AB/BA deadlock: two workers repeatedly grab an overlapping set
+    of boxes, each asking in the opposite order. Without the internal sort both
+    sides would wedge and time out.
+    """
+    rounds = 15
+    forward = ["box-a", "box-b", "box-c"]
+    reverse = list(reversed(forward))
+    errors = []
+
+    def _worker(order):
+        mgr = BoxyardLockManager(data_path)
+        for _ in range(rounds):
+            try:
+                with mgr.multiple_box_sync_locks(order, timeout=5):
+                    pass
+            except Exception as exc:  # noqa: BLE001 - collected and re-asserted below
+                errors.append(exc)
+                return
+
+    threads = [threading.Thread(target=_worker, args=(order,)) for order in (forward, reverse)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert not any(t.is_alive() for t in threads), "workers deadlocked under opposite acquisition orders"
+    assert errors == []
+    for name in forward:
+        assert not _is_held(BoxyardLockManager(data_path).box_sync_lock_path(name))
+
+
+# %% [markdown]
+# ## Cross-process contention
+#
+# The locks exist to serialise separate boxyard processes, so this exercises the
+# real thing rather than two objects inside one interpreter.
+
+# %%
+#|export
+_HOLDER_SCRIPT = """\
+import sys
+from boxyard._utils.locking import BoxyardLockManager
+
+data_path, index_name = sys.argv[1], sys.argv[2]
+manager = BoxyardLockManager(data_path)
+with manager.box_sync_lock(index_name, timeout=30):
+    sys.stdout.write("ACQUIRED\\n")
+    sys.stdout.flush()
+    sys.stdin.readline()          # hold the lock until the parent says to let go
+sys.stdout.write("RELEASED\\n")
+sys.stdout.flush()
+"""
+
+
+def _start_lock_holder(data_path, index_name):
+    """
+    Start a separate process holding one box sync lock, and wait until it has it.
+
+    Arguments are passed as argv, never interpolated into a shell string or into
+    the child's source.
+    """
+    _assert_sandboxed(data_path)
+    process = subprocess.Popen(
+        [sys.executable, "-c", _HOLDER_SCRIPT, str(data_path), index_name],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    first_line = process.stdout.readline().strip()
+    if first_line != "ACQUIRED":
+        process.kill()
+        process.wait(timeout=10)
+        pytest.fail(f"holder process did not acquire the lock (said {first_line!r})")
+    return process
+
+
+# %%
+#|export
+def test_cross_process_contention(data_path):
+    manager = BoxyardLockManager(data_path)
+    index_name = "cross-process-box"
+    holder = _start_lock_holder(data_path, index_name)
+
+    try:
+        # Held by another process: acquisition must fail loudly.
+        with pytest.raises(LockAcquisitionError) as excinfo:
+            with manager.box_sync_lock(index_name, timeout=0.4):
+                pass
+        assert index_name in str(excinfo.value)
+
+        # A different box is unaffected.
+        with manager.box_sync_lock("some-other-box", timeout=1):
+            pass
+
+        # Once the holder releases, the lock becomes available.
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        assert holder.stdout.readline().strip() == "RELEASED"
+        assert holder.wait(timeout=30) == 0
+
+        with manager.box_sync_lock(index_name, timeout=10):
+            assert _is_held(manager.box_sync_lock_path(index_name))
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=10)
+
+
+# %%
+#|export
+def test_cross_process_lock_is_released_when_the_holder_dies(data_path):
+    """A crashed process must not leave a box locked: the kernel drops the flock with it."""
+    manager = BoxyardLockManager(data_path)
+    index_name = "crashing-box"
+    holder = _start_lock_holder(data_path, index_name)
+
+    try:
+        with pytest.raises(LockAcquisitionError):
+            with manager.box_sync_lock(index_name, timeout=0.4):
+                pass
+    finally:
+        holder.kill()
+        holder.wait(timeout=10)
+
+    with manager.box_sync_lock(index_name, timeout=10):
+        assert _is_held(manager.box_sync_lock_path(index_name))
+
+
+# %% [markdown]
+# ## Stale lock cleanup
+
+# %%
+#|export
+def test_cleanup_stale_locks_reports_what_it_removed(lock_manager, data_path):
+    """
+    Regression: `cleanup_stale_locks` used to always return `[]`.
+
+    `filelock`'s `release()` unlinks the lock file itself, so the follow-up
+    `lock_file.unlink()` raised `FileNotFoundError` — swallowed by a blanket
+    `except (OSError, FileNotFoundError)` that also skipped the append. Files
+    were deleted but never reported, so callers (and `verbose=True`) saw nothing.
+    """
+    stale = lock_manager.box_sync_lock_path("stale-box")
+    stale.parent.mkdir(parents=True)
+    stale.touch()
+    _age_file(stale, hours=48)
+
+    removed = cleanup_stale_locks(data_path, max_age_hours=24)
+
+    assert removed == [stale]
+    assert not stale.exists()
+
+
+# %%
+#|export
+def test_cleanup_stale_locks_keeps_fresh_held_and_non_lock_files(lock_manager, data_path):
+    stale = lock_manager.box_sync_lock_path("stale-box")
+    fresh = lock_manager.box_sync_lock_path("fresh-box")
+    for path in (stale, fresh):
+        path.parent.mkdir(parents=True)
+        path.touch()
+    _age_file(stale, hours=48)
+
+    not_a_lock = stale.parent / "notes.txt"
+    not_a_lock.write_text("keep me")
+    _age_file(not_a_lock, hours=48)
+
+    holder = BoxyardLockManager(data_path)
+    with holder.box_sync_lock("held-box"):
+        held = holder.box_sync_lock_path("held-box")
+        _age_file(held, hours=48)  # old, but a live operation owns it
+
+        removed = cleanup_stale_locks(data_path, max_age_hours=24)
+
+        assert removed == [stale]
+        assert not stale.exists()
+        assert fresh.exists()
+        assert not_a_lock.exists()
+        assert held.exists(), "cleanup removed a lock that was being held"
+        assert _is_held(held), "cleanup disturbed a held lock"
+
+
+# %%
+#|export
+def test_cleanup_stale_locks_on_missing_locks_directory(data_path):
+    assert cleanup_stale_locks(data_path, max_age_hours=24) == []
+
+
+# %%
+#|export
+def test_cleanup_stale_locks_tolerates_a_concurrent_removal(lock_manager, data_path):
+    """
+    "The file vanished underneath us" is a legitimate expected state — another
+    process cleaning up at the same time — and is the *only* error tolerated.
+    """
+    stale = lock_manager.box_sync_lock_path("stale-box")
+    stale.parent.mkdir(parents=True)
+    stale.touch()
+    _age_file(stale, hours=48)
+
+    with patch.object(Path, "unlink", side_effect=FileNotFoundError):
+        removed = cleanup_stale_locks(data_path, max_age_hours=24)
+
+    assert removed == [], "a file removed by someone else must not be reported as ours"
+
+
+# %%
+#|export
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+def test_cleanup_stale_locks_raises_on_unexpected_os_errors(lock_manager, data_path):
+    """
+    Loud errors, never silent fallbacks: anything other than a vanished file
+    propagates, so a broken lock directory is noticed instead of skipped.
+    """
+    stale = lock_manager.box_sync_lock_path("stale-box")
+    stale.parent.mkdir(parents=True)
+    stale.touch()
+    _age_file(stale, hours=48)
+
+    stale.parent.chmod(0o500)  # readable and traversable, but nothing may be unlinked
+    try:
+        with pytest.raises(OSError):
+            cleanup_stale_locks(data_path, max_age_hours=24)
+    finally:
+        stale.parent.chmod(0o700)
+
+
+# %%
+#|export
+def test_auto_cleanup_stale_locks_reports_when_verbose(lock_manager, data_path, capsys):
+    stale = lock_manager.box_sync_lock_path("stale-box")
+    stale.parent.mkdir(parents=True)
+    stale.touch()
+    _age_file(stale, hours=2)
+
+    fresh = lock_manager.box_sync_lock_path("fresh-box")
+    fresh.parent.mkdir(parents=True)
+    fresh.touch()
+
+    removed = auto_cleanup_stale_locks(data_path, max_age_hours=1.0, verbose=True)
+
+    assert removed == [stale]
+    output = capsys.readouterr().out
+    assert "Cleaned up 1 stale lock file(s):" in output
+    assert str(stale) in output
+
+
+# %%
+#|export
+def test_auto_cleanup_stale_locks_is_silent_by_default(lock_manager, data_path, capsys):
+    stale = lock_manager.box_sync_lock_path("stale-box")
+    stale.parent.mkdir(parents=True)
+    stale.touch()
+    _age_file(stale, hours=2)
+
+    removed = auto_cleanup_stale_locks(data_path, max_age_hours=1.0)
+
+    assert removed == [stale]
+    assert capsys.readouterr().out == ""
+
+
+# %%
+#|export
+def test_cleanup_does_not_break_live_locking(lock_manager, data_path):
+    """After cleanup deletes a lock file, locking that box must still work."""
+    index_name = "recycled-box"
+    with lock_manager.box_sync_lock(index_name):
+        pass
+
+    lock_path = lock_manager.box_sync_lock_path(index_name)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.touch()
+    _age_file(lock_path, hours=48)
+
+    assert cleanup_stale_locks(data_path, max_age_hours=24) == [lock_path]
+
+    with lock_manager.box_sync_lock(index_name, timeout=1):
+        assert _is_held(lock_path)
+
+
+# %% [markdown]
+# ## Async lock helpers
+#
+# The async variants poll at `LOCK_POLL_INTERVAL` so a cancelled coroutine never
+# leaves a lock half-taken.
+
+# %%
+#|export
+def test_async_locks_round_trip(lock_manager):
+    async def _exercise():
+        async with async_global_lock(lock_manager):
+            assert _is_held(lock_manager.global_lock_path)
+        assert not _is_held(lock_manager.global_lock_path)
+
+        async with async_box_sync_lock(lock_manager, "async-box"):
+            assert _is_held(lock_manager.box_sync_lock_path("async-box"))
+        assert not _is_held(lock_manager.box_sync_lock_path("async-box"))
+
+    asyncio.run(_exercise())
+
+
+# %%
+#|export
+def test_async_box_sync_lock_times_out_while_held(data_path):
+    holder = BoxyardLockManager(data_path)
+    waiter = BoxyardLockManager(data_path)
+    index_name = "async-contended-box"
+
+    async def _exercise():
+        with holder.box_sync_lock(index_name):
+            with pytest.raises(LockAcquisitionError) as excinfo:
+                async with async_box_sync_lock(waiter, index_name, timeout=0.3):
+                    pass
+        assert index_name in str(excinfo.value)
+
+    asyncio.run(_exercise())

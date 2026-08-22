@@ -64,16 +64,18 @@ modify_boxmeta(
 )
 
 # Add a test group and demand unique box names in it to test the following
-import toml
+import tomllib
+import tomli_w
 
-config_dump = toml.load(config_path)
+with open(config_path, "rb") as _f:
+    config_dump = tomllib.load(_f)
 config_dump["box_groups"] = {
     "test_group": {
         "box_title_mode": "name",
         "unique_box_names": True,
     }
 }
-config_path.write_text(toml.dumps(config_dump))
+config_path.write_text(tomli_w.dumps(config_dump))
 
 # Create a new box with the same name, to test the conflict handling when adding it to the same group
 from boxyard.cmds._modify_boxmeta import BoxNameConflict

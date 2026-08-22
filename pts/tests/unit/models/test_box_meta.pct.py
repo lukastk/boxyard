@@ -597,3 +597,141 @@ class TestBoxPart:
         assert BoxPart.DATA in parts
         assert BoxPart.META in parts
         assert BoxPart.CONF in parts
+
+# %% [markdown]
+# ## Regression: group names must not smuggle a trailing newline
+
+# %%
+#|export
+class TestValidateGroupNameTrailingNewline:
+    r"""
+    `validate_group_name` used `re.match(r"^[A-Za-z0-9_\-/]+$", ...)`.
+
+    Python's `$` matches at the end of the string *or immediately before a
+    trailing newline*, so "proj\n" was accepted and would then be used verbatim
+    as a directory name in the group symlink tree. `re.fullmatch` has no such
+    escape hatch.
+    """
+
+    def test_rejects_trailing_newline(self):
+        with pytest.raises(ValueError):
+            BoxMeta.validate_group_name("proj\n")
+
+    def test_rejects_trailing_carriage_return(self):
+        with pytest.raises(ValueError):
+            BoxMeta.validate_group_name("proj\r")
+
+    def test_rejects_embedded_newline(self):
+        with pytest.raises(ValueError):
+            BoxMeta.validate_group_name("pr\noj")
+
+    def test_still_accepts_ordinary_names(self):
+        BoxMeta.validate_group_name("proj")
+        BoxMeta.validate_group_name("ctx/macbook")
+        BoxMeta.validate_group_name("adu-me")
+
+# %% [markdown]
+# ## Regression: `BoxMeta.create` with an explicit timestamp
+
+# %%
+#|export
+class TestCreateWithExplicitTimestamp:
+    """
+    The explicit-timestamp branch of `BoxMeta.create` was broken for every input
+    type: it tested `"_" in creation_timestamp_utc` (a membership test against a
+    datetime -> TypeError) and then called `.strftime()` on what that check
+    implied was a string (-> AttributeError).
+
+    It was unreachable, because `new_box` builds its BoxMeta directly, so
+    nothing caught it. These tests make the branch live.
+    """
+
+    def _config(self, tmp_path, timestamp_format):
+        from boxyard.config import Config, StorageConfig, StorageType, BoxTimestampFormat
+
+        return Config(
+            config_path=tmp_path / "config.toml",
+            default_storage_location="fake",
+            boxyard_data_path=tmp_path / "data",
+            box_timestamp_format=timestamp_format,
+            user_boxes_path=tmp_path / "boxes",
+            user_box_groups_path=tmp_path / "groups",
+            storage_locations={
+                "fake": StorageConfig(storage_type=StorageType.LOCAL, store_path=tmp_path / "store")
+            },
+            box_groups={},
+            virtual_box_groups={},
+            default_box_groups=[],
+            box_subid_character_set="abcdefghijklmnopqrstuvwxyz0123456789",
+            box_subid_length=6,
+            max_concurrent_rclone_ops=2,
+        )
+
+    def test_date_only_format(self, tmp_path):
+        from datetime import datetime, timezone
+        from boxyard.config import BoxTimestampFormat
+
+        cfg = self._config(tmp_path, BoxTimestampFormat.DATE_ONLY)
+        bm = BoxMeta.create(
+            config=cfg, name="b", storage_location_name="fake",
+            creator_hostname="h", groups=[],
+            creation_timestamp_utc=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        )
+        assert bm.creation_timestamp_utc == "20260102"
+
+    def test_date_and_time_format(self, tmp_path):
+        from datetime import datetime, timezone
+        from boxyard.config import BoxTimestampFormat
+
+        cfg = self._config(tmp_path, BoxTimestampFormat.DATE_AND_TIME)
+        bm = BoxMeta.create(
+            config=cfg, name="b", storage_location_name="fake",
+            creator_hostname="h", groups=[],
+            creation_timestamp_utc=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        )
+        assert bm.creation_timestamp_utc == "20260102_030405"
+
+    def test_explicit_timestamp_round_trips_through_box_id(self, tmp_path):
+        from datetime import datetime, timezone
+        from boxyard.config import BoxTimestampFormat
+
+        cfg = self._config(tmp_path, BoxTimestampFormat.DATE_ONLY)
+        bm = BoxMeta.create(
+            config=cfg, name="b", storage_location_name="fake",
+            creator_hostname="h", groups=[],
+            creation_timestamp_utc=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        )
+        assert bm.box_id.startswith("20260102_")
+        assert bm.creation_timestamp_datetime == datetime(2026, 1, 2)
+
+# %% [markdown]
+# ## Regression: control characters in `creator_hostname`
+
+# %%
+#|export
+class TestCreatorHostnameControlCharacters:
+    """
+    `toml` 0.10.2 does not escape control characters -- it silently drops the
+    backslash, so dumping "del\x7fchar" yields `"delx7fchar"` and the value
+    round-trips back WRONG with no error. Since boxmeta.toml is synced to a
+    shared remote, a quietly-corrupted value is the worst outcome; reject it.
+    """
+
+    def _meta(self, hostname):
+        return BoxMeta(
+            creation_timestamp_utc="20260822",
+            box_subid="abc123",
+            name="b",
+            storage_location="fake",
+            creator_hostname=hostname,
+            groups=[],
+        )
+
+    @pytest.mark.parametrize("ch", ["\x00", "\x07", "\x1b", "\x7f", "\n", "\t", "\r"])
+    def test_control_characters_rejected(self, ch):
+        with pytest.raises(ValueError):
+            self._meta(f"host{ch}name")
+
+    def test_ordinary_hostnames_accepted(self):
+        for h in ["mymain", "Lukas\u2019s MacBook Pro", "host-1.local", "日本語ホスト"]:
+            self._meta(h)
