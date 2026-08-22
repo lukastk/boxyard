@@ -540,3 +540,77 @@ class TestSymlinkConflictHandling:
         assert title1 != title2
         assert title1 == "20251122_143022__my-project"
         assert title2 == "20251123_143022__my-project"
+
+# %% [markdown]
+# ## Regression: CONFLICT numbering must actually disambiguate
+
+# %%
+#|export
+class TestConflictNumbering:
+    """
+    Two compounding bugs meant the CONFLICT suffix never disambiguated anything.
+
+    The threshold was `> 1`, but the counter holds how many boxes have ALREADY
+    taken the title, so the second box to want "foo" saw 1, failed the test and
+    took "foo" as well. And the increment landed on the REWRITTEN key, so once a
+    box became "foo (CONFLICT 2)" the count for "foo" stopped rising and every
+    later box computed that same suffix.
+
+    N boxes sharing a title therefore produced only TWO distinct names, and
+    symlink creation resolved each collision last-one-wins -- silently dropping
+    the rest from the group. Since every `active/*` group uses
+    `box_title_mode = "name"`, that meant real work quietly missing from the
+    group tree.
+    """
+
+    def _yard(self, tmp_path, n, name="dup"):
+        import tomllib
+        import tomli_w
+        from boxyard.cmds import init_boxyard, new_box, modify_boxmeta
+        from boxyard.config import get_config
+        from boxyard._models import create_user_box_group_symlinks
+
+        cfg_path = tmp_path / "cfg" / "config.toml"
+        init_boxyard(config_path=cfg_path, data_path=tmp_path / "data", verbose=False)
+        d = tomllib.loads(cfg_path.read_text())
+        d["user_boxes_path"] = str(tmp_path / "boxes")
+        d["user_box_groups_path"] = str(tmp_path / "g")
+        d["box_groups"] = {"grp": {"box_title_mode": "name"}}
+        cfg_path.write_text(tomli_w.dumps(d))
+
+        for _ in range(n):
+            idx = new_box(config_path=cfg_path, box_name=name)
+            modify_boxmeta(config_path=cfg_path, box_index_name=idx, modifications={"groups": ["grp"]})
+
+        create_user_box_group_symlinks(get_config(cfg_path))
+        return sorted(p.name for p in (tmp_path / "g" / "grp").iterdir())
+
+    def test_every_box_gets_its_own_symlink(self, tmp_path):
+        links = self._yard(tmp_path, 5)
+        assert len(links) == 5, f"boxes were silently dropped: {links}"
+        assert len(set(links)) == 5
+
+    def test_numbering_is_sequential_from_one(self, tmp_path):
+        links = self._yard(tmp_path, 4)
+        assert links == [
+            "dup",
+            "dup (CONFLICT 1)",
+            "dup (CONFLICT 2)",
+            "dup (CONFLICT 3)",
+        ]
+
+    def test_single_box_keeps_the_plain_title(self, tmp_path):
+        assert self._yard(tmp_path, 1) == ["dup"]
+
+    def test_two_boxes_disambiguate(self, tmp_path):
+        """The case the `> 1` threshold got wrong: the SECOND box collided."""
+        links = self._yard(tmp_path, 2)
+        assert links == ["dup", "dup (CONFLICT 1)"]
+
+    def test_every_symlink_points_at_a_distinct_box(self, tmp_path):
+        import os
+
+        self._yard(tmp_path, 3)
+        group_dir = tmp_path / "g" / "grp"
+        targets = {os.path.realpath(p) for p in group_dir.iterdir()}
+        assert len(targets) == 3, f"symlinks collapsed onto the same box: {targets}"

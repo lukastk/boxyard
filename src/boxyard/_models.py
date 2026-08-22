@@ -617,10 +617,24 @@ def create_user_box_group_symlinks(
                 if group_name not in box_meta.groups:
                     continue
             dest_path = box_meta.get_local_part_path(config, BoxPart.DATA)
-            title = _get_symlink_title(box_meta, group_config)
-            if title_counter[title] > 1:
-                title = f"{title} (CONFLICT {title_counter[title]})"  # TODO this will break if the title contains a `(CONFLICT ...`
-            title_counter[title] += 1
+            # Disambiguate boxes that would take the same title in this group.
+            #
+            # This had two compounding bugs. The threshold was `> 1`, but the
+            # counter holds how many boxes have ALREADY taken the title, so the
+            # second box to want "foo" saw 1, failed the test, and took "foo"
+            # as well. And the increment landed on the REWRITTEN key, so once a
+            # box became "foo (CONFLICT 2)" the count for "foo" stopped rising
+            # and every later box computed that same suffix.
+            #
+            # The result was that N boxes sharing a title produced only TWO
+            # distinct names, and the symlink creation below resolved each
+            # collision last-one-wins -- silently dropping the other boxes from
+            # the group. With `box_title_mode = "name"`, which every `active/*`
+            # group uses, that meant real work quietly missing from ~/g.
+            base_title = _get_symlink_title(box_meta, group_config)
+            seen = title_counter[base_title]
+            title = base_title if seen == 0 else f"{base_title} (CONFLICT {seen})"
+            title_counter[base_title] += 1
             symlink_path = config.user_box_groups_path / group_symlink_name / title
             _symlinks.append((dest_path, symlink_path))
 
