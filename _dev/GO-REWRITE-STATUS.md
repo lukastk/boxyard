@@ -37,9 +37,14 @@ Twelve bugs found so far this way, all released in v0.4.0–v0.4.3. Every one wa
 | `internal/symlinks` | `create_user_box_group_symlinks` | 19 scenarios run through the real Python builder |
 | `internal/runner` | `run_cmd_async` + suspend watchdog | separate wall/monotonic seams; mutation-checked |
 | `internal/rclone` | `_utils/rclone.py` | all 65 Python argv tests ported + real-rclone round trip |
-| `internal/cli` | `_cli/main.py` — **`which` only** | byte-identical in all 3 output modes |
+| `internal/cli` | `_cli/main.py` — **`which`, `list`, `list-groups`** | byte-identical to Python on the real yard |
 
 `boxyard which -i` on the real 583-box yard: **185 ms → 6.3 ms (29×)**.
+
+The three ported commands cover everything myrig's box picker, the sesh plugin
+and the `mcd`/`bx`/`nb` shell functions actually invoke. Flags not yet ported
+(`--view tree|groups`, the hierarchy filters) **fail loudly with exit 1** rather
+than being ignored.
 
 ## In progress
 
@@ -51,7 +56,8 @@ the bug fixed in v0.4.3.
 
 ## Not started
 
-- Remaining CLI commands (23 of 24; ~213 flags total)
+- Remaining CLI commands (21 of 24; ~213 flags total), plus `list`'s tree and
+  grouped views and its hierarchy filters
 - `internal/cmds` — the command implementations (init, new, sync, include,
   exclude, delete, rename, copy, force-push, doctor, …)
 - The two render surfaces: `path`'s Textual TUI and `multi-sync`'s live table.
