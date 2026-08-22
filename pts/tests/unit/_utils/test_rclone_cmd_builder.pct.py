@@ -495,19 +495,48 @@ class TestRcloneCommandExecution:
 
         asyncio.run(_test())
 
-    def test_lsjson_returns_none_on_failure(self):
-        """rclone_lsjson returns None on failure."""
+    def test_lsjson_returns_none_when_genuinely_absent(self):
+        """Exit 3/4 mean 'not there', and are reported as None."""
         async def _test():
-            with patch(
-                "boxyard._utils.rclone.run_cmd_async",
-                new=AsyncMock(return_value=(1, "", "error")),
-            ):
-                result = await rclone_lsjson(
-                    rclone_config_path="/tmp/rclone.conf",
-                    source="remote",
-                    source_path="bucket",
-                )
-            assert result is None
+            from boxyard._utils.rclone import RCLONE_ABSENT_EXIT_CODES
+
+            for code in RCLONE_ABSENT_EXIT_CODES:
+                with patch(
+                    "boxyard._utils.rclone.run_cmd_async",
+                    new=AsyncMock(return_value=(code, "", "directory not found")),
+                ):
+                    result = await rclone_lsjson(
+                        rclone_config_path="/tmp/rclone.conf",
+                        source="remote",
+                        source_path="bucket",
+                    )
+                assert result is None, f"exit {code} should mean absent"
+
+        asyncio.run(_test())
+
+    def test_lsjson_raises_on_a_real_failure(self):
+        """
+        Any OTHER non-zero exit is a real failure and must NOT be reported as
+        absence. An unreachable remote is exit 1; conflating it with "not
+        there" made scan_and_rebuild_remote_index_cache persist an EMPTY index
+        after a network blip.
+        """
+        async def _test():
+            from boxyard._utils.rclone import RcloneFailed
+
+            for code in (1, 2, 5, 7):
+                with patch(
+                    "boxyard._utils.rclone.run_cmd_async",
+                    new=AsyncMock(return_value=(code, "", "connection refused")),
+                ):
+                    with pytest.raises(RcloneFailed) as exc:
+                        await rclone_lsjson(
+                            rclone_config_path="/tmp/rclone.conf",
+                            source="remote",
+                            source_path="bucket",
+                        )
+                    assert exc.value.ret_code == code
+                    assert "connection refused" in str(exc.value)
 
         asyncio.run(_test())
 
@@ -607,11 +636,11 @@ class TestRcloneCommandExecution:
         asyncio.run(_test())
 
     def test_cat_failure(self):
-        """rclone_cat returns None on failure."""
+        """rclone_cat reports absence for exit 3/4."""
         async def _test():
             with patch(
                 "boxyard._utils.rclone.run_cmd_async",
-                new=AsyncMock(return_value=(1, "", "error")),
+                new=AsyncMock(return_value=(3, "", "file not found")),
             ):
                 success, content = await rclone_cat(
                     rclone_config_path="/tmp/rclone.conf",
@@ -1141,12 +1170,12 @@ class TestRcloneCat:
 
         asyncio.run(_test())
 
-    def test_cat_returns_none_on_failure(self):
-        """rclone_cat returns (False, None) on failure."""
+    def test_cat_returns_none_when_genuinely_absent(self):
+        """rclone_cat returns (False, None) for exit 3/4."""
         async def _test():
             with patch(
                 "boxyard._utils.rclone.run_cmd_async",
-                new=AsyncMock(return_value=(1, "", "File not found")),
+                new=AsyncMock(return_value=(3, "", "File not found")),
             ):
                 success, content = await rclone_cat(
                     rclone_config_path="/tmp/rclone.conf",
@@ -1156,6 +1185,25 @@ class TestRcloneCat:
 
             assert success is False
             assert content is None
+
+    def test_cat_raises_on_a_real_failure(self):
+        """
+        A transient read failure must not masquerade as "no remote sync
+        record" -- get_sync_status reads that as a different world.
+        """
+        async def _test():
+            from boxyard._utils.rclone import RcloneFailed
+
+            with patch(
+                "boxyard._utils.rclone.run_cmd_async",
+                new=AsyncMock(return_value=(1, "", "connection reset")),
+            ):
+                with pytest.raises(RcloneFailed):
+                    await rclone_cat(
+                        rclone_config_path="/tmp/rclone.conf",
+                        source="remote",
+                        source_path="bucket/file.txt",
+                    )
 
         asyncio.run(_test())
 
@@ -1258,5 +1306,46 @@ class TestRcloneMove:
 
             assert success is False
             assert output == "Permission denied"
+
+        asyncio.run(_test())
+
+# %% [markdown]
+# ## Regression: `rclone_copyto` must honour `dry_run`
+
+# %%
+#|export
+class TestCopytoDryRun:
+    """
+    `rclone_copyto` accepted a `dry_run` argument and never emitted
+    `--dry-run`, so a caller asking for a dry run would silently WRITE.
+    """
+
+    def test_dry_run_emits_the_flag(self):
+        async def _test():
+            cmd = await rclone_copyto(
+                rclone_config_path="/tmp/rclone.conf",
+                source="",
+                source_path="/local/f",
+                dest="remote",
+                dest_path="bucket/f",
+                dry_run=True,
+                return_command=True,
+            )
+            assert "--dry-run" in cmd
+
+        asyncio.run(_test())
+
+    def test_without_dry_run_the_flag_is_absent(self):
+        async def _test():
+            cmd = await rclone_copyto(
+                rclone_config_path="/tmp/rclone.conf",
+                source="",
+                source_path="/local/f",
+                dest="remote",
+                dest_path="bucket/f",
+                dry_run=False,
+                return_command=True,
+            )
+            assert "--dry-run" not in cmd
 
         asyncio.run(_test())
