@@ -26,7 +26,7 @@ def init_boxyard(
                 f"Using a non-default config path. Please set the environment variable {const.ENV_VAR_BOXYARD_CONFIG_PATH} to the given config path for boxyard to use it. "
             )
     from boxyard.config import get_config, _get_default_config_dict, Config
-    import toml
+    import tomli_w
     
     if not config_path.expanduser().exists():
         if verbose:
@@ -38,7 +38,7 @@ def init_boxyard(
         del default_config_dict[
             "config_path"
         ]  # Don't save the config path to the config file
-        config_toml = toml.dumps(default_config_dict)
+        config_toml = tomli_w.dumps(default_config_dict)
     
         Path(config_path).expanduser().write_text(config_toml)
     config = get_config(config_path)

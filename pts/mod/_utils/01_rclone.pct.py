@@ -61,14 +61,15 @@ def _read_rclone_path_from_config() -> str | None:
     Reads the raw TOML directly (not via ``get_config``) so that resolving the rclone
     binary never depends on the rest of the config being valid.
     """
-    import toml
+    import tomllib
 
     config_path = Path(
         os.environ.get(const.ENV_VAR_BOXYARD_CONFIG_PATH, const.DEFAULT_CONFIG_PATH)
     ).expanduser()
     if not config_path.is_file():
         return None
-    rclone_path = toml.load(config_path).get("rclone_path")
+    with open(config_path, "rb") as f:
+        rclone_path = tomllib.load(f).get("rclone_path")
     return str(Path(rclone_path).expanduser()) if rclone_path else None
 
 

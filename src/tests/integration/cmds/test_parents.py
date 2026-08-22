@@ -98,12 +98,19 @@ async def _test_parents():
     root_ids = {r.box_id for r in roots}
     assert meta_a.box_id in root_ids
     assert meta_c.box_id in root_ids
-    import toml
+    import tomllib
+    import tomli_w
+    
+    
+    def _load_toml(path):
+        """Read a TOML file. `tomllib.load` needs a binary handle."""
+        with open(path, "rb") as f:
+            return tomllib.load(f)
     
     # Enable single_parent in config
-    config_data = toml.load(config_path)
+    config_data = _load_toml(config_path)
     config_data["single_parent"] = True
-    config_path.write_text(toml.dumps(config_data))
+    config_path.write_text(tomli_w.dumps(config_data))
     
     # Try to add two parents to box_d (already has B and C as parents via our previous setup)
     # First restore C as parent of D
@@ -116,7 +123,7 @@ async def _test_parents():
     
     # Restore config
     config_data["single_parent"] = False
-    config_path.write_text(toml.dumps(config_data))
+    config_path.write_text(tomli_w.dumps(config_data))
     # Re-add parent relationship: A -> B, B -> D
     config = get_config(config_path)
     bm = get_boxyard_meta(config, force_create=True)

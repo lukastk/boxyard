@@ -51,6 +51,24 @@ class BoxyardLockManager:
         return self.locks_path / "global.lock"
 
     def box_sync_lock_path(self, index_name: str) -> Path:
+        """
+        Return the path of a box's sync lock file.
+
+        Every per-box lock entry point routes through here, so this is the one
+        place the name has to be checked.
+
+        Raises:
+            ValueError: If `index_name` is not a single path component. The name
+                is interpolated straight into the lock path, so an unchecked one
+                would nest the lock inside a tree of directories or — with
+                `".."` — put it outside the locks directory entirely.
+        """
+        # Late import: `boxyard._models` reaches back into this module (see
+        # `refresh_boxyard_meta`), so importing it at module scope would close
+        # the cycle. `config` defers its `_models` import for the same reason.
+        from .._models import validate_box_index_name
+
+        validate_box_index_name(index_name)
         return self.locks_path / "boxes" / index_name / "sync.lock"
 
     def _ensure_lock_dir(self, lock_path: Path) -> None:
@@ -234,6 +252,13 @@ def cleanup_stale_locks(
 
     Returns:
         List of paths to removed lock files.
+
+    Raises:
+        OSError: If a lock file cannot be inspected or removed for any reason
+            other than having disappeared. Only "the file vanished underneath
+            us" is tolerated — a concurrent cleanup is a legitimate expected
+            state. Everything else (permissions, I/O errors) propagates, so a
+            broken lock directory is noticed rather than silently skipped.
     """
     import time
 
@@ -248,21 +273,40 @@ def cleanup_stale_locks(
     for lock_file in locks_path.rglob("*.lock"):
         try:
             file_age = current_time - lock_file.stat().st_mtime
-            if file_age > max_age_seconds:
-                # Try to acquire the lock with zero timeout to check if it's held
-                test_lock = FileLock(lock_file, timeout=0)
-                try:
-                    test_lock.acquire()
-                    # We got the lock, so no one else is holding it - safe to delete
-                    test_lock.release()
-                    lock_file.unlink()
-                    removed.append(lock_file)
-                except Timeout:
-                    # Lock is currently held by another process - don't delete
-                    pass
-        except (OSError, FileNotFoundError):
-            # File may have been removed by another process
-            pass
+        except FileNotFoundError:
+            # Removed by a concurrent cleanup between rglob() and stat().
+            continue
+        if file_age <= max_age_seconds:
+            continue
+
+        # Probe with a zero timeout. If anyone holds this lock, a live operation
+        # owns it — a long sync may legitimately have held it for hours — and
+        # the file must be left alone.
+        test_lock = FileLock(lock_file, timeout=0)
+        try:
+            test_lock.acquire()
+        except Timeout:
+            continue
+
+        try:
+            # Unlink while still holding the lock, so no one can acquire it in
+            # the window between the probe and the removal.
+            #
+            # A residual race is inherent to advisory locks plus unlink: a
+            # process already blocked on this file can end up holding a lock on
+            # the now-unlinked inode while a later process creates a fresh file
+            # and locks that instead. Gating removal on age keeps the window
+            # vanishingly unlikely, and filelock defends against its own half of
+            # it by discarding a lock whose inode has st_nlink == 0.
+            try:
+                lock_file.unlink()
+            except FileNotFoundError:
+                # A concurrent cleanup got there first; it was not us who
+                # removed it, so do not report it.
+                continue
+            removed.append(lock_file)
+        finally:
+            test_lock.release()
 
     return removed
 
@@ -285,6 +329,9 @@ def auto_cleanup_stale_locks(
 
     Returns:
         List of paths to removed lock files.
+
+    Raises:
+        OSError: Propagated from `cleanup_stale_locks`; see its docstring.
     """
     removed = cleanup_stale_locks(boxyard_data_path, max_age_hours)
     if removed and verbose:

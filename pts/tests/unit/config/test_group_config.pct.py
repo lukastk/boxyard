@@ -292,3 +292,43 @@ class TestGroupConfigEdgeCases:
         assert config1.is_in_group(["frontend"]) is False
         assert config2.is_in_group(["backend"]) is False
         assert config2.is_in_group(["frontend"]) is True
+
+# %% [markdown]
+# ## Regression: a malformed `filter_expr` must fail when the config loads
+
+# %%
+#|export
+class TestFilterExprValidatedEagerly:
+    """
+    `get_group_filter_func` only tokenizes eagerly and re-parses the token
+    stream on every call, so a structural error such as "(a AND b" used to
+    compile fine and raise only when the predicate was first invoked -- i.e.
+    during symlink building, far from the config typo that caused it.
+    """
+
+    def test_unbalanced_parenthesis_rejected_at_construction(self):
+        with pytest.raises(ValidationError):
+            VirtualBoxGroupConfig(filter_expr="(a AND b")
+
+    def test_dangling_operator_rejected_at_construction(self):
+        with pytest.raises(ValidationError):
+            VirtualBoxGroupConfig(filter_expr="AND AND")
+
+    def test_empty_expression_rejected_at_construction(self):
+        with pytest.raises(ValidationError):
+            VirtualBoxGroupConfig(filter_expr="")
+
+    def test_valid_expressions_still_load(self):
+        for expr in [
+            "proj",
+            "(NOT archived) AND (NOT null)",
+            "archived AND proj",
+            "(NOT archived) AND\n(NOT null) AND\n(not proj)\n",
+        ]:
+            VirtualBoxGroupConfig(filter_expr=expr)
+
+    def test_validation_does_not_break_evaluation(self):
+        g = VirtualBoxGroupConfig(filter_expr="(NOT archived) AND proj")
+        assert g.is_in_group(["proj"]) is True
+        assert g.is_in_group(["proj", "archived"]) is False
+        assert g.is_in_group([]) is False

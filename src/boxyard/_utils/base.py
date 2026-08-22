@@ -343,7 +343,6 @@ def is_in_event_loop():
         return False
 
 # %% pts/mod/_utils/00_base.pct.py 23
-import signal
 import sys
 
 _interrupted = False

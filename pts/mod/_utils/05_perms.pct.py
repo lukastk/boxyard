@@ -24,6 +24,14 @@
 # case it fails to restore one — today's behaviour), which keeps mixed old/new
 # boxyard versions safe during rollout. Propagating `chmod -x` is deferred to v2
 # once every machine runs the new code.
+#
+# **Failures here are loud.** A manifest that cannot be read or trusted is a
+# manifest whose exec bits will not be restored — and, worse, the next push
+# regenerates it from the tree that was never restored, so the loss becomes
+# permanent and travels to every other machine. Every such case raises
+# `PermsManifestError` (or the underlying `OSError`) instead of being warned
+# about and skipped. The one thing that is *not* an error is an absent manifest:
+# boxes created before this feature legitimately have none.
 
 # %%
 #|default_exp _utils.perms
@@ -38,34 +46,85 @@ import boxyard._utils.perms as this_module
 import json
 import os
 import stat
-import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from boxyard import const
 
 # %%
+#|export
+class PermsManifestError(Exception):
+    """A box's ``.boxyard-perms.json`` is present but unusable.
+
+    Raised rather than swallowed. Silently skipping a manifest we cannot read
+    means the exec bits it records are never restored, and the *next* push
+    rewrites the manifest from the un-restored tree — turning a local read
+    failure into permanent, invisible permission loss on every machine. Failing
+    the box's sync is the lesser harm, and it is recoverable: ``boxyard
+    multi-sync`` isolates a per-box error into one red row and carries on, and
+    an interrupted pull started by this machine is safely retried by the next
+    run once the manifest is fixed.
+    """
+
+# %%
 #|exporti
+_MANIFEST_VERSION = 1
+
 # Directory names pruned from the manifest walk. The first group mirrors
 # const.DEFAULT_RCLONE_EXCLUDE — boxyard doesn't sync these, so their exec bits
 # aren't part of the box's synced content and would only bloat the manifest with
 # thousands of .venv/node_modules entries that don't exist on the remote. `.git`
 # is synced, but its internal executables are noise (disabled `*.sample` hooks),
 # so its exec bits are intentionally not preserved.
+#
+# Matching is on the exact directory name, at any depth: `.venv-scallop` is a
+# normal directory and its exec bits *are* preserved.
 _PRUNED_DIR_NAMES = {".venv", ".pixi", ".trunk", "node_modules", "__pycache__", ".git"}
 
 
+def _reraise_walk_error(err: OSError) -> None:
+    """``os.walk`` error handler that re-raises instead of skipping.
+
+    os.walk's default is to swallow every scandir failure. For this walk that is
+    actively destructive: an unreadable subdirectory silently drops every file
+    beneath it from the manifest, the *shrunken* manifest is then pushed to the
+    remote, and the exec bits it no longer mentions are lost on every machine
+    that pulls it. A manifest built from a partial view of the tree is worse
+    than no manifest at all, so refuse to build one.
+    """
+    raise err
+
+
 def _iter_regular_files(root: Path):
-    """Yield every non-symlink regular file under ``root`` (recursively), skipping
-    directories boxyard doesn't sync so the manifest tracks only synced content."""
-    for dirpath, dirnames, filenames in os.walk(root):
+    """Yield ``(path, st_mode)`` for every regular file under ``root``.
+
+    Recursive, skipping directories boxyard doesn't sync so the manifest tracks
+    only synced content. The mode is returned alongside the path because it has
+    already been stat'ed to establish that the entry is a regular file, and
+    stat'ing it again in the caller would be a second syscall per file.
+    """
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_reraise_walk_error):
         dirnames[:] = [d for d in dirnames if d not in _PRUNED_DIR_NAMES]
         for fn in filenames:
             if fn == ".DS_Store":
                 continue
             p = Path(dirpath) / fn
-            if p.is_symlink():  # symlinks are shipped separately via rclone --links
+            try:
+                st = p.lstat()
+            except OSError:
+                # The file vanished between readdir and stat. That race is real
+                # in a live box (editors, build tools, another agent), and it is
+                # the *only* filesystem error tolerated here — unlike an
+                # unreadable directory, it costs at most one file that no longer
+                # exists to record.
                 continue
-            yield p
+            if not stat.S_ISREG(st.st_mode):
+                # Symlinks are shipped separately via rclone --links, and fifos,
+                # sockets and device nodes are not transferred by rclone at all,
+                # so none of them has an exec bit worth recording. os.walk lists
+                # all of them among `filenames`, so they have to be filtered out
+                # explicitly.
+                continue
+            yield p, st.st_mode
 
 # %%
 #|hide
@@ -78,22 +137,22 @@ def build_exec_manifest(root: str | Path) -> dict:
 
     Returns ``{"version": 1, "executable": [<sorted relpaths that are +x>]}``.
     Only the owner-execute bit (``S_IXUSR``) is considered. The manifest file
-    itself and symlinks are excluded.
+    itself, symlinks and non-regular files are excluded.
+
+    Raises ``OSError`` if ``root`` or any directory beneath it cannot be listed:
+    a manifest built from half the tree would silently drop the exec bits of
+    everything it failed to see.
     """
     root = Path(root)
     manifest_path = root / const.BOX_PERMS_MANIFEST_REL_PATH
     execs: list[str] = []
-    for p in _iter_regular_files(root):
+    for p, mode in _iter_regular_files(root):
         if p == manifest_path:
-            continue
-        try:
-            mode = p.stat().st_mode
-        except OSError:
             continue
         if mode & stat.S_IXUSR:
             execs.append(p.relative_to(root).as_posix())
     execs.sort()
-    return {"version": 1, "executable": execs}
+    return {"version": _MANIFEST_VERSION, "executable": execs}
 
 # %%
 #|hide
@@ -109,6 +168,9 @@ def generate_exec_manifest(root: str | Path) -> bool:
     check) and rclone does not needlessly re-transfer the manifest.
 
     Returns ``True`` if the file was (re)written, ``False`` if unchanged/skipped.
+    A ``root`` that is not a directory is a no-op returning ``False``; an
+    unreadable directory *inside* ``root`` propagates the ``OSError`` from
+    ``build_exec_manifest``.
     """
     root = Path(root)
     if not root.is_dir():
@@ -127,6 +189,79 @@ def generate_exec_manifest(root: str | Path) -> bool:
     return True
 
 # %%
+#|exporti
+def _load_manifest(manifest_path: Path) -> list[str]:
+    """Read, parse and validate a manifest; return its ``executable`` list.
+
+    Every entry is validated *before* the caller changes any mode, so a manifest
+    that turns out to be malformed half way through cannot leave the box
+    half-applied.
+    """
+    try:
+        raw = manifest_path.read_text()
+    except (OSError, UnicodeDecodeError) as e:
+        # UnicodeDecodeError is not an OSError but is the same kind of problem:
+        # a garbled or truncated transfer leaves bytes that are not text at all.
+        raise PermsManifestError(
+            f"could not read perms manifest '{manifest_path}': {e}"
+        ) from e
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise PermsManifestError(
+            f"could not parse perms manifest '{manifest_path}': {e}"
+        ) from e
+
+    if not isinstance(data, dict):
+        raise PermsManifestError(
+            f"perms manifest '{manifest_path}' is not a JSON object "
+            f"(got {type(data).__name__})"
+        )
+
+    version = data.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise PermsManifestError(
+            f"perms manifest '{manifest_path}' has a missing or invalid 'version' "
+            f"({version!r}); every boxyard writes an integer >= 1, so this file is corrupt"
+        )
+    # A version NEWER than this one is deliberately NOT rejected, and neither are
+    # unknown top-level keys. During a rollout a machine running the next boxyard
+    # pushes a v2 manifest that older machines then pull, and refusing it would
+    # break their syncs for as long as the rollout takes — the exact situation
+    # this format is versioned for. Reading it with v1 rules is safe by
+    # construction: v1 only ever ADDS +x, so the worst a misread newer manifest
+    # can do is fail to apply something, never destroy a permission bit. This is
+    # the one place boxyard prefers forward compatibility to strict decoding,
+    # because it is the one format written by versions of boxyard other than
+    # the one reading it.
+
+    execs = data.get("executable")
+    if not isinstance(execs, list):
+        raise PermsManifestError(
+            f"perms manifest '{manifest_path}' has a missing or non-list "
+            f"'executable' key (got {type(execs).__name__})"
+        )
+
+    for rel in execs:
+        if not isinstance(rel, str):
+            raise PermsManifestError(
+                f"perms manifest '{manifest_path}' lists a non-string entry {rel!r}"
+            )
+        # The manifest arrives from a shared remote, so it is not trusted input.
+        # pathlib's join makes that dangerous: `root / "/etc/shadow"` DISCARDS
+        # the root and yields "/etc/shadow", and `root / "../../.ssh/x"` escapes
+        # the box outright — either would have us chmod +x an arbitrary file.
+        # boxyard only ever writes paths produced by Path.relative_to(), so an
+        # absolute or '..' entry means corruption or tampering.
+        as_posix = PurePosixPath(rel)
+        if as_posix.is_absolute() or ".." in as_posix.parts:
+            raise PermsManifestError(
+                f"perms manifest '{manifest_path}' lists {rel!r}, which is not a "
+                f"path inside the box; refusing to change its mode"
+            )
+    return execs
+
+# %%
 #|hide
 show_doc(this_module.apply_exec_manifest)
 
@@ -137,28 +272,21 @@ def apply_exec_manifest(root: str | Path) -> list[str]:
 
     - No manifest present (e.g. a box created before this feature): no-op, ``[]``.
     - For each listed file, add execute bits mirroring the read bits
-      (``644 -> 755``, ``664 -> 775``). Never clears bits (v1 additive-only).
-    - Missing/symlink/non-file entries are skipped.
-    - A present-but-corrupt manifest is warned about and skipped — it must never
-      break an otherwise-successful sync.
+      (``644 -> 755``, ``664 -> 775``). Never clears bits (v1 additive-only), and
+      setuid/setgid/sticky are left as they are.
+    - Missing/symlink/non-file entries are skipped: the manifest describes the
+      whole box, but a local checkout may legitimately be missing files through
+      rclone excludes.
+    - A present-but-corrupt manifest raises ``PermsManifestError``. Nothing is
+      chmod'ed unless the whole manifest validates first.
 
     Returns the list of relpaths whose mode was changed.
     """
     root = Path(root)
     manifest_path = root / const.BOX_PERMS_MANIFEST_REL_PATH
-    if not manifest_path.is_file():
+    if not manifest_path.exists():
         return []
-    try:
-        data = json.loads(manifest_path.read_text())
-        execs = data["executable"]
-        assert isinstance(execs, list)
-    except (json.JSONDecodeError, OSError, KeyError, AssertionError) as e:
-        print(
-            f"WARNING: could not parse perms manifest '{manifest_path}' ({e}); "
-            f"skipping exec-bit restore.",
-            file=sys.stderr,
-        )
-        return []
+    execs = _load_manifest(manifest_path)
     changed: list[str] = []
     for rel in execs:
         p = root / rel
@@ -189,6 +317,11 @@ assert build_exec_manifest(_root)["executable"] == ["script.sh", "sub/tool"]
 # idempotent: unchanged content is not rewritten
 assert generate_exec_manifest(_root) is False
 
+# non-regular files are not manifest material, even when +x
+os.mkfifo(_root / "pipe", 0o755)
+assert "pipe" not in build_exec_manifest(_root)["executable"]
+(_root / "pipe").unlink()
+
 # simulate a sync stripping the exec bit, then restore
 (_root / "script.sh").chmod(0o644)
 (_root / "sub" / "tool").chmod(0o644)
@@ -200,6 +333,13 @@ assert os.access(_root / "sub" / "tool", os.X_OK)
 assert not os.access(_root / "data.txt", os.X_OK)  # non-exec left alone
 # apply is idempotent
 assert apply_exec_manifest(_root) == []
+# a corrupt manifest is loud, not silently skipped
+(_root / const.BOX_PERMS_MANIFEST_REL_PATH).write_text("{ not valid json")
+try:
+    apply_exec_manifest(_root)
+    raise SystemExit("corrupt manifest should have raised")
+except PermsManifestError:
+    pass
 # no manifest -> no-op (backward compatible with pre-feature boxes)
 import shutil as _sh
 _empty = Path(tempfile.mkdtemp(prefix="perms_empty_"))
