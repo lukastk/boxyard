@@ -27,15 +27,27 @@ import (
 // name the file sits in, so a box can be renamed by renaming its directory
 // without rewriting its metadata. Save and Load encode that split.
 type BoxMeta struct {
-	CreationTimestampUTC string   `toml:"-"`
-	BoxSubid             string   `toml:"-"`
-	Name                 string   `toml:"-"`
-	StorageLocation      string   `toml:"storage_location"`
-	CreatorHostname      string   `toml:"creator_hostname"`
-	Groups               []string `toml:"groups"`
+	CreationTimestampUTC string   `toml:"-" json:"creation_timestamp_utc"`
+	BoxSubid             string   `toml:"-" json:"box_subid"`
+	Name                 string   `toml:"-" json:"name"`
+	StorageLocation      string   `toml:"storage_location" json:"storage_location"`
+	CreatorHostname      string   `toml:"creator_hostname" json:"creator_hostname"`
+	Groups               []string `toml:"groups" json:"groups"`
 	// Parents holds box_id values. It defaults to empty for backwards
 	// compatibility with boxmeta.toml files written before parents existed.
-	Parents []string `toml:"parents"`
+	Parents []string `toml:"parents" json:"parents"`
+}
+
+// normalizeSlices replaces nil slices with empty ones. Go marshals a nil slice
+// as `null` where pydantic emits `[]`, and boxyard_meta.json is read by
+// mysystem's TypeScript BoxyardService as well as by both implementations.
+func (b *BoxMeta) normalizeSlices() {
+	if b.Groups == nil {
+		b.Groups = []string{}
+	}
+	if b.Parents == nil {
+		b.Parents = []string{}
+	}
 }
 
 // BoxID is "{creation_timestamp_utc}_{box_subid}".
@@ -107,11 +119,13 @@ func (b *BoxMeta) Validate() error {
 	// it comes from `scutil --get ComputerName` or the POSIX hostname, so its
 	// content is not otherwise constrained.
 	//
-	// Control characters are rejected because Python's toml 0.10.2 SILENTLY
-	// CORRUPTS them rather than escaping: dumping "del\x7fchar" produces
-	// `"delx7fchar"`, which round-trips back as the wrong string with no error.
-	// Since boxmeta.toml is synced to a shared remote, a quietly-wrong value is
-	// the worst outcome. Both implementations now refuse it.
+	// Control characters are rejected. This began as a guard against Python's
+	// toml 0.10.2, which silently CORRUPTED them rather than escaping. That
+	// library has since been replaced by tomli_w, which handles them
+	// correctly, but the rule is kept on its own merits: a control character
+	// in a machine name is meaningless and would corrupt the output of
+	// `boxyard list` and `doctor`, which print this value. Python enforces the
+	// same rule.
 	for _, r := range b.CreatorHostname {
 		if r < 0x20 || r == 0x7f {
 			return strict.Invalid(t, "creator_hostname",
@@ -232,8 +246,14 @@ func (b *BoxMeta) CheckIncluded(cfg *config.Config) bool {
 
 // --- persistence ---
 
-// tomlEscape escapes a string for a TOML basic string, matching Python's toml
-// library.
+// tomlEscape escapes a string for a TOML basic string, matching the output of
+// Python's tomli_w.
+//
+// Note tomli_w leaves a literal TAB in place (TOML permits it in basic
+// strings) and uses LOWERCASE hex in \uXXXX escapes. Control characters cannot
+// actually reach here — Validate rejects them — but the escaping is
+// implemented faithfully so the two implementations cannot drift if that ever
+// changes.
 func tomlEscape(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -242,22 +262,18 @@ func tomlEscape(s string) string {
 			b.WriteString(`\\`)
 		case '"':
 			b.WriteString(`\"`)
-		case '\b':
-			b.WriteString(`\b`)
-		case '\t':
-			b.WriteString(`\t`)
 		case '\n':
 			b.WriteString(`\n`)
-		case '\f':
-			b.WriteString(`\f`)
 		case '\r':
 			b.WriteString(`\r`)
+		case '\t':
+			// Literal, as tomli_w writes it.
+			b.WriteRune(r)
 		default:
 			if r < 0x20 || r == 0x7f {
-				b.WriteString(fmt.Sprintf(`\u%04X`, r))
+				b.WriteString(fmt.Sprintf(`\u%04x`, r))
 			} else {
-				// Everything else, including non-ASCII, is written literally —
-				// Python's toml library does not \u-escape it.
+				// Everything else, including non-ASCII, is written literally.
 				b.WriteRune(r)
 			}
 		}
@@ -265,24 +281,23 @@ func tomlEscape(s string) string {
 	return b.String()
 }
 
-// tomlList renders a string list the way Python's toml library does:
-// `[]` when empty, otherwise `[ "a", "b",]` — leading space, and a trailing
-// comma before the bracket.
+// tomlList renders a string list the way Python's tomli_w does: `[]` when
+// empty, otherwise one element per line at four-space indent, each with a
+// trailing comma.
 //
-// Matching this exactly is not cosmetic. boxmeta.toml is the META part of every
-// box and is synced to a shared remote. If Go rewrote these files in a
-// different style, all 583 boxes would show as modified the first time a Go
-// boxyard touched them, and each would push a spurious META sync.
+// boxmeta.toml is the META part of every box and is synced to a shared remote,
+// so this is a cross-implementation contract, verified differentially against
+// tomli_w rather than by inspection.
 func tomlList(xs []string) string {
 	if len(xs) == 0 {
 		return "[]"
 	}
 	var b strings.Builder
-	b.WriteString("[")
+	b.WriteString("[\n")
 	for _, x := range xs {
-		b.WriteString(` "`)
+		b.WriteString(`    "`)
 		b.WriteString(tomlEscape(x))
-		b.WriteString(`",`)
+		b.WriteString("\",\n")
 	}
 	b.WriteString("]")
 	return b.String()

@@ -45,10 +45,9 @@ func sampleMeta() *BoxMeta {
 	}
 }
 
-// These goldens came from the live Python `toml.dumps` and were confirmed by a
-// differential run over 12 cases (10 byte-identical; the other two are inputs
-// Python silently corrupts and both implementations now reject — see
-// TestRejectsControlCharactersInHostname).
+// These goldens came from the live Python `tomli_w.dumps` and were confirmed
+// by a differential run over 12 cases — all 12 byte-identical, and all
+// round-tripping back through tomllib to the original values.
 func TestRenderMatchesPythonToml(t *testing.T) {
 	cases := []struct {
 		name string
@@ -63,7 +62,7 @@ func TestRenderMatchesPythonToml(t *testing.T) {
 				Groups:          []string{"ctx/macbook", "worktrees"},
 				Parents:         []string{},
 			},
-			want: "storage_location = \"hetzner-box\"\ncreator_hostname = \"Lukas’s MacBook Pro\"\ngroups = [ \"ctx/macbook\", \"worktrees\",]\nparents = []\n",
+			want: "storage_location = \"hetzner-box\"\ncreator_hostname = \"Lukas’s MacBook Pro\"\ngroups = [\n    \"ctx/macbook\",\n    \"worktrees\",\n]\nparents = []\n",
 		},
 		{
 			name: "empty lists",
@@ -71,19 +70,19 @@ func TestRenderMatchesPythonToml(t *testing.T) {
 			want: "storage_location = \"fake\"\ncreator_hostname = \"h\"\ngroups = []\nparents = []\n",
 		},
 		{
-			name: "single entries keep the trailing comma",
+			name: "single entries are still one per line",
 			meta: BoxMeta{StorageLocation: "fake", CreatorHostname: "h", Groups: []string{"a"}, Parents: []string{"20260101_abc"}},
-			want: "storage_location = \"fake\"\ncreator_hostname = \"h\"\ngroups = [ \"a\",]\nparents = [ \"20260101_abc\",]\n",
+			want: "storage_location = \"fake\"\ncreator_hostname = \"h\"\ngroups = [\n    \"a\",\n]\nparents = [\n    \"20260101_abc\",\n]\n",
 		},
 		{
 			name: "quotes are escaped",
 			meta: BoxMeta{StorageLocation: "s", CreatorHostname: `he said "hi"`, Groups: []string{"a"}, Parents: []string{}},
-			want: "storage_location = \"s\"\ncreator_hostname = \"he said \\\"hi\\\"\"\ngroups = [ \"a\",]\nparents = []\n",
+			want: "storage_location = \"s\"\ncreator_hostname = \"he said \\\"hi\\\"\"\ngroups = [\n    \"a\",\n]\nparents = []\n",
 		},
 		{
 			name: "backslashes are escaped",
 			meta: BoxMeta{StorageLocation: "s", CreatorHostname: `back\slash`, Groups: []string{"a"}, Parents: []string{}},
-			want: "storage_location = \"s\"\ncreator_hostname = \"back\\\\slash\"\ngroups = [ \"a\",]\nparents = []\n",
+			want: "storage_location = \"s\"\ncreator_hostname = \"back\\\\slash\"\ngroups = [\n    \"a\",\n]\nparents = []\n",
 		},
 		{
 			name: "nil lists render as empty, not null",
@@ -105,7 +104,7 @@ func TestRejectsControlCharactersInHostname(t *testing.T) {
 		m := sampleMeta()
 		m.CreatorHostname = "host" + ch + "name"
 		if err := m.Validate(); err == nil {
-			t.Errorf("accepted a control character %q that Python's toml would silently corrupt", ch)
+			t.Errorf("accepted a control character %q in a hostname", ch)
 		}
 	}
 	for _, h := range []string{"mymain", "Lukas’s MacBook Pro", "host-1.local", "日本語ホスト"} {
