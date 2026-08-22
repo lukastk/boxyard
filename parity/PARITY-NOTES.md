@@ -91,6 +91,42 @@ only when the predicate was first invoked — during symlink building, far from
 the config typo that caused it. `VirtualBoxGroupConfig` now validates in a
 `model_validator`, so both implementations reject it at load.
 
+### rclone absence was indistinguishable from rclone failure
+
+`rclone_lsjson` returned `None`, and `rclone_cat` returned `(False, None)`, for
+**any** non-zero exit. But rclone signals "not there" with a specific code — 3
+for a missing directory, 4 for a missing file — and everything else is a real
+failure. An unreachable remote is exit 1.
+
+So a transient SFTP failure was reported as "the remote path does not exist",
+which is not a smaller truth but a different one:
+
+- `scan_and_rebuild_remote_index_cache` persisted an **empty** index after a
+  network blip, wiping the cache and forcing (also-failing) full scans.
+- `SyncRecord.rclone_read` reported "no remote sync record" when it had merely
+  failed to read one — and the sync state machine treats a missing remote
+  record as a materially different world.
+
+`_doctor.py` already carried a comment working around the conflation.
+
+Both wrappers now return absence only for exit 3/4 and raise `RcloneFailed`
+otherwise. Go had already been written this way, having checked rclone's exit
+codes empirically rather than inferring them.
+
+### `rclone_copyto` ignored `dry_run`
+
+The parameter was accepted and never emitted, so a caller asking for a dry run
+would silently **write**. No call site passes `True`, which is why nothing had
+broken, but it was a live trap.
+
+### The group symlink CONFLICT suffix never disambiguated
+
+Two compounding faults meant N boxes sharing a title produced only TWO distinct
+names, and symlink creation resolved the rest last-one-wins — so same-named
+boxes were silently absent from the group. Since every `active/*` group uses
+`box_title_mode = "name"`, this could quietly hide real work in `~/g`. See the
+v0.4.2 changelog entry.
+
 ---
 
 # Incident: a parity run created a real box in ~/dev (2026-08-22)
