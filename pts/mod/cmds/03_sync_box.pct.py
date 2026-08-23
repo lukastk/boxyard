@@ -46,6 +46,7 @@ async def sync_box(
     verbose: bool = False,
     show_rclone_progress: bool = False,
     soft_interruption_enabled: bool = True,
+    tombstoned_box_ids: set[str] | None = None,
     _skip_lock: bool = False,
 ) -> dict[BoxPart, tuple[SyncStatus, bool]]:
     """
@@ -57,6 +58,9 @@ async def sync_box(
         sync_direction: Direction of sync.
         sync_setting: SyncSetting option (SAFE, CAREFUL, FORCE).
         sync_choices: List of BoxPart specifying what to sync. If None, all parts are synced.
+        tombstoned_box_ids: Every tombstoned box id at this box's storage location,
+            when the caller already holds the set (see `list_tombstoned_box_ids`).
+            Avoids one remote probe per box. If None, the box is probed individually.
         force: Force syncing, possibly overwriting changes.
         verbose: Print verbose output during sync.
         show_rclone_progress: Show rclone progress during sync.
@@ -156,7 +160,21 @@ if box_meta.get_storage_location_config(config).storage_type == StorageType.LOCA
 box_id = BoxMeta.extract_box_id(box_index_name)
 storage_location = box_meta.storage_location
 
-_is_tombstoned = await is_tombstoned(config, storage_location, box_id)
+# One remote probe PER BOX is what this parameter exists to avoid: a
+# `multi-sync` pass over 587 boxes made 587 separate SFTP connections to the
+# same storage box, every 20 minutes, on every machine. That saturated the
+# server's connection limit and was measurably failing ~8 boxes per pass on
+# three machines with "couldn't initialise SFTP".
+#
+# The caller passes the set when it already holds one for this storage
+# location. When it does not -- `sync_box` is also a standalone command --
+# fall back to the single probe rather than skipping the check: a silent
+# skip would turn a safety check into a no-op and let a box deleted from
+# another machine be resurrected here.
+if tombstoned_box_ids is not None:
+    _is_tombstoned = box_id in tombstoned_box_ids
+else:
+    _is_tombstoned = await is_tombstoned(config, storage_location, box_id)
 if _is_tombstoned:
     _tombstone = await get_tombstone(config, storage_location, box_id)
     _tombstone_msg = f"Box '{box_index_name}' was deleted"

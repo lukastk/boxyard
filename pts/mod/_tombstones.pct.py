@@ -203,6 +203,52 @@ async def list_tombstones(
 
     return tombstones
 
+# %% [markdown]
+# ## Bulk: just the ids
+#
+# `list_tombstones` reads every tombstone file to build `Tombstone` objects —
+# one `rclone cat` each, 161 of them on the live yard. That is fine for a
+# report and far too expensive for the sync hot path, which only ever asks
+# "is this id tombstoned?".
+#
+# The filename IS the box id (`get_tombstone_path`), so one listing answers
+# that for every box at once.
+
+# %%
+#|export
+async def list_tombstoned_box_ids(
+    config: boxyard.config.Config,
+    storage_location: str,
+) -> set[str]:
+    """
+    Every tombstoned box id at `storage_location`, from a SINGLE listing.
+
+    Raises `RcloneFailed` if the remote cannot be listed. That is deliberate
+    and it is the whole safety property: an empty set means "nothing is
+    tombstoned", and returning that when we simply could not look would let a
+    box another machine deleted be silently resurrected. A missing tombstones
+    directory is different -- it genuinely means no box has ever been deleted
+    here -- and is the only case that yields an empty set.
+    """
+    from boxyard._utils.rclone import rclone_lsjson
+
+    sl_config = config.storage_locations[storage_location]
+    tombstones_dir = sl_config.store_path / "tombstones"
+
+    files = await rclone_lsjson(
+        rclone_config_path=config.rclone_config_path,
+        source=storage_location,
+        source_path=tombstones_dir.as_posix(),
+    )
+    if files is None:
+        return set()  # no tombstones directory yet -- nothing has been deleted
+
+    return {
+        f["Name"][: -len(".json")]
+        for f in files
+        if f.get("Name", "").endswith(".json") and not f.get("IsDir", False)
+    }
+
 # %%
 #|export
 async def remove_tombstone(

@@ -1,3 +1,44 @@
+## [0.5.1] - 2026-08-23
+
+### 🐛 Bug Fixes
+
+- **`multi-sync` no longer opens one SFTP connection per box just to check
+  tombstones.** `sync_box` asked "has this box been deleted elsewhere?" with a
+  remote probe per box — 587 of them per pass, per machine, every 20 minutes,
+  across six machines. That saturated the storage box's connection limit and
+  was measurably failing ~8 boxes per pass on macbook, macstudio and ideapad
+  with `couldn't initialise SFTP: error receiving version packet from server`.
+  All three machines logged an identical count of refusals within the same
+  hour — the signature of a shared server limit, not a machine-local fault.
+
+  `multi-sync` now fetches the tombstoned ids **once per storage location**
+  and tests membership in memory. The filename of a tombstone is the box id,
+  so a single listing answers it for every box; the pre-existing
+  `list_tombstones` could not be reused because it reads every tombstone file
+  to build objects (161 `rclone cat`s on the live yard).
+
+  Three deliberate constraints:
+
+  - **The standalone path still probes.** `sync_box` is also a single-box
+    command, and when no set is supplied it makes the individual call rather
+    than skipping the check — a silent skip would turn a safety check into a
+    no-op and let a box deleted from another machine be resurrected.
+  - **A failed lookup raises.** An empty set means "nothing is tombstoned",
+    so returning that when the remote could not be listed would be the same
+    silent resurrection with no error anywhere. Only a *missing* tombstones
+    directory — which genuinely means nothing has ever been deleted — yields
+    an empty set.
+  - **The fetch happens before any box is synced**, so a failure stops the
+    pass instead of syncing part of it blind. This is one call where there
+    used to be 587, so the chance of hitting a transient failure at all is far
+    lower than before.
+
+  This was found by reading the supervisor logs while investigating something
+  else; the errors had been recurring every 20 minutes. They surface as errors
+  at all only because v0.4.3 stopped conflating an rclone exit 1 with "path not
+  found" — before that, a failed tombstone probe silently concluded "not
+  tombstoned" and synced the box anyway.
+
 ## [0.5.0] - 2026-08-23
 
 Release 1 of two for single-writer box ownership ("tolerate"). **Zero
