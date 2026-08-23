@@ -169,6 +169,38 @@ else:
     ]
 
 # %% [markdown]
+# ## Fetch the tombstones once, not once per box
+#
+# `sync_box` needs to know whether a box has been deleted from another machine.
+# Asked per box that is one SFTP connection each -- 587 of them per pass, per
+# machine, every 20 minutes. That saturated the storage box's connection limit
+# and was failing ~8 boxes per pass on three machines with "couldn't initialise
+# SFTP". One listing per storage location answers it for every box.
+#
+# A failure here is NOT survivable by carrying on: if we cannot tell which
+# boxes are tombstoned, syncing anyway would resurrect a box another machine
+# deleted. So it raises, naming the storage location. That is a smaller risk
+# than it looks -- this is one call where there used to be 587, so the chance
+# of hitting a transient failure at all is far lower than before.
+
+# %%
+#|export
+from boxyard._tombstones import list_tombstoned_box_ids
+from boxyard.config import StorageType
+
+_tombstoned_ids_by_sl: dict[str, set[str]] = {}
+
+
+async def _load_tombstoned_ids():
+    """Populate `_tombstoned_ids_by_sl`, one listing per rclone storage location."""
+    for _sl_name in sorted({bm.storage_location for bm in box_metas}):
+        if config.storage_locations[_sl_name].storage_type == StorageType.LOCAL:
+            continue  # a local store has no tombstones and needs no remote call
+        _tombstoned_ids_by_sl[_sl_name] = await list_tombstoned_box_ids(
+            config, _sl_name
+        )
+
+# %% [markdown]
 # Define syncing task
 
 # %%
@@ -182,6 +214,7 @@ async def _task(num, box_meta):
             sync_direction=sync_direction,
             sync_setting=sync_setting,
             sync_choices=sync_choices,
+            tombstoned_box_ids=_tombstoned_ids_by_sl.get(box_meta.storage_location),
             verbose=False,
         )
         sync_stats[box_meta.index_name] = (
@@ -340,6 +373,9 @@ sync_task = async_throttler(
 
 
 async def _runner():
+    # Before any box is synced: if this raises we must not sync at all, since
+    # we cannot tell which boxes another machine has deleted.
+    await _load_tombstoned_ids()
     if show_progress:
         monitor_task = asyncio.create_task(_progress_monitor_task())
         await sync_task

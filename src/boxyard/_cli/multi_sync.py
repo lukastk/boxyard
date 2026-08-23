@@ -98,6 +98,20 @@ def cli_multi_sync(
             boxyard_meta.by_index_name[box_index_name]
             for box_index_name in box_index_names
         ]
+    from boxyard._tombstones import list_tombstoned_box_ids
+    from boxyard.config import StorageType
+    
+    _tombstoned_ids_by_sl: dict[str, set[str]] = {}
+    
+    
+    async def _load_tombstoned_ids():
+        """Populate `_tombstoned_ids_by_sl`, one listing per rclone storage location."""
+        for _sl_name in sorted({bm.storage_location for bm in box_metas}):
+            if config.storage_locations[_sl_name].storage_type == StorageType.LOCAL:
+                continue  # a local store has no tombstones and needs no remote call
+            _tombstoned_ids_by_sl[_sl_name] = await list_tombstoned_box_ids(
+                config, _sl_name
+            )
     async def _task(num, box_meta):
         sync_stats[box_meta.index_name] = (num, "Syncing...", None, datetime.now(), None)
         try:
@@ -107,6 +121,7 @@ def cli_multi_sync(
                 sync_direction=sync_direction,
                 sync_setting=sync_setting,
                 sync_choices=sync_choices,
+                tombstoned_box_ids=_tombstoned_ids_by_sl.get(box_meta.storage_location),
                 verbose=False,
             )
             sync_stats[box_meta.index_name] = (
@@ -253,6 +268,9 @@ def cli_multi_sync(
     
     
     async def _runner():
+        # Before any box is synced: if this raises we must not sync at all, since
+        # we cannot tell which boxes another machine has deleted.
+        await _load_tombstoned_ids()
         if show_progress:
             monitor_task = asyncio.create_task(_progress_monitor_task())
             await sync_task
