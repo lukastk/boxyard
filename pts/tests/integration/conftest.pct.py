@@ -245,6 +245,10 @@ def temp_boxyard(tmp_path):
         "storage_type": "rclone",
         "store_path": "boxyard",
     }
+    # A test boxyard stands for a configured machine, so it has a machine name.
+    # Without one `doctor` reports `machine-name-unset` in every test that uses
+    # this fixture. Tests that want the unset state clear the key themselves.
+    config_dump["machine_name"] = "test-machine"
 
     # Set up a rclone remote path (alias to local folder)
     config.rclone_config_path.write_text(
@@ -305,6 +309,10 @@ def create_boxyards(remote_name="my_remote", num_boxyards=1):
             "storage_type": "rclone",
             "store_path": "boxyard",
         }
+        # Each boxyard stands for a distinct machine, so each gets a distinct
+        # name -- multi-machine tests compare these. Without one `doctor`
+        # reports `machine-name-unset` in every test built on this helper.
+        config_dump["machine_name"] = f"test-machine-{i + 1}"
 
         # Set up a rclone remote path
         config.rclone_config_path.write_text(

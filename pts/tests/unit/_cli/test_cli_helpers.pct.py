@@ -612,3 +612,46 @@ class TestInitConfigPathResolution:
 
         chosen = self._invoke_init(monkeypatch, None, None, None)
         assert chosen == const.DEFAULT_CONFIG_PATH
+
+# ============================================================================
+# Tests for `boxyard --version`
+# ============================================================================
+
+# %% [markdown]
+# `--version` exists to be a rollout gate: rolling a change across the fleet
+# means checking `ssh-target <machine> boxyard --version` on each. Before it
+# there was no way to ask boxyard itself — only `pip show boxyard`, which does
+# not answer for a uv tool install.
+
+# %%
+#|export
+class TestVersionFlag:
+    def _run(self, *args):
+        from typer.testing import CliRunner
+        from boxyard._cli.main import app
+
+        return CliRunner().invoke(app, list(args))
+
+    def test_prints_the_installed_version_and_exits_zero(self):
+        import importlib.metadata
+
+        result = self._run("--version")
+        assert result.exit_code == 0, result.output
+        assert result.stdout.strip() == importlib.metadata.version("boxyard")
+
+    def test_does_not_need_a_config_file(self):
+        """
+        The gate has to work on a machine whose config is missing or written
+        for a newer boxyard -- those are exactly the machines worth asking.
+        """
+        result = self._run("--config", "/nonexistent/config.toml", "--version")
+        assert result.exit_code == 0, result.output
+
+    def test_short_circuits_a_subcommand(self):
+        result = self._run("--version", "doctor")
+        assert result.exit_code == 0, result.output
+        assert "check" not in result.stdout
+
+    def test_bare_invocation_still_prints_help(self):
+        result = self._run()
+        assert "Usage:" in result.stdout

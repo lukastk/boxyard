@@ -42,7 +42,16 @@ def _call_with_lock_handling(func, *args, **kwargs):
         )
         raise typer.Exit(code=1)
 
-# %% pts/mod/_cli/main.pct.py 7
+# %% pts/mod/_cli/main.pct.py 8
+def _version_callback(value: bool) -> None:
+    if not value:
+        return
+    import importlib.metadata
+
+    typer.echo(importlib.metadata.version("boxyard"))
+    raise typer.Exit()
+
+# %% pts/mod/_cli/main.pct.py 9
 @app.callback()
 def entrypoint(
     ctx: typer.Context,
@@ -50,6 +59,13 @@ def entrypoint(
         None,
         "--config",
         help="The path to the config file. Will be '~/.config/boxyard/config.toml' if not provided.",
+    ),
+    version: bool = Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Print the installed boxyard version and exit.",
     ),
 ):
     import os
@@ -79,7 +95,7 @@ def entrypoint(
         return
     typer.echo(ctx.get_help())
 
-# %% pts/mod/_cli/main.pct.py 10
+# %% pts/mod/_cli/main.pct.py 12
 def _is_subsequence_match(term: str, name: str) -> bool:
     j = 0
     m = len(term)
@@ -91,7 +107,7 @@ def _is_subsequence_match(term: str, name: str) -> bool:
                 return True
     return j == m
 
-# %% pts/mod/_cli/main.pct.py 12
+# %% pts/mod/_cli/main.pct.py 14
 class NameMatchMode(str, Enum):
     EXACT = "exact"
     CONTAINS = "contains"
@@ -215,7 +231,7 @@ def _get_box_index_name(
 
     return box_index_name
 
-# %% pts/mod/_cli/main.pct.py 14
+# %% pts/mod/_cli/main.pct.py 16
 @app.command(name="init")
 def cli_init(
     config_path: Path | None = Option(
@@ -252,7 +268,7 @@ def cli_init(
         verbose=True,
     )
 
-# %% pts/mod/_cli/main.pct.py 16
+# %% pts/mod/_cli/main.pct.py 18
 @app.command(name="new")
 def cli_new(
     storage_location: str | None = Option(
@@ -394,7 +410,7 @@ def cli_new(
 
     create_user_symlinks(config_path=app_state["config_path"])
 
-# %% pts/mod/_cli/main.pct.py 18
+# %% pts/mod/_cli/main.pct.py 20
 @app.command(name="sync")
 def cli_sync(
     box_path: Path | None = Option(
@@ -510,7 +526,7 @@ def cli_sync(
 
         create_user_symlinks(config_path=app_state["config_path"])
 
-# %% pts/mod/_cli/main.pct.py 20
+# %% pts/mod/_cli/main.pct.py 22
 @app.command(name="sync-missing-meta")
 def cli_sync_missing_meta(
     box_index_names: list[str] | None = Option(
@@ -567,7 +583,7 @@ def cli_sync_missing_meta(
 
         create_user_symlinks(config_path=app_state["config_path"])
 
-# %% pts/mod/_cli/main.pct.py 22
+# %% pts/mod/_cli/main.pct.py 24
 @app.command(name="add-to-group")
 def cli_add_to_group(
     box_path: Path | None = Option(
@@ -684,7 +700,7 @@ def cli_add_to_group(
 
         create_user_symlinks(config_path=app_state["config_path"])
 
-# %% pts/mod/_cli/main.pct.py 24
+# %% pts/mod/_cli/main.pct.py 26
 @app.command(name="remove-from-group")
 def cli_remove_from_group(
     box_path: Path | None = Option(
@@ -796,7 +812,7 @@ def cli_remove_from_group(
 
         create_user_symlinks(config_path=app_state["config_path"])
 
-# %% pts/mod/_cli/main.pct.py 26
+# %% pts/mod/_cli/main.pct.py 28
 @app.command(name="add-parent")
 def cli_add_parent(
     box_path: Path | None = Option(
@@ -910,7 +926,7 @@ def cli_add_parent(
 
         create_user_symlinks(config_path=app_state["config_path"])
 
-# %% pts/mod/_cli/main.pct.py 28
+# %% pts/mod/_cli/main.pct.py 30
 @app.command(name="remove-parent")
 def cli_remove_parent(
     box_path: Path | None = Option(
@@ -1028,7 +1044,7 @@ def cli_remove_parent(
 
         create_user_symlinks(config_path=app_state["config_path"])
 
-# %% pts/mod/_cli/main.pct.py 30
+# %% pts/mod/_cli/main.pct.py 32
 @app.command(name="tree")
 def cli_tree(
     storage_locations: list[str] | None = Option(
@@ -1157,7 +1173,7 @@ def cli_tree(
 
     Console().print(tree)
 
-# %% pts/mod/_cli/main.pct.py 32
+# %% pts/mod/_cli/main.pct.py 34
 @app.command(name="include")
 def cli_include(
     box_index_name: str | None = Option(
@@ -1303,7 +1319,7 @@ def cli_include(
 
         create_user_symlinks(config_path=app_state["config_path"])
 
-# %% pts/mod/_cli/main.pct.py 34
+# %% pts/mod/_cli/main.pct.py 36
 @app.command(name="exclude")
 def cli_exclude(
     box_index_name: str | None = Option(
@@ -1516,7 +1532,7 @@ def cli_exclude(
 
         create_user_symlinks(config_path=app_state["config_path"])
 
-# %% pts/mod/_cli/main.pct.py 36
+# %% pts/mod/_cli/main.pct.py 38
 @app.command(name="delete")
 def cli_delete(
     box_index_name: str | None = Option(
@@ -1601,7 +1617,7 @@ def cli_delete(
 
         create_user_symlinks(config_path=app_state["config_path"])
 
-# %% pts/mod/_cli/main.pct.py 38
+# %% pts/mod/_cli/main.pct.py 40
 def _dict_to_hierarchical_text(
     data: dict, indents: int = 0, lines: list[str] = None
 ) -> list[str]:
@@ -1615,7 +1631,7 @@ def _dict_to_hierarchical_text(
             lines.append(f"{' ' * 4 * indents}{k}: {v}")
     return lines
 
-# %% pts/mod/_cli/main.pct.py 40
+# %% pts/mod/_cli/main.pct.py 42
 async def get_formatted_box_status(config_path, box_index_name):
     from ..cmds import get_box_sync_status
     from pydantic import BaseModel
@@ -1638,7 +1654,7 @@ async def get_formatted_box_status(config_path, box_index_name):
 
     return data
 
-# %% pts/mod/_cli/main.pct.py 41
+# %% pts/mod/_cli/main.pct.py 43
 @app.command(name="box-status")
 def cli_box_status(
     box_path: Path | None = Option(
@@ -1719,7 +1735,7 @@ def cli_box_status(
     else:
         typer.echo("\n".join(_dict_to_hierarchical_text(sync_status_data)))
 
-# %% pts/mod/_cli/main.pct.py 43
+# %% pts/mod/_cli/main.pct.py 45
 @app.command(name="yard-status")
 def cli_yard_status(
     storage_locations: list[str] | None = Option(
@@ -1791,7 +1807,7 @@ def cli_yard_status(
             )
             typer.echo("\n")
 
-# %% pts/mod/_cli/main.pct.py 45
+# %% pts/mod/_cli/main.pct.py 47
 def _get_filtered_box_metas(box_metas, include_groups, exclude_groups, group_filter):
     if include_groups:
         box_metas = [
@@ -1814,7 +1830,7 @@ def _get_filtered_box_metas(box_metas, include_groups, exclude_groups, group_fil
         ]
     return box_metas
 
-# %% pts/mod/_cli/main.pct.py 46
+# %% pts/mod/_cli/main.pct.py 48
 @app.command(name="list")
 def cli_list(
     storage_locations: list[str] | None = Option(
@@ -2019,7 +2035,7 @@ def cli_list(
             status = f"{'●' if box_meta.check_included(config) else '○'} " if show_status else ""
             typer.echo(f"{status}{box_meta.index_name}")
 
-# %% pts/mod/_cli/main.pct.py 48
+# %% pts/mod/_cli/main.pct.py 50
 @app.command(name="list-groups")
 def cli_list_groups(
     box_path: Path | None = Option(
@@ -2106,7 +2122,7 @@ def cli_list_groups(
     for group_name in sorted(box_groups):
         typer.echo(group_name)
 
-# %% pts/mod/_cli/main.pct.py 50
+# %% pts/mod/_cli/main.pct.py 52
 @app.command(name="path")
 def cli_path(
     box_index_name: str | None = Option(
@@ -2268,7 +2284,7 @@ def cli_path(
         typer.echo(f"Invalid path option: {path_option}")
         raise typer.Exit(code=1)
 
-# %% pts/mod/_cli/main.pct.py 52
+# %% pts/mod/_cli/main.pct.py 54
 @app.command(name="create-user-symlinks")
 def cli_create_user_symlinks(
     user_boxes_path: Path | None = Option(
@@ -2295,7 +2311,7 @@ def cli_create_user_symlinks(
         user_box_groups_path=user_box_groups_path,
     )
 
-# %% pts/mod/_cli/main.pct.py 54
+# %% pts/mod/_cli/main.pct.py 56
 @app.command(name="rename")
 def cli_rename(
     box_index_name: str | None = Option(
@@ -2371,7 +2387,7 @@ def cli_rename(
 
         create_user_symlinks(config_path=app_state["config_path"])
 
-# %% pts/mod/_cli/main.pct.py 56
+# %% pts/mod/_cli/main.pct.py 58
 @app.command(name="sync-name")
 def cli_sync_name(
     box_index_name: str | None = Option(
@@ -2455,7 +2471,7 @@ def cli_sync_name(
 
         create_user_symlinks(config_path=app_state["config_path"])
 
-# %% pts/mod/_cli/main.pct.py 58
+# %% pts/mod/_cli/main.pct.py 60
 @app.command(name="copy")
 def cli_copy(
     box_index_name: str | None = Option(
@@ -2544,7 +2560,7 @@ def cli_copy(
 
     typer.echo(f"Copied to: {result_path}")
 
-# %% pts/mod/_cli/main.pct.py 60
+# %% pts/mod/_cli/main.pct.py 62
 @app.command(name="force-push")
 def cli_force_push(
     box_index_name: str | None = Option(
@@ -2619,7 +2635,7 @@ def cli_force_push(
 
     typer.echo("Force push complete.")
 
-# %% pts/mod/_cli/main.pct.py 62
+# %% pts/mod/_cli/main.pct.py 64
 @app.command(name="which")
 def cli_which(
     path: Path | None = Option(
@@ -2680,7 +2696,7 @@ def cli_which(
         typer.echo(f"local_data_path: {info['local_data_path']}")
         typer.echo(f"included: {info['included']}")
 
-# %% pts/mod/_cli/main.pct.py 64
+# %% pts/mod/_cli/main.pct.py 66
 @app.command(name="doctor")
 def cli_doctor(
     no_remote: bool = Option(
@@ -2706,7 +2722,9 @@ def cli_doctor(
     symlinks and debris in the group tree, orphaned sync records, interrupted
     syncs, leftovers from removed storage locations, rclone configuration,
     remote boxmetas missing from the local mirror and boxes tombstoned on the
-    remote (both unless --no-remote), and boxes referencing unknown parents.
+    remote (both unless --no-remote), boxes referencing unknown parents,
+    boxmetas or a config carrying keys written by a newer boxyard, and a
+    missing `machine_name`.
 
     Never mutates or auto-fixes anything. Exit code is 0 when healthy and 1
     when there is at least one finding, so it can be asserted by cron jobs and

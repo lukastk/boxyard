@@ -46,6 +46,17 @@
 #     machine throughout. They were found by reading a supervisor log. A box that
 #     merely needs pulling is deliberately NOT reported — see the check.
 # 15. **tree-orphans** — boxmeta parents referencing unknown box ids.
+# 16. **unknown-boxmeta-keys** — a `boxmeta.toml` carries a key this version of
+#     boxyard does not know, i.e. it was written by a newer one. The key is
+#     preserved untouched (see `BoxMeta.unknown_keys`); this check is what makes
+#     that preservation visible instead of silent.
+# 17. **machine-name-unset** — no `machine_name` in the config. Box write
+#     ownership identifies a machine by that name and never by its hostname, so
+#     until it is set this machine can never own a box.
+# 18. **unknown-config-keys** — `config.toml` carries a key this version of
+#     boxyard does not know, at the top level or inside one of its tables. Like
+#     `unknown-boxmeta-keys`, the key is tolerated rather than fatal; this check
+#     is what keeps that tolerance from turning a loud typo into a silent one.
 #
 # Doctor never mutates or auto-fixes anything.
 
@@ -87,6 +98,9 @@ DOCTOR_CHECK_NAMES = [
     "tombstoned-box",
     "diverged-box",
     "tree-orphans",
+    "unknown-boxmeta-keys",
+    "machine-name-unset",
+    "unknown-config-keys",
 ]
 
 # %% [markdown]
@@ -1094,6 +1108,111 @@ for bm in box_metas:
                 index_name=bm.index_name,
                 parent_box_id=_parent_id,
             )
+
+# %% [markdown]
+# ## Check: `unknown-boxmeta-keys`
+#
+# A `boxmeta.toml` written by a NEWER boxyard than this one. `BoxMeta.load`
+# keeps such keys verbatim rather than rejecting the file, because rejecting it
+# does not merely fail to parse: `create_boxyard_meta` skips the registration,
+# so the box disappears from `boxyard_meta.json`, from `boxyard list`, from
+# `~/g` (its symlinks are deleted) and from `multi-sync` — it stops syncing
+# with no error, and upgrading afterwards does not heal it.
+#
+# Tolerating the key is what prevents that; this check is what stops the
+# tolerance from being silent. Purely local — the keys are already on disk.
+
+# %%
+#|export
+import importlib.metadata as _importlib_metadata
+
+try:
+    _running_version = _importlib_metadata.version("boxyard")
+except _importlib_metadata.PackageNotFoundError:
+    # Running from a source checkout with no installed distribution. Say
+    # nothing about the version rather than inventing one.
+    _running_version = None
+_running_suffix = f" (running {_running_version})" if _running_version else ""
+
+for bm in box_metas:
+    if not bm.unknown_keys:
+        continue
+    _keys = ", ".join(sorted(bm.unknown_keys))
+    _add_finding(
+        "unknown-boxmeta-keys",
+        f"Box '{bm.index_name}' has boxmeta key(s) this boxyard does not know: {_keys}",
+        f"The box was written by a newer boxyard. The key(s) are preserved "
+        f"untouched, so nothing is lost and there is nothing to repair — but this "
+        f"machine cannot act on what they mean. Upgrade boxyard here"
+        f"{_running_suffix} to the version that writes them.",
+        index_name=bm.index_name,
+        storage_location=bm.storage_location,
+        unknown_keys=sorted(bm.unknown_keys),
+    )
+
+# %% [markdown]
+# ## Check: `machine-name-unset`
+#
+# `machine_name` is how a machine identifies itself for box write-ownership.
+# It is configured and never derived: `get_hostname()` cannot serve as an
+# identity — one machine in this fleet has reported both `lukas-pocket4` and
+# `pocket4`, and macOS reports user-editable pretty names like
+# `Lukas’s MacBook Pro`.
+#
+# Reported whenever it is unset, not only once boxes are owned: an unnamed
+# machine can never claim a box, and the point of reporting it is to make the
+# gap between installing this version and configuring the name visible while
+# it is still true, rather than at the moment someone first tries to claim.
+
+# %%
+#|export
+if config.machine_name is None:
+    _add_finding(
+        "machine-name-unset",
+        f"No `machine_name` is configured in '{config.config_path}'",
+        f"Nothing is broken by this today — box write-ownership is not yet "
+        f"enforced — but this machine cannot own a box until it has a name. Set "
+        f"`machine_name` to this machine's canonical short name (the same one "
+        f"myrig uses, e.g. 'macbook' or 'mymain') in '{config.config_path}', or "
+        f"export {const.ENV_VAR_BOXYARD_MACHINE_NAME} for a one-off.",
+        config_path=config.config_path,
+    )
+
+# %% [markdown]
+# ## Check: `unknown-config-keys`
+#
+# `config.toml` carries a key this version does not know. Since v0.5.0 that no
+# longer makes every command on the machine fail — `get_config` collects such
+# keys instead of rejecting the file — and this check is the other half of that
+# bargain.
+#
+# It matters more than it looks. `extra="forbid"` is what catches a TYPO'd
+# config key today; tolerating unknown keys without reporting them would trade
+# a loud typo for a silent one, which is a worse deal than the one being
+# fixed. So every key that lands in the passthrough is named here, whether it
+# came from a newer boxyard or from a slip of the fingers — doctor cannot tell
+# the two apart, and the hint says so rather than guessing.
+#
+# Keys are reported by their dotted path, so a key inside a table names the
+# entry it is in (`storage_locations.hetzner-box.some_key`) rather than leaving
+# the reader to search the file for it.
+
+# %%
+#|export
+if config.unknown_keys:
+    _config_keys = ", ".join(sorted(config.unknown_keys))
+    _add_finding(
+        "unknown-config-keys",
+        f"Config '{config.config_path}' has key(s) this boxyard does not know: "
+        f"{_config_keys}",
+        f"They are ignored, not fatal. Either the config was written for a newer "
+        f"boxyard -- upgrade this machine{_running_suffix} -- or the key is a typo, "
+        f"in which case whatever it was meant to configure is silently not in "
+        f"effect. Check the spelling against `boxyard init`'s generated config "
+        f"before assuming the former.",
+        config_path=config.config_path,
+        unknown_keys=sorted(config.unknown_keys),
+    )
 
 # %% [markdown]
 # Assemble the report.
