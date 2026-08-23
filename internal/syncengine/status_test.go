@@ -296,3 +296,38 @@ func TestProbeErrorsPropagate(t *testing.T) {
 		t.Fatal("a probe failure was swallowed")
 	}
 }
+
+// TestConfAbsenceIsNeedsPullNotExcluded is the Go half of Python v0.5.3.
+//
+// A box's conf/.rclone_include|_exclude|_filters decide what its DATA syncs.
+// Reading "absent locally, present remotely" as Excluded made that absence
+// self-perpetuating for CONF — conf/ is missing, so it is judged excluded, so
+// it is never pulled — and the filters then existed only on the machine that
+// wrote them. A box whose .rclone_include narrows its sync would sync
+// EVERYTHING on the second machine.
+func TestConfAbsenceIsNeedsPullNotExcluded(t *testing.T) {
+	// Remote only: the local conf/ has never been fetched. Same shape as
+	// TestExcludedWhenOnlyRemoteExists, which is exactly the point — the two
+	// differ only in what the caller says the absence MEANS.
+	p := &fakeProber{remoteExists: true, remoteIsDir: true, remote: rec("01KRRZXHQ1T13ADRQWFT1E4ESH", true)}
+
+	// DATA's meaning is the ZERO VALUE, so a caller that forgets the flag keeps
+	// today's behaviour rather than silently un-excluding a box.
+	st, err := GetSyncStatus(context.Background(), p, req())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Condition != Excluded {
+		t.Fatalf("DATA (zero value): got %v, want excluded", st.Condition)
+	}
+
+	r := req()
+	r.TreatLocalAbsenceAsNeedsPull = true
+	st, err = GetSyncStatus(context.Background(), p, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Condition != NeedsPull {
+		t.Fatalf("CONF: got %v, want needs_pull — the filters would never arrive", st.Condition)
+	}
+}

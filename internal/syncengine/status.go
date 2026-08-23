@@ -84,6 +84,27 @@ type Prober interface {
 
 // StatusRequest names the four paths one part's status depends on.
 type StatusRequest struct {
+	// TreatLocalAbsenceAsNeedsPull says how to read "absent locally, present
+	// remotely".
+	//
+	// For DATA that means the box is not INCLUDED here — a deliberate choice
+	// that must stay Excluded, since pulling it would undo a `boxyard exclude`.
+	//
+	// For CONF it means the opposite: nobody chose anything, the files have
+	// simply never been fetched. Reading that as Excluded makes the absence
+	// SELF-PERPETUATING — conf/ is missing, so it is judged excluded, so it is
+	// never pulled, so it stays missing — and the effect is that a box's own
+	// rclone filters exist only on the machine that wrote them. A box whose
+	// conf/.rclone_include narrows what it syncs would sync EVERYTHING on the
+	// second machine. Fixed in Python v0.5.3; this is the same branch.
+	//
+	// The field is phrased so the ZERO VALUE is DATA's meaning — the safe one.
+	// Python defaults its equivalent to True (excluded) and Go cannot default a
+	// bool to true, so the flag is inverted rather than renamed directly: a
+	// caller that forgets to set it gets today's behaviour, not a silent
+	// un-exclusion that pulls a removed box back onto the machine.
+	TreatLocalAbsenceAsNeedsPull bool
+
 	// ExcludePath is the box part's EFFECTIVE rclone exclude file -- its own
 	// conf/.rclone_exclude if it has one, else the global default. It must be
 	// the box's OWN effective file, never a hardcoded default: a per-box
@@ -244,7 +265,11 @@ func GetSyncStatus(ctx context.Context, p Prober, req StatusRequest) (SyncStatus
 			status.Condition = NeedsPush
 
 		case remoteExists:
-			status.Condition = Excluded
+			if req.TreatLocalAbsenceAsNeedsPull {
+				status.Condition = NeedsPull
+			} else {
+				status.Condition = Excluded
+			}
 
 		default:
 			// Neither side exists. Synced by definition — commonly the case
