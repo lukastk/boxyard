@@ -25,6 +25,7 @@ import subprocess
 import asyncio
 import time
 from boxyard import const
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Coroutine
 
@@ -232,7 +233,7 @@ def check_last_time_modified(
     really does sync -- which would hide genuine changes.
     """
     import os
-    from datetime import datetime, timezone
+    from datetime import timezone
 
     exclude_names = exclude_names or set()
 
