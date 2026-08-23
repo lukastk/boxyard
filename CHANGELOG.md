@@ -70,11 +70,17 @@ every machine can *read* the new format before any machine can *write* it.
   without anyone having to remember a list.
 
   One case is deliberately left as a loud error: an *entry* that is not a table
-  at all, e.g. a bare `some_key = "x"` appended to the end of the file, which
-  TOML silently lands inside whatever table came last. That is not a newer
-  boxyard adding an option — it is a line the author believed they had put at
-  top level — so it raises, naming the exact path, rather than being quietly
-  discarded.
+  at all — a key written directly under one of those containers rather than
+  under one of its entries. That takes one of two forms, a dotted key before
+  any `[table]` header (`virtual_box_groups.future = "x"`), or a scalar under a
+  bare `[virtual_box_groups]` header. Either way it is a line the author
+  believed they were putting somewhere else, so it raises and names the exact
+  path rather than being quietly discarded.
+
+  Note what does *not* reach that branch: appending a line to the end of a real
+  `config.toml`. TOML lands it inside whatever table came last, and in a
+  populated config that is a sub-table, so the line becomes an unknown key
+  inside an entry and is tolerated.
 
 - **`boxyard --version`** — prints the installed version and exits. It exists
   to be a rollout gate: checking a change across the fleet means

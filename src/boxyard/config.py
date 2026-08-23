@@ -327,15 +327,35 @@ def get_config(path: Path | None = None) -> Config:
             if not isinstance(entry, dict):
                 # An ENTRY that is not a table is deliberately NOT tolerated,
                 # and this is the boundary of the forward compatibility above.
-                # These tables map a name to a group or storage location, so a
-                # scalar here is not a newer boxyard adding an option -- that
-                # would be a new field inside an entry (handled below) or a new
-                # top-level key (handled already). It is almost always a line
-                # appended to the END of the file, which TOML silently lands
-                # inside whatever table came last. Tolerating that would mean
-                # silently ignoring a line the author believed they had added
-                # at top level; pydantic's error names the exact path and says
-                # a table was expected, which is the more useful outcome.
+                # These tables map a name to a group or a storage location, so
+                # a scalar in that position is not a newer boxyard adding an
+                # option: that would be a new field inside an entry (handled
+                # just below) or a new top-level key (handled already).
+                #
+                # It is reached by writing a key directly under the CONTAINER
+                # rather than under one of its entries, which takes one of two
+                # forms -- measured, not assumed:
+                #
+                #   virtual_box_groups.future = "x"     # dotted key, and only
+                #                                       # BEFORE any [table]
+                #                                       # header; a dotted key
+                #                                       # is relative to the
+                #                                       # table it sits under
+                #   [virtual_box_groups]                # a bare container
+                #   future = "x"                        # header, then a scalar
+                #
+                # Note what does NOT reach it: appending a line to the end of a
+                # real config.toml. TOML lands that inside whatever table came
+                # last, and in a populated config that is a SUB-table
+                # (`[virtual_box_groups.archived-uncategorized]`), so the line
+                # becomes an unknown key inside an entry and is TOLERATED. Only
+                # a config whose last table is a bare container behaves the
+                # other way.
+                #
+                # Either way the value is a line the author believed they were
+                # adding somewhere else, so it raises: pydantic names the exact
+                # path and says a table was expected, which beats silently
+                # discarding the edit.
                 cleaned[entry_name] = entry
                 continue
             entry_known, entry_unknown = _split_known_keys(
