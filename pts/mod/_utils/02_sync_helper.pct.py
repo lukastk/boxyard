@@ -68,6 +68,7 @@ async def sync_helper(
     remote_sync_backups_path: str,
     include_path: Path | None = None,
     exclude_path: Path | None = None,
+    local_absence_means_excluded: bool = True,
     filters_path: Path | None = None,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
@@ -174,6 +175,7 @@ sync_status = await get_sync_status(
     # "has anything changed?" question is asked about the same set of
     # files the sync would actually move.
     exclude_path=exclude_path,
+    local_absence_means_excluded=local_absence_means_excluded,
 )
 (
     sync_condition,

@@ -912,12 +912,26 @@ async def get_sync_status(
     remote_path: str,
     remote_sync_record_path: str,
     exclude_path: "str | Path | None" = None,
+    local_absence_means_excluded: bool = True,
 ) -> SyncStatus:
     """
     `exclude_path` is the box part's EFFECTIVE rclone exclude file (its own
     `conf/.rclone_exclude` if it has one, else the global default). Literal
     names in it are skipped when measuring the local modification time, so a
     file that can never be transferred cannot make the box look modified.
+
+    `local_absence_means_excluded` says how to read "absent locally, present
+    remotely". For DATA that means the box is not INCLUDED here, which is a
+    deliberate choice and must stay `EXCLUDED` -- pulling it would undo an
+    `boxyard exclude`.
+
+    For CONF it means the opposite: nobody chose anything, the files have
+    simply never been fetched. Reading that as `EXCLUDED` made the absence
+    SELF-PERPETUATING -- conf/ is missing, so it is judged excluded, so it is
+    never pulled, so it stays missing -- and the effect was that a box's own
+    rclone filters existed only on the machine that wrote them. A box whose
+    `conf/.rclone_include` narrows what it syncs would sync EVERYTHING on the
+    second machine.
     """
     from ._utils import check_last_time_modified, literal_exclude_names
     from ._utils import rclone_path_exists
@@ -1062,7 +1076,11 @@ async def get_sync_status(
                     sync_condition = SyncCondition.NEEDS_PUSH
             else:
                 if remote_path_exists:
-                    sync_condition = SyncCondition.EXCLUDED
+                    sync_condition = (
+                        SyncCondition.EXCLUDED
+                        if local_absence_means_excluded
+                        else SyncCondition.NEEDS_PULL
+                    )
                 else:
                     sync_condition = SyncCondition.SYNCED  # Synced by default, since neither local nor remote path exists. This will often be the case for `conf`, for example.
 
