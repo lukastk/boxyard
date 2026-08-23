@@ -94,6 +94,20 @@ box_meta = boxyard_meta.by_index_name[box_index_name]
 from boxyard._models import get_sync_status, BoxPart
 import asyncio
 
+# Resolve the box's EFFECTIVE exclude file the same way `sync_box` does, so
+# `box-status` reports the same modification state a sync would act on. A box's
+# own `conf/.rclone_exclude` REPLACES the global default; using the default for
+# a box that overrides it could skip a directory the box really does sync.
+from boxyard import const as _const
+
+_conf_path = box_meta.get_local_part_path(config, BoxPart.CONF)
+_box_exclude_path = _conf_path / ".rclone_exclude"
+_effective_exclude_path = (
+    _box_exclude_path
+    if _box_exclude_path.exists()
+    else config.default_rclone_exclude_path
+)
+
 tasks = [
     get_sync_status(
         rclone_config_path=config.rclone_config_path,
@@ -104,6 +118,7 @@ tasks = [
         remote_sync_record_path=box_meta.get_remote_sync_record_path(
             config, box_part
         ),
+        exclude_path=_effective_exclude_path,
     )
     for box_part in BoxPart
 ]

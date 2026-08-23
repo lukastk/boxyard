@@ -1,3 +1,35 @@
+## [0.4.6] - 2026-08-23
+
+### 🐛 Bug Fixes
+
+- **Debris that is never synced no longer looks like a local change.**
+  `check_last_time_modified` answers "has anything changed here?", and that
+  answer drives the sync decision — but it walked every file with no awareness
+  of the sync filters. So a file that can never be transferred still marked the
+  box as modified: macOS Finder writing a `.DS_Store` was enough to flip a box
+  to `NEEDS_PUSH`, and — when the remote had also moved on — to `CONFLICT`.
+
+  Found while diagnosing a box wedged in conflict since March, where 4 of the
+  39 "changed" files were `.DS_Store`. This is the mechanism behind boxes
+  desyncing across machines purely from operating-system debris.
+
+  The scan now skips what the sync would skip. Two deliberate constraints:
+
+  - The **box's own** effective exclude file is used, not a hardcoded default.
+    A `conf/.rclone_exclude` *replaces* the global default, so assuming the
+    defaults for a box that overrides them could prune a directory the box
+    really does sync — hiding genuine changes. That false negative would be
+    worse than the false positive being fixed.
+  - Only **literal names** are applied (`node_modules/`, `.DS_Store`); glob
+    patterns are deliberately not interpreted. Reimplementing rclone's filter
+    language would be a second, subtly different implementation of the thing
+    that decides what actually transfers. The gap errs on the safe side: a
+    glob-excluded file can still make a box look modified, but nothing that
+    *would* be synced is ever skipped.
+
+- `box-status` now resolves the same effective exclude file `sync` does, so it
+  reports the state a sync would act on.
+
 ## [0.4.5] - 2026-08-23
 
 ### 🐛 Bug Fixes

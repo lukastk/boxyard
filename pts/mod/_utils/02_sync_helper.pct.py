@@ -170,6 +170,10 @@ sync_status = await get_sync_status(
     remote=remote,
     remote_path=remote_path,
     remote_sync_record_path=remote_sync_record_path,
+    # The same exclude file the transfer below will use, so the
+    # "has anything changed?" question is asked about the same set of
+    # files the sync would actually move.
+    exclude_path=exclude_path,
 )
 (
     sync_condition,

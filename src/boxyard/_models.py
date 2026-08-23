@@ -801,8 +801,15 @@ async def get_sync_status(
     remote: str,
     remote_path: str,
     remote_sync_record_path: str,
+    exclude_path: "str | Path | None" = None,
 ) -> SyncStatus:
-    from ._utils import check_last_time_modified
+    """
+    `exclude_path` is the box part's EFFECTIVE rclone exclude file (its own
+    `conf/.rclone_exclude` if it has one, else the global default). Literal
+    names in it are skipped when measuring the local modification time, so a
+    file that can never be transferred cannot make the box look modified.
+    """
+    from ._utils import check_last_time_modified, literal_exclude_names
     from ._utils import rclone_path_exists
 
     local_path_exists, local_path_is_dir = await rclone_path_exists(
@@ -871,7 +878,9 @@ async def get_sync_status(
         )
         return SyncStatus(**sync_status)
 
-    local_last_modified = check_last_time_modified(local_path)
+    local_last_modified = check_last_time_modified(
+        local_path, exclude_names=literal_exclude_names(exclude_path)
+    )
     if local_last_modified is None and local_path_exists:
         if (not local_path_is_dir) or (local_path_is_dir and not local_path_is_empty):
             # Logic here: If the local path is a file, it should be able to be checked for last modification.
