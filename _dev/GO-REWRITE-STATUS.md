@@ -59,10 +59,25 @@ was taken.
 | `boxmeta.toml` decoded with `DisallowUnknownFields` | once release 2 writes `write_owner`, every box a Go binary touched would vanish from `boxyard_meta.json`, `boxyard list`, `~/g` and `multi-sync` — silently, and not healed by upgrading | `594a646` |
 | `config.toml` decoded with `DisallowUnknownFields` | the myrig template adding `machine_name` would break EVERY command on EVERY machine at once — config.toml is one shared artefact | `61b9c42` |
 | `LocalLastModified` ignored the sync excludes | pre-v0.4.6 behaviour: a `.DS_Store` alone flips a box to NEEDS_PUSH, and to CONFLICT when the remote has also moved. The mechanism behind boxes wedging on OS debris | `51b3784` |
+| CONF's absence read as `EXCLUDED` | self-perpetuating: conf/ is missing, so it is judged excluded, so it is never pulled. A box's rclone filters would exist only on the machine that wrote them, and one with `.rclone_include` would sync EVERYTHING on the second machine | `e6d82c4` |
 
-Two of the three were found by writing the *next* piece and checking its
+The fourth was carried over the same DAY Python fixed it (v0.5.3), rather than
+being found later as a gap. That is the intended cadence.
+
+**One thing did not translate directly.** Python defaults its flag to `True`
+(the DATA meaning) and Go cannot default a bool to true, so a literal
+translation would make the ZERO VALUE mean CONF — and a caller who forgot the
+field would silently un-exclude a box, pulling data back onto a machine the
+user removed it from. The Go field is phrased inversely
+(`TreatLocalAbsenceAsNeedsPull`) so the zero value is the safe one. The
+existing `TestExcludedWhenOnlyRemoteExists` catches the wrong choice
+immediately.
+
+Two of the first three were found by writing the *next* piece and checking its
 assumptions against Python, not by a test failing. The port's own suite was
-green throughout.
+green throughout. The frozen differential does not protect you here: it
+captures the behaviour of the day it was taken, and all its scenarios exercise
+the DATA meaning — which is exactly why they still passed after the CONF fix.
 
 ## In progress
 
