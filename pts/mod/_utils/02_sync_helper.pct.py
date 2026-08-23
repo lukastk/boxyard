@@ -300,6 +300,32 @@ if sync_setting == SyncSetting.CAREFUL:
 if allow_missing_source:
     source_exists = remote_path_exists if sync_direction == SyncDirection.PULL else local_path_exists
     if not source_exists:
+        dest_exists = local_path_exists if sync_direction == SyncDirection.PULL else remote_path_exists
+        if (
+            not dest_exists
+            and local_sync_record is not None
+            and not local_sync_record.sync_complete
+        ):
+            # Neither side has this part, so an INCOMPLETE record describing an
+            # interrupted transfer between two things that do not exist is pure
+            # noise -- and because this early return happens BEFORE any record
+            # is written, no later sync could ever clear it. `boxyard doctor`
+            # then reports `interrupted-sync` for that box forever, which is
+            # exactly the cries-wolf failure that makes the tool ignorable.
+            #
+            # Seen on macbook: obako's `conf` had an incomplete local record
+            # from an interrupted pull in Feb 2026, while neither the local nor
+            # the remote `conf` directory existed at all. It was unclearable.
+            #
+            # ONLY the both-absent case is resolved. A missing SOURCE with a
+            # PRESENT destination means the part was deleted on the other side
+            # -- a real divergence that must not be silently reconciled.
+            Path(local_sync_record_path).unlink(missing_ok=True)
+            if verbose:
+                print(
+                    "Cleared a stale incomplete sync record: neither side has "
+                    "this part, so there was no interrupted transfer to resume."
+                )
         if verbose:
             print(f"Source does not exist and allow_missing_source=True. Skipping sync.")
         sync_status, False  #|func_return_line

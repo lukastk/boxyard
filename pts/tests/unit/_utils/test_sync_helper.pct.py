@@ -1153,3 +1153,104 @@ class TestSyncHelperForceMode:
             assert synced is True
 
         asyncio.run(_test())
+
+# ============================================================================
+# Regression: a stale incomplete record when neither side has the part
+# ============================================================================
+
+# %%
+#|export
+class TestSyncHelperMissingSourceClearsStaleRecord:
+    """
+    `allow_missing_source` (used for the optional CONF part) returns early
+    BEFORE any sync record is written. So an INCOMPLETE local record left by an
+    interrupted transfer could never be cleared by any later sync, and
+    `boxyard doctor` reported `interrupted-sync` for that box forever.
+
+    Seen on macbook: obako's `conf` had an incomplete local record from a pull
+    interrupted in Feb 2026, while neither the local nor the remote `conf`
+    directory existed at all.
+
+    Only the BOTH-ABSENT case is resolved. A missing source with a PRESENT
+    destination is a real divergence and must be left alone.
+    """
+
+    def _status(self, local_exists, remote_exists, local_rec):
+        return SyncStatus(
+            sync_condition=SyncCondition.SYNC_FROM_REMOTE_INCOMPLETE,
+            local_path_exists=local_exists,
+            remote_path_exists=remote_exists,
+            local_sync_record=local_rec,
+            remote_sync_record=None,
+            is_dir=True,
+            error_message=None,
+        )
+
+    def _run(self, tmp_path, local_exists, remote_exists, complete):
+        from boxyard._models import SyncRecord
+
+        rec_path = tmp_path / "conf.rec"
+        rec = SyncRecord.create(sync_complete=complete, syncer_hostname="h")
+        rec_path.write_text(rec.model_dump_json())
+
+        async def _test():
+            with patch(
+                "boxyard._models.get_sync_status",
+                new=AsyncMock(return_value=self._status(local_exists, remote_exists, rec)),
+            ):
+                return await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=SyncDirection.PULL,
+                    sync_setting=SyncSetting.CAREFUL,
+                    local_path="/local",
+                    local_sync_record_path=str(rec_path),
+                    remote="myremote",
+                    remote_path="/remote",
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                    allow_missing_source=True,
+                )
+
+        status, synced = asyncio.run(_test())
+        return rec_path, synced
+
+    def test_both_sides_absent_clears_the_stale_record(self, tmp_path):
+        rec_path, synced = self._run(tmp_path, local_exists=False, remote_exists=False, complete=False)
+        assert synced is False
+        assert not rec_path.exists(), "the unclearable incomplete record was left behind"
+
+    def test_present_destination_is_left_alone(self, tmp_path):
+        """The part was deleted on the other side -- a real divergence."""
+        rec_path, synced = self._run(tmp_path, local_exists=True, remote_exists=False, complete=False)
+        assert synced is False
+        assert rec_path.exists(), "a genuine divergence was silently reconciled"
+
+    def test_a_complete_record_is_never_touched(self, tmp_path):
+        rec_path, synced = self._run(tmp_path, local_exists=False, remote_exists=False, complete=True)
+        assert synced is False
+        assert rec_path.exists(), "a COMPLETE record must not be removed"
+
+    def test_no_record_at_all_is_not_an_error(self, tmp_path):
+        """A box that never had a conf sync has no record; that must be fine."""
+        async def _test():
+            with patch(
+                "boxyard._models.get_sync_status",
+                new=AsyncMock(return_value=self._status(False, False, None)),
+            ):
+                return await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=SyncDirection.PULL,
+                    sync_setting=SyncSetting.CAREFUL,
+                    local_path="/local",
+                    local_sync_record_path=str(tmp_path / "absent.rec"),
+                    remote="myremote",
+                    remote_path="/remote",
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                    allow_missing_source=True,
+                )
+
+        status, synced = asyncio.run(_test())
+        assert synced is False
