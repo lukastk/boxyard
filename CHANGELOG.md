@@ -1,3 +1,38 @@
+## [0.5.3] - 2026-08-23
+
+### 🐛 Bug Fixes
+
+- **A box's `conf/` now reaches machines that did not write it.** Per-box rclone
+  filters (`conf/.rclone_include|_exclude|_filters`) decide what a box's DATA
+  syncs — and they only ever existed on the machine that created them. Every
+  other machine synced that box with the *global* filters instead. A box whose
+  `.rclone_include` narrows what it syncs would sync **everything** on the
+  second machine.
+
+  The cause was a single branch in `get_sync_status`: absent locally + present
+  remotely was read as `EXCLUDED`. That is correct for DATA, where absence
+  means the box is deliberately not included here and pulling it would undo an
+  `boxyard exclude`. For CONF nobody chose anything — the files have simply
+  never been fetched — and reading it as `EXCLUDED` made the absence
+  **self-perpetuating**: `conf/` is missing, so it is judged excluded, so it is
+  never pulled, so it stays missing.
+
+  `get_sync_status` takes paths rather than a `BoxPart`, so it could not tell
+  the two apart. It now takes `local_absence_means_excluded`, threaded through
+  `sync_box` → `sync_helper`, defaulting to today's behaviour and passed as
+  `False` only for CONF.
+
+  Found while reviewing release 2, and pre-existing — reproduced on an *unowned*
+  box, so not caused by ownership. On the live yard it had no effect yet: only
+  5 boxes have a per-box filter and each is included solely on its creating
+  machine. It would have started biting during the ownership migration, which
+  is what encourages including a box on a second machine.
+
+  Cost is negligible: for the ~580 boxes with no `conf/` at all, both sides are
+  absent, which already resolves to `SYNCED` with no transfer.
+
+  **The Go port has the same branch and needs the same change.**
+
 ## [0.5.2] - 2026-08-23
 
 Release 2 of two for single-writer box ownership ("claim"). A box may now be

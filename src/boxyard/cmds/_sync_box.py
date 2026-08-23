@@ -245,6 +245,12 @@ async def sync_box(
                 remote_path=helper_kwargs["remote_path"],
                 remote_sync_record_path=helper_kwargs["remote_sync_record_path"],
                 exclude_path=probe_exclude_path,
+                # Must match what the sync below will use, or a non-owner reads a
+                # different condition than the one it then acts on. CONF passes
+                # False here for the same reason it does at the call site.
+                local_absence_means_excluded=helper_kwargs.get(
+                    "local_absence_means_excluded", True
+                ),
             )
             _condition = _status.sync_condition
     
@@ -315,6 +321,13 @@ async def sync_box(
                 verbose=verbose,
                 show_rclone_progress=show_rclone_progress,
                 allow_missing_source=True,  # CONF is optional - may not exist on either side
+                # A missing local conf/ means "never fetched", NOT "deliberately
+                # excluded" -- exclusion is a DATA concept. Reading it as EXCLUDED
+                # made the absence self-perpetuating, so a box's own rclone filters
+                # only ever existed on the machine that wrote them, and a box whose
+                # `conf/.rclone_include` narrows its sync would sync EVERYTHING on
+                # the second machine.
+                local_absence_means_excluded=False,
             )
     
         # Get the now locally synced conf files for the sync of the box data
