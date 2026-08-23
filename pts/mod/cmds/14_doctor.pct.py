@@ -456,7 +456,12 @@ for _box_id, _bms in sorted(_metas_by_id.items()):
         _add_finding(
             "duplicate-box-id",
             f"Box id '{_box_id}' is registered {len(_bms)} times: {_locations}",
-            "Box ids must be unique; inspect the duplicates and delete or re-create one of them.",
+            "Box ids must be unique. This usually means the box was RENAMED on "
+            "another machine: `sync-missing-meta` fetched the new name while the "
+            "old registration stayed behind. The remote's name is authoritative "
+            "— check it with `boxyard copy`/`rclone lsf` or on the machine that "
+            "owns the box, then remove the registration whose name the remote "
+            "does not have. Do NOT re-create the box; that would mint a new id.",
             box_id=_box_id,
         )
 
