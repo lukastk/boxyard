@@ -193,13 +193,13 @@ async def sync_box(
     
         # Get the now locally synced conf files for the sync of the box data
         _rclone_include_path = (
-            box_meta.get_local_part_path(config, BoxPart.CONF) / ".rclone_include"
+            box_meta.get_local_part_path(config, BoxPart.CONF) / const.RCLONE_INCLUDE_FILENAME
         )
         _rclone_exclude_path = (
-            box_meta.get_local_part_path(config, BoxPart.CONF) / ".rclone_exclude"
+            box_meta.get_local_part_path(config, BoxPart.CONF) / const.RCLONE_EXCLUDE_FILENAME
         )
         _rclone_filters_path = (
-            box_meta.get_local_part_path(config, BoxPart.CONF) / ".rclone_filters"
+            box_meta.get_local_part_path(config, BoxPart.CONF) / const.RCLONE_FILTERS_FILENAME
         )
     
         _rclone_include_path = _rclone_include_path if _rclone_include_path.exists() else None

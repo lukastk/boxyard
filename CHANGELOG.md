@@ -1,3 +1,57 @@
+## [0.4.7] - 2026-08-23
+
+### ✨ Features
+
+- **`boxyard doctor` can now see a wedged box.** Until this release it could
+  not: a box in `CONFLICT`, or one left half-written by an interrupted push
+  from another machine, produced no finding at all. Two boxes on macbook sat
+  wedged from March to August 2026 — five months — while `doctor` reported
+  "all checks passed" on that machine every time. They surfaced only in the
+  supervisor log, one line per 20-minute pass, and were found by accident.
+
+  The new **`diverged-box`** check reports two situations:
+
+  - The local and remote sync records disagree *and* the local copy has also
+    changed since its own record — both sides moved on independently, so sync
+    refuses rather than pick a winner.
+  - The local record is complete but the remote one is not: a push from
+    another machine died half-way. Nothing could see this before —
+    `interrupted-sync` reads only local records.
+
+  Three deliberate constraints, each of which decides whether the check is
+  worth reading:
+
+  - **A box that merely needs pulling is not reported.** Its records disagree
+    too, so the naive comparison fires on it — and on a fleet where most boxes
+    are routinely a sync behind, that would flag hundreds of healthy boxes and
+    make the report worthless.
+  - **A push still in flight is not reported.** It is indistinguishable from an
+    interrupted one, so only a remote record older than six hours counts —
+    comfortably longer than any real push here, far shorter than "months".
+  - **The local-modification test is the sync engine's own**, same exclude-aware
+    scan and same comparison, so `doctor` and `sync` cannot disagree about
+    whether a box has changed.
+
+  Cost was the deciding constraint on the design. Fetching every remote record
+  takes over two minutes against the storage box and opens enough SFTP
+  connections to disturb the syncs running alongside doctor, so the check makes
+  **one recursive listing** and reads only the records that listing shows to
+  have been written at a different moment than our own — zero extra fetches on
+  a healthy machine, measured across 750 records. That prefilter leaves a
+  5-second window in which two pushes would look like one; it is documented at
+  the constant, and is a far smaller blind spot than the one being closed.
+
+  The check is skipped — reported as `SKIPPED`, never as `ok` — under
+  `--no-remote` or when rclone is unresolvable, and a failed listing is a loud
+  finding rather than a silent all-clear.
+
+### 🧹 Internal
+
+- The `.rclone_include` / `.rclone_exclude` / `.rclone_filters` filenames are
+  now constants in `const` rather than string literals repeated across modules.
+- `check_last_time_modified`'s return annotation said `float | None`; it has
+  returned a `datetime` since it was written.
+
 ## [0.4.6] - 2026-08-23
 
 ### 🐛 Bug Fixes

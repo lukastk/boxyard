@@ -101,7 +101,7 @@ import asyncio
 from boxyard import const as _const
 
 _conf_path = box_meta.get_local_part_path(config, BoxPart.CONF)
-_box_exclude_path = _conf_path / ".rclone_exclude"
+_box_exclude_path = _conf_path / _const.RCLONE_EXCLUDE_FILENAME
 _effective_exclude_path = (
     _box_exclude_path
     if _box_exclude_path.exists()

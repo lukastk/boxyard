@@ -38,7 +38,14 @@
 #     locally (what `sync-missing-meta` would fetch). Skippable so doctor works offline.
 # 13. **tombstoned-box** — locally registered boxes whose id is tombstoned on the
 #     remote (deleted from another machine). Skippable, like stale-meta-mirror.
-# 14. **tree-orphans** — boxmeta parents referencing unknown box ids.
+# 14. **diverged-box** — a box that is wedged: either its local and remote sync
+#     records disagree and the local copy has also changed (both sides moved on
+#     independently), or a push from another machine never completed. Until this
+#     check existed doctor could see neither: two boxes on macbook sat wedged
+#     from March to August 2026 while doctor reported "all checks passed" on that
+#     machine throughout. They were found by reading a supervisor log. A box that
+#     merely needs pulling is deliberately NOT reported — see the check.
+# 15. **tree-orphans** — boxmeta parents referencing unknown box ids.
 #
 # Doctor never mutates or auto-fixes anything.
 
@@ -78,6 +85,7 @@ DOCTOR_CHECK_NAMES = [
     "rclone-config",
     "stale-meta-mirror",
     "tombstoned-box",
+    "diverged-box",
     "tree-orphans",
 ]
 
@@ -839,6 +847,232 @@ else:
                         index_name=_reg_name,
                         box_id=_reg_name.split("__", 1)[0],
                     )
+
+# %% [markdown]
+# ## Check: `diverged-box`
+#
+# A box whose LOCAL and REMOTE sync records disagree has had both sides move on
+# independently — the `CONFLICT` condition, which no other check could see.
+# Doctor reported "all checks passed" on a machine with two boxes wedged since
+# March 2026; they surfaced only in the supervisor log, once per pass, for five
+# months.
+#
+# The remote records are fetched in ONE bulk copy rather than a round trip per
+# box: the per-box form is ~4 rclone calls x 3 parts x 583 boxes, which would
+# make doctor unusable. The records are a few hundred KB in total.
+#
+# Only boxes registered locally are examined — a box with no local copy cannot
+# have diverged. Whether the local tree has been modified since its own record
+# is what separates a plain `needs_pull` (harmless, the next sync fixes it) from
+# a real divergence, and that uses the same exclude-aware scan the sync engine
+# uses, so the two agree.
+
+# %%
+#|export
+if not check_remote or not _rclone_available:
+    checks["diverged-box"]["skipped"] = True
+else:
+    from datetime import datetime as _datetime, timedelta as _timedelta, timezone as _timezone
+    from boxyard._models import BoxPart, SyncRecord as _SyncRecord
+    from boxyard._utils import (
+        check_last_time_modified,
+        literal_exclude_names,
+        rclone_lsjson,
+        rclone_cat,
+    )
+    from boxyard._utils.rclone import RcloneFailed
+
+    # A remote record written at our own record's moment IS our record, so only
+    # the rest need a round trip. rclone stamps the destination with the source
+    # temp file's mtime, which is the moment the ULID was minted, so for one and
+    # the same record the two agree closely: measured across 750 records on this
+    # fleet, the worst gap was 2.1s, and a 5s window costs zero extra fetches.
+    #
+    # The window is a real, if narrow, blind spot -- two DIFFERENT pushes of the
+    # same box landing within 5s of each other would look like one. That is a
+    # far smaller risk than the one being removed here, and the exact
+    # alternative (fetching all ~2400 records) takes over two minutes and opens
+    # enough SFTP connections to disturb the syncs running alongside doctor.
+    _RECORD_TIME_SLACK = _timedelta(seconds=5)
+
+    # Long enough that no real push on this fleet is still running (the largest
+    # box is ~100 GB and pushes in well under this), short enough that a genuine
+    # wedge is reported the same day rather than months later.
+    _INCOMPLETE_REMOTE_GRACE = _timedelta(hours=6)
+    _now = _datetime.now(_timezone.utc)
+
+    def _parse_rclone_modtime(raw: str) -> "_datetime":
+        # rclone emits RFC3339 with up to nanosecond precision, which
+        # `fromisoformat` cannot parse on 3.11. Truncate to microseconds.
+        text = raw.replace("Z", "+00:00")
+        if "." in text:
+            head, _, tail = text.partition(".")
+            frac, sign, offset = (
+                tail.partition("+") if "+" in tail else tail.partition("-")
+            )
+            text = f"{head}.{frac[:6]}{sign}{offset}"
+        return _datetime.fromisoformat(text)
+
+    for _sl_name, _sl_config in config.storage_locations.items():
+        if _sl_config.storage_type != StorageType.RCLONE:
+            continue
+        if storage_locations is not None and _sl_name not in storage_locations:
+            continue
+
+        _boxes_here = [bm for bm in box_metas if bm.storage_location == _sl_name]
+        if not _boxes_here:
+            continue
+
+        # ONE listing for every record on the remote. The per-box form would be
+        # thousands of round trips; this is a single call.
+        try:
+            _ls_recs = await rclone_lsjson(
+                config.rclone_config_path,
+                source=_sl_name,
+                source_path=_sl_config.store_path / const.SYNC_RECORDS_REL_PATH,
+                files_only=True,
+                recursive=True,
+            )
+        except RcloneFailed as e:
+            # An unreachable remote is a real inability to answer the question.
+            # Never report "no divergence" when we could not look -- silence here
+            # would be the false all-clear this check exists to end -- but do not
+            # crash doctor either, so the other checks still report.
+            _add_finding(
+                "diverged-box",
+                f"Could not list the sync records on '{_sl_name}', so no box on it "
+                f"could be checked for divergence: {e}",
+                "Check connectivity and the rclone config, or pass --no-remote to skip "
+                "the remote checks deliberately.",
+                storage_location=_sl_name,
+            )
+            continue
+        if _ls_recs is None:
+            continue  # nothing has ever been pushed here; an empty remote is fine
+
+        _remote_modtimes = {}
+        for _entry in _ls_recs:
+            _parts = Path(_entry["Path"]).parts
+            if len(_parts) != 2 or not _parts[1].endswith(".rec"):
+                continue
+            _remote_modtimes[(_parts[0], _parts[1][: -len(".rec")])] = (
+                _parse_rclone_modtime(_entry["ModTime"])
+            )
+
+        for _bm in _boxes_here:
+            for _part in BoxPart:
+                _local_rec_path = _bm.get_local_sync_record_path(config, _part)
+                if not _local_rec_path.exists():
+                    continue
+                _remote_modtime = _remote_modtimes.get((_bm.index_name, _part.value))
+                if _remote_modtime is None:
+                    continue  # nothing pushed for this part
+                try:
+                    _local_rec = _SyncRecord.model_validate_json(
+                        _local_rec_path.read_text()
+                    )
+                except Exception:
+                    continue  # a malformed record is `interrupted-sync`'s business
+
+                if not _local_rec.sync_complete:
+                    continue  # `interrupted-sync` already owns this one
+
+                # The prefilter: a remote record written at our own record's
+                # moment IS our record. Only the rest are worth a round trip.
+                if abs(_remote_modtime - _local_rec.ulid.datetime) <= _RECORD_TIME_SLACK:
+                    continue
+
+                _exists, _raw = await rclone_cat(
+                    rclone_config_path=config.rclone_config_path,
+                    source=_sl_name,
+                    source_path=(
+                        _sl_config.store_path
+                        / const.SYNC_RECORDS_REL_PATH
+                        / _bm.index_name
+                        / f"{_part.value}.rec"
+                    ).as_posix(),
+                )
+                if not _exists:
+                    continue  # vanished between the listing and the read
+                try:
+                    _remote_rec = _SyncRecord.model_validate_json(_raw)
+                except Exception:
+                    continue
+
+                if not _remote_rec.sync_complete:
+                    # The LOCAL record is complete but the remote one is not: a
+                    # push from ANOTHER machine died half-way. No other check can
+                    # see this -- `interrupted-sync` reads only local records --
+                    # so it is exactly the kind of wedge that stays silent for
+                    # months.
+                    #
+                    # A push in flight looks identical, so only a record older
+                    # than the grace window is reported. Anything shorter would
+                    # flag every long push on the fleet, and a report that cries
+                    # wolf is one nobody reads.
+                    _age = _now - _remote_rec.ulid.datetime
+                    if _age < _INCOMPLETE_REMOTE_GRACE:
+                        continue
+                    _add_finding(
+                        "diverged-box",
+                        f"A push of the {_part.value} of '{_bm.index_name}' from "
+                        f"'{_remote_rec.syncer_hostname}' never completed "
+                        f"({_remote_rec.timestamp:%Y-%m-%d}, {_age.days}d ago), so the "
+                        f"remote copy may be half-written",
+                        f"Syncing here will refuse until it is resolved. Check whether "
+                        f"'{_remote_rec.syncer_hostname}' still has the box, then re-run "
+                        f"the push from whichever machine holds the good copy: `boxyard "
+                        f"sync -r '{_bm.index_name}' --sync-direction to_remote "
+                        f"--sync-setting force`.",
+                        index_name=_bm.index_name,
+                        box_part=_part.value,
+                        storage_location=_sl_name,
+                    )
+                    continue
+
+                if _local_rec.ulid == _remote_rec.ulid:
+                    continue  # the prefilter was merely cautious
+
+                # The records disagree. Whether the LOCAL side has also moved is
+                # what separates a real conflict from a plain needs-pull. This
+                # mirrors `get_sync_status` exactly -- same exclude-aware scan,
+                # same comparison -- so doctor and sync cannot disagree.
+                _conf_exclude = (
+                    _bm.get_local_part_path(config, BoxPart.CONF)
+                    / const.RCLONE_EXCLUDE_FILENAME
+                )
+                _local_modified = check_last_time_modified(
+                    _bm.get_local_part_path(config, _part),
+                    exclude_names=literal_exclude_names(
+                        _conf_exclude
+                        if _conf_exclude.exists()
+                        else config.default_rclone_exclude_path
+                    ),
+                )
+                _local_changed = (
+                    _local_modified is not None
+                    and _local_modified > _local_rec.timestamp
+                )
+                _remote_newer = _remote_rec.ulid.datetime > _local_rec.ulid.datetime
+                if _remote_newer and not _local_changed:
+                    continue  # NEEDS_PULL -- the next sync resolves it
+
+                _add_finding(
+                    "diverged-box",
+                    f"The {_part.value} of '{_bm.index_name}' has diverged: local record "
+                    f"{_local_rec.timestamp:%Y-%m-%d} from '{_local_rec.syncer_hostname}', "
+                    f"remote record {_remote_rec.timestamp:%Y-%m-%d} from "
+                    f"'{_remote_rec.syncer_hostname}'"
+                    + (" and the local copy has changed since" if _local_changed else ""),
+                    f"Both sides moved on independently, so sync refuses rather than pick a "
+                    f"winner. Look before choosing: `boxyard box-status -r "
+                    f"'{_bm.index_name}'`, and compare against the remote with `boxyard copy "
+                    f"-r '{_bm.index_name}' -d /tmp/compare`. Then resolve with an explicit "
+                    f"`--sync-direction` and `--sync-setting force`.",
+                    index_name=_bm.index_name,
+                    box_part=_part.value,
+                    storage_location=_sl_name,
+                )
 
 # %% [markdown]
 # ## Check: `tree-orphans`
