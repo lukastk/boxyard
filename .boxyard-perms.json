@@ -1,0 +1,8 @@
+{
+ "executable": [
+  "dev_scripts/clean-project",
+  "dev_scripts/publish-new",
+  "dev_scripts/run-tests"
+ ],
+ "version": 1
+}

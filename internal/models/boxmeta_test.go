@@ -331,7 +331,13 @@ func TestLoadBackwardsCompatibleWithoutParents(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsUnknownKeys(t *testing.T) {
+func TestLoadToleratesUnknownKeys(t *testing.T) {
+	// This test previously asserted the OPPOSITE — that an unknown key is
+	// rejected. Python v0.5.0 reversed that deliberately, having measured what
+	// rejection actually costs: the registration is skipped, so the box
+	// disappears from boxyard_meta.json, from `boxyard list`, from ~/g (its
+	// symlinks are deleted) and from multi-sync, silently, and it does not heal
+	// after upgrading. Tolerating the key is what prevents that.
 	cfg := testConfig(t)
 	idx := sampleMeta().IndexName()
 	dir := filepath.Join(cfg.LocalStorePath(), "remote", idx)
@@ -342,8 +348,55 @@ func TestLoadRejectsUnknownKeys(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "boxmeta.toml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadBoxMeta(cfg, "remote", idx); err == nil {
-		t.Fatal("unknown key in boxmeta.toml was silently accepted")
+	loaded, err := LoadBoxMeta(cfg, "remote", idx)
+	if err != nil {
+		t.Fatalf("a boxmeta written by a newer boxyard was rejected: %v", err)
+	}
+	if _, ok := loaded.UnknownKeys["surprise"]; !ok {
+		t.Fatalf("the unknown key was dropped rather than carried: %v", loaded.UnknownKeys)
+	}
+
+	// ...but it must not be silently DISCARDED on the way back out. This build
+	// cannot reproduce tomli_w's rendering for arbitrary values, so writing is
+	// refused loudly rather than losing the key.
+	err = loaded.Save(cfg)
+	if err == nil {
+		t.Fatal("saving a box carrying an unknown key silently dropped it")
+	}
+	if !strings.Contains(err.Error(), "surprise") {
+		t.Fatalf("the refusal must name the key at risk, got: %v", err)
+	}
+}
+
+func TestWriteOwnerRoundTrips(t *testing.T) {
+	cfg := testConfig(t)
+	bm := sampleMeta()
+
+	// Unowned: the key is ABSENT, not empty and not null. That is what keeps
+	// every pre-0.5 boxmeta.toml byte-identical across the upgrade.
+	if strings.Contains(bm.Render(), "write_owner") {
+		t.Fatalf("an unowned box wrote a write_owner key:\n%s", bm.Render())
+	}
+
+	bm.WriteOwner = "macbook"
+	if !strings.Contains(bm.Render(), "write_owner = \"macbook\"\n") {
+		t.Fatalf("write_owner not rendered:\n%s", bm.Render())
+	}
+	if err := bm.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadBoxMeta(cfg, bm.StorageLocation, bm.IndexName())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.WriteOwner != "macbook" {
+		t.Fatalf("write_owner did not round-trip, got %q", loaded.WriteOwner)
+	}
+
+	// And it is a machine name, not free text.
+	bm.WriteOwner = "not a machine name!"
+	if err := bm.Validate(); err == nil {
+		t.Fatal("an invalid write_owner was accepted")
 	}
 }
 

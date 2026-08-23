@@ -9,9 +9,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 
 	"github.com/lukastk/boxyard/internal/boxconst"
 	"github.com/lukastk/boxyard/internal/config"
@@ -36,6 +39,27 @@ type BoxMeta struct {
 	// Parents holds box_id values. It defaults to empty for backwards
 	// compatibility with boxmeta.toml files written before parents existed.
 	Parents []string `toml:"parents" json:"parents"`
+
+	// WriteOwner names the single machine allowed to PUSH this box's DATA.
+	// Empty means unowned, and an unowned box's boxmeta.toml omits the key
+	// entirely rather than writing "" or a null — that is what keeps every
+	// pre-0.5 file byte-identical across the upgrade.
+	//
+	// Inert in this release, exactly as in Python v0.5.0: nothing writes it
+	// and nothing enforces it. Reading it is what matters here.
+	WriteOwner string `toml:"write_owner,omitempty" json:"write_owner,omitempty"`
+
+	// UnknownKeys holds keys a NEWER boxyard wrote that this build does not
+	// know. They are preserved rather than rejected.
+	//
+	// This is not politeness, it is the difference between a box syncing and
+	// silently disappearing. Rejecting the file does not merely fail to parse
+	// it: the registration is skipped, so the box vanishes from
+	// boxyard_meta.json, from `boxyard list`, from ~/g (its symlinks are
+	// deleted) and from multi-sync — with no error, and it does not heal
+	// after upgrading. Python learned this in v0.5.0; this port must not
+	// reintroduce it.
+	UnknownKeys map[string]any `toml:"-" json:"-"`
 }
 
 // normalizeSlices replaces nil slices with empty ones. Go marshals a nil slice
@@ -107,6 +131,9 @@ func splitBoxID(boxID string) (timestamp, subid string, err error) {
 }
 
 // Validate checks the invariants the Python model_validator enforces.
+// writeOwnerRe is the machine-name shape Python validates write_owner against.
+var writeOwnerRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
 func (b *BoxMeta) Validate() error {
 	const t = "BoxMeta"
 	if err := strict.RequireNonZero(t, "storage_location", b.StorageLocation); err != nil {
@@ -131,6 +158,12 @@ func (b *BoxMeta) Validate() error {
 			return strict.Invalid(t, "creator_hostname",
 				fmt.Sprintf("must not contain control characters, but contains %q: %q", r, b.CreatorHostname))
 		}
+	}
+	// Same shape Python validates: a machine name, not free text. Empty is
+	// legitimate and means unowned.
+	if b.WriteOwner != "" && !writeOwnerRe.MatchString(b.WriteOwner) {
+		return strict.Invalid(t, "write_owner",
+			fmt.Sprintf("must be 1-64 characters of [A-Za-z0-9_-], got %q", b.WriteOwner))
 	}
 	if b.Groups == nil {
 		return strict.Missing(t, "groups")
@@ -313,6 +346,12 @@ func (b *BoxMeta) Render() string {
 	fmt.Fprintf(&s, "creator_hostname = \"%s\"\n", tomlEscape(b.CreatorHostname))
 	fmt.Fprintf(&s, "groups = %s\n", tomlList(b.Groups))
 	fmt.Fprintf(&s, "parents = %s\n", tomlList(b.Parents))
+	// An UNOWNED box omits the key entirely — not `write_owner = ""`, not a
+	// null. That is what keeps every pre-0.5 boxmeta.toml byte-identical, and
+	// what lets an older boxyard still read a released box.
+	if b.WriteOwner != "" {
+		fmt.Fprintf(&s, "write_owner = \"%s\"\n", tomlEscape(b.WriteOwner))
+	}
 	return s.String()
 }
 
@@ -323,6 +362,24 @@ func (b *BoxMeta) Save(cfg *config.Config) error {
 	// never reach disk.
 	if err := b.Validate(); err != nil {
 		return err
+	}
+	// Python v0.5.0 writes carried keys back verbatim. This port does not
+	// implement that yet, and the failure mode of getting it wrong is silent
+	// data loss — the newer machine's key would be stripped by an ordinary
+	// `add-to-group`, which is the exact loss the passthrough exists to
+	// prevent. So refuse loudly instead of writing a lossy file.
+	//
+	// Reading such a box already works, which is the half that stops a box
+	// disappearing. Writing one is blocked until Render can reproduce
+	// tomli_w's output for arbitrary values.
+	if len(b.UnknownKeys) > 0 {
+		keys := make([]string, 0, len(b.UnknownKeys))
+		for k := range b.UnknownKeys {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return fmt.Errorf("refusing to write %s: it carries key(s) written by a newer boxyard (%s) that this build cannot reproduce faithfully; writing would silently discard them. Use the Python boxyard for this box, or upgrade",
+			b.IndexName(), strings.Join(keys, ", "))
 	}
 	savePath, err := b.LocalPartPath(cfg, enums.PartMeta)
 	if err != nil {
@@ -347,6 +404,45 @@ type boxMetaFile struct {
 	CreatorHostname string   `toml:"creator_hostname"`
 	Groups          []string `toml:"groups"`
 	Parents         []string `toml:"parents"`
+	WriteOwner      string   `toml:"write_owner"`
+}
+
+// boxMetaKnownKeys is every key this build owns. A key outside this set is
+// carried through untouched; see BoxMeta.UnknownKeys.
+var boxMetaKnownKeys = map[string]bool{
+	"storage_location": true,
+	"creator_hostname": true,
+	"groups":           true,
+	"parents":          true,
+	"write_owner":      true,
+}
+
+// readBoxMetaFile decodes boxmeta.toml into `file` and returns the keys this
+// build does not know. Unlike strict.ReadTOMLFile it does not reject them.
+func readBoxMetaFile(path string, file *boxMetaFile) (map[string]any, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	// Decoded twice on purpose: once into the typed struct so field types are
+	// still enforced, once into a map to see which keys were actually present.
+	if err := toml.Unmarshal(data, file); err != nil {
+		return nil, fmt.Errorf("invalid TOML in %s: %w", path, err)
+	}
+	var all map[string]any
+	if err := toml.Unmarshal(data, &all); err != nil {
+		return nil, fmt.Errorf("invalid TOML in %s: %w", path, err)
+	}
+	unknown := map[string]any{}
+	for k, v := range all {
+		if !boxMetaKnownKeys[k] {
+			unknown[k] = v
+		}
+	}
+	if len(unknown) == 0 {
+		return nil, nil
+	}
+	return unknown, nil
 }
 
 // LoadBoxMeta reads a box's metadata, deriving the timestamp, subid and name
@@ -366,8 +462,13 @@ func LoadBoxMeta(cfg *config.Config, storageLocationName, boxIndexName string) (
 		return nil, fmt.Errorf("box meta file %s does not exist", metaPath)
 	}
 
+	// NOT a strict decode. `strict.ReadTOMLFile` rejects unknown keys, which
+	// for THIS file is the failure described on BoxMeta.UnknownKeys: the box
+	// disappears instead of syncing. Decode permissively, then split the keys
+	// into the ones this build knows and the ones it must carry through.
 	var file boxMetaFile
-	if err := strict.ReadTOMLFile(metaPath, &file); err != nil {
+	raw, err := readBoxMetaFile(metaPath, &file)
+	if err != nil {
 		return nil, err
 	}
 	if file.Parents == nil {
@@ -386,6 +487,8 @@ func LoadBoxMeta(cfg *config.Config, storageLocationName, boxIndexName string) (
 		CreatorHostname: file.CreatorHostname,
 		Groups:          file.Groups,
 		Parents:         file.Parents,
+		WriteOwner:      file.WriteOwner,
+		UnknownKeys:     raw,
 	}
 	if bm.Groups == nil {
 		bm.Groups = []string{}
