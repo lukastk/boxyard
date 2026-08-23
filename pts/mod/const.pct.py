@@ -46,6 +46,13 @@ BOX_DATA_REL_PATH = "data"
 BOX_METAFILE_REL_PATH = "boxmeta.toml"
 BOX_CONF_REL_PATH = "conf"
 
+# A box's own rclone filter files, inside its CONF part. When present, the
+# exclude file REPLACES the global default -- it does not extend it -- so any
+# code deciding which patterns apply to a box must check for it first.
+RCLONE_INCLUDE_FILENAME = ".rclone_include"
+RCLONE_EXCLUDE_FILENAME = ".rclone_exclude"
+RCLONE_FILTERS_FILENAME = ".rclone_filters"
+
 # Sidecar file, stored at the root of a box's DATA part, recording which files are
 # executable so the +x bit survives sync over backends that can't carry Unix mode
 # metadata (e.g. SFTP). See _utils/perms.py. Ships as ordinary synced content.

@@ -171,7 +171,7 @@ def literal_exclude_names(exclude_path: "str | Path | None") -> set[str]:
 def check_last_time_modified(
     path: "str | Path",
     exclude_names: "set[str] | None" = None,
-) -> float | None:
+) -> "datetime | None":
     """
     Return the most recent modification time beneath `path`, or None if there is
     nothing to measure.

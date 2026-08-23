@@ -2686,7 +2686,7 @@ def cli_doctor(
     no_remote: bool = Option(
         False,
         "--no-remote",
-        help="Skip checks that access remote storage (stale-meta-mirror and tombstoned-box), so doctor works offline.",
+        help="Skip checks that access remote storage (stale-meta-mirror, tombstoned-box and diverged-box), so doctor works offline.",
     ),
     storage_locations: list[str] | None = Option(
         None,
