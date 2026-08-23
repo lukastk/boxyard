@@ -16,10 +16,10 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -202,9 +202,28 @@ type Config struct {
 	MaxConcurrentRcloneOps int                               `toml:"max_concurrent_rclone_ops"`
 
 	// Optional.
+
+	// MachineName is this machine's canonical short name — the one myrig
+	// assigns, never the hostname, which is unusable as an identity (it has
+	// produced both "lukas-pocket4" and "pocket4" for one machine, and macOS
+	// pretty names like "Tom's Mac Studio"). Box write-ownership identifies a
+	// machine by this and nothing else.
+	MachineName string `toml:"machine_name"`
+
 	RclonePath       string `toml:"rclone_path"`
 	SingleParent     bool   `toml:"single_parent"`
 	SyncBeforeNewBox bool   `toml:"sync_before_new_box"`
+
+	// UnknownKeys holds keys a NEWER boxyard wrote, by dotted path (e.g.
+	// "storage_locations.hetzner-box.some_key"). Never written back — boxyard
+	// only ever creates config.toml, at init — so these exist purely to be
+	// reported.
+	//
+	// Rejecting them instead would break EVERY boxyard command on any machine
+	// running an older build, all at once: config.toml is a single myrig
+	// artefact shared by every machine, so one added key breaks the fleet
+	// rather than one box. Python learned this in v0.5.0.
+	UnknownKeys map[string]any `toml:"-"`
 }
 
 // Derived paths. These mirror the Python's @property accessors.
@@ -391,6 +410,11 @@ func Load(path string) (*Config, error) {
 	if err := mergeEnvDefaultBoxGroups(cfg); err != nil {
 		return nil, err
 	}
+	// An explicit override, for a one-off or a machine whose config predates
+	// the myrig template.
+	if env := os.Getenv(boxconst.EnvBoxyardMachineName); env != "" {
+		cfg.MachineName = env
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", expanded, err)
 	}
@@ -400,16 +424,89 @@ func Load(path string) (*Config, error) {
 // decodeInto decodes without validating, so Load can apply the environment
 // merge between decode and validation — the order the Python uses.
 func decodeInto(data []byte, cfg *Config) error {
-	dec := toml.NewDecoder(strings.NewReader(string(data)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(cfg); err != nil {
-		var se *toml.StrictMissingError
-		if errors.As(err, &se) {
-			return fmt.Errorf("unknown key in TOML: %s", se.String())
-		}
+	// NOT DisallowUnknownFields. See Config.UnknownKeys: config.toml is one
+	// myrig artefact shared by every machine, so rejecting an unknown key
+	// breaks every boxyard command on every machine still running an older
+	// build — all at once, rather than one box at a time.
+	if err := toml.Unmarshal(data, cfg); err != nil {
 		return fmt.Errorf("invalid TOML: %w", err)
 	}
+	// Decoded a second time as a plain map to see which keys were actually
+	// present. A key that is not ours is carried for reporting.
+	var raw map[string]any
+	if err := toml.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("invalid TOML: %w", err)
+	}
+	unknown := collectUnknownKeys(raw, reflect.TypeOf(Config{}), "")
+	if len(unknown) > 0 {
+		cfg.UnknownKeys = unknown
+	}
 	return nil
+}
+
+// tomlKeys returns the TOML key names a struct type owns.
+func tomlKeys(t reflect.Type) map[string]reflect.Type {
+	keys := map[string]reflect.Type{}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		tag := f.Tag.Get("toml")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		if c := strings.Index(tag, ","); c >= 0 {
+			tag = tag[:c]
+		}
+		keys[tag] = f.Type
+	}
+	return keys
+}
+
+// collectUnknownKeys returns every key in `raw` that `t` does not declare, by
+// dotted path, descending into the entries of every map[string]*Struct table.
+//
+// The tables are derived from the struct's own fields rather than a hardcoded
+// list. That is the point: a config model added later is covered without
+// anyone remembering this function exists, and forgetting to extend a list
+// would silently reintroduce the gap somewhere no test obviously covers.
+func collectUnknownKeys(raw map[string]any, t reflect.Type, prefix string) map[string]any {
+	unknown := map[string]any{}
+	known := tomlKeys(t)
+	for k, v := range raw {
+		ft, isKnown := known[k]
+		if !isKnown {
+			unknown[prefix+k] = v
+			continue
+		}
+		// A table of named entries — descend into each entry, but only when
+		// the value really is a table. An entry that is NOT a table is left
+		// alone so the typed decode reports it: that is not a newer boxyard
+		// adding an option, it is a key someone believed they had put at top
+		// level, and swallowing it would silently discard their edit.
+		if ft.Kind() != reflect.Map || ft.Key().Kind() != reflect.String {
+			continue
+		}
+		elem := ft.Elem()
+		for elem.Kind() == reflect.Ptr {
+			elem = elem.Elem()
+		}
+		if elem.Kind() != reflect.Struct {
+			continue
+		}
+		entries, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		for name, entry := range entries {
+			sub, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			for kk, vv := range collectUnknownKeys(sub, elem, "") {
+				unknown[prefix+k+"."+name+"."+kk] = vv
+			}
+		}
+	}
+	return unknown
 }
 
 // mergeEnvDefaultBoxGroups additively merges DEFAULT_BOX_GROUPS into

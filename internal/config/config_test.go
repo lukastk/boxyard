@@ -97,12 +97,6 @@ func TestRejectionsMatchPython(t *testing.T) {
 			wantInErr: "virtual_box_groups",
 		},
 		{
-			// Python: Extra inputs are not permitted
-			name:      "unknown key",
-			body:      validBaseline + "surprise = 1\n",
-			wantInErr: "unknown key",
-		},
-		{
 			// Python: Input should be 'date_and_time' or 'date_only'
 			name:      "bad timestamp format enum",
 			body:      strings.Replace(validBaseline, `"date_only"`, `"weekly"`, 1),
@@ -329,4 +323,64 @@ func TestStorageLocationLookupIsLoud(t *testing.T) {
 	if _, err := cfg.StorageLocation("fake"); err != nil {
 		t.Fatalf("known storage location errored: %v", err)
 	}
+}
+
+// TestToleratesUnknownConfigKeys pins the behaviour Python adopted in v0.5.0.
+//
+// This file previously asserted the OPPOSITE — that an unknown key is rejected
+// — under "Python: Extra inputs are not permitted". Python reversed that
+// deliberately, and the blast radius is why: config.toml is a single myrig
+// artefact shared by every machine, so one added key breaks every boxyard
+// command on every machine still running an older build, all at once. That is
+// strictly worse than the boxmeta case, which loses one box.
+func TestToleratesUnknownConfigKeys(t *testing.T) {
+	// A top-level key. NOTE it must go BEFORE the first [table] header:
+	// validBaseline ends with [storage_locations.fake], and a key appended
+	// after a header belongs to THAT table, not to the top level. This is the
+	// same TOML subtlety that makes the equivalent Python test misleading if
+	// written by appending.
+	cfg := mustLoadBody(t, "some_future_key = \"x\"\n"+validBaseline)
+	if _, ok := cfg.UnknownKeys["some_future_key"]; !ok {
+		t.Fatalf("top-level unknown key was not carried: %v", cfg.UnknownKeys)
+	}
+
+	// A key inside a named entry of a table, reported by its full path so the
+	// finding says WHERE.
+	body := strings.Replace(validBaseline,
+		"[storage_locations.fake]",
+		"[storage_locations.fake]\nsome_future_option = true", 1)
+	if body == validBaseline {
+		t.Fatal("baseline has no [storage_locations.fake] table to extend")
+	}
+	cfg = mustLoadBody(t, body)
+	if _, ok := cfg.UnknownKeys["storage_locations.fake.some_future_option"]; !ok {
+		t.Fatalf("nested unknown key not carried by dotted path: %v", cfg.UnknownKeys)
+	}
+}
+
+// TestMachineNameIsOptionalAndOverridable pins the field write-ownership needs.
+func TestMachineNameIsOptionalAndOverridable(t *testing.T) {
+	cfg := mustLoadBody(t, validBaseline)
+	if cfg.MachineName != "" {
+		t.Fatalf("machine_name should default to empty, got %q", cfg.MachineName)
+	}
+	cfg = mustLoadBody(t, "machine_name = \"macbook\"\n"+validBaseline)
+	if cfg.MachineName != "macbook" {
+		t.Fatalf("machine_name = %q", cfg.MachineName)
+	}
+	t.Setenv("BOXYARD_MACHINE_NAME", "from-env")
+	cfg = mustLoadBody(t, "machine_name = \"macbook\"\n"+validBaseline)
+	if cfg.MachineName != "from-env" {
+		t.Fatalf("env override ignored, got %q", cfg.MachineName)
+	}
+}
+
+// mustLoadBody loads a config body, failing the test if it does not load.
+func mustLoadBody(t *testing.T, body string) *Config {
+	t.Helper()
+	cfg, err := Load(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("config failed to load: %v", err)
+	}
+	return cfg
 }

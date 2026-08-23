@@ -94,7 +94,8 @@ const (
 
 // Environment variables.
 const (
-	EnvBoxyardConfigPath = "BOXYARD_CONFIG_PATH"
-	EnvDefaultBoxGroups  = "DEFAULT_BOX_GROUPS"
-	EnvBoxyardRclone     = "BOXYARD_RCLONE"
+	EnvBoxyardConfigPath  = "BOXYARD_CONFIG_PATH"
+	EnvDefaultBoxGroups   = "DEFAULT_BOX_GROUPS"
+	EnvBoxyardRclone      = "BOXYARD_RCLONE"
+	EnvBoxyardMachineName = "BOXYARD_MACHINE_NAME"
 )
