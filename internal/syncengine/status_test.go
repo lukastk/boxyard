@@ -41,7 +41,7 @@ func (f *fakeProber) ReadSyncRecord(_ context.Context, remote, _ string) (*model
 
 func (f *fakeProber) LocalIsEmptyDir(string) (bool, error) { return f.localIsEmpty, nil }
 
-func (f *fakeProber) LocalLastModified(string) (time.Time, bool, error) {
+func (f *fakeProber) LocalLastModified(string, map[string]bool) (time.Time, bool, error) {
 	return f.mtime, f.mtimeFound, nil
 }
 

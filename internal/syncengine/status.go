@@ -72,11 +72,26 @@ type Prober interface {
 
 	// LocalLastModified returns the most recent modification time across every
 	// regular file beneath path, and whether any was found at all.
-	LocalLastModified(path string) (t time.Time, found bool, err error)
+	//
+	// excludeNames are literal file/directory names to SKIP. Skipping them is
+	// not an optimisation: this answer drives the sync decision, and without it
+	// a file that can never be transferred still marks the box as modified.
+	// macOS Finder writing a `.DS_Store` was enough to flip a real box to
+	// NEEDS_PUSH and -- when the remote had also moved on -- to CONFLICT. That
+	// is the mechanism behind boxes wedging from OS debris alone.
+	LocalLastModified(path string, excludeNames map[string]bool) (t time.Time, found bool, err error)
 }
 
 // StatusRequest names the four paths one part's status depends on.
 type StatusRequest struct {
+	// ExcludePath is the box part's EFFECTIVE rclone exclude file -- its own
+	// conf/.rclone_exclude if it has one, else the global default. It must be
+	// the box's OWN effective file, never a hardcoded default: a per-box
+	// exclude file REPLACES the global one, so assuming the defaults for a box
+	// that overrides them could prune a directory the box really does sync,
+	// hiding genuine changes. Empty means no exclusions.
+	ExcludePath string
+
 	LocalPath            string
 	LocalSyncRecordPath  string
 	Remote               string
@@ -140,7 +155,8 @@ func GetSyncStatus(ctx context.Context, p Prober, req StatusRequest) (SyncStatus
 		return status, nil
 	}
 
-	lastModified, foundModified, err := p.LocalLastModified(req.LocalPath)
+	lastModified, foundModified, err := p.LocalLastModified(
+		req.LocalPath, LiteralExcludeNames(req.ExcludePath))
 	if err != nil {
 		return SyncStatus{}, err
 	}
