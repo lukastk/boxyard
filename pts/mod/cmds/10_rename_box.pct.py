@@ -188,8 +188,19 @@ try:
             remote_index_name = await find_remote_box_by_id(config, storage_location, box_id)
 
             if remote_index_name is None:
+                # Since v0.4.3, `rclone_lsjson`/`rclone_path_exists` report
+                # absence ONLY for rclone's not-found exit codes and raise on
+                # any real failure -- so reaching here means the box genuinely
+                # is not on the remote yet, not that the remote was
+                # unreachable. That is the ordinary case for a box created and
+                # renamed before its first sync, and the new name will be used
+                # when it is first pushed.
                 if verbose:
-                    print("Warning: Remote box not found. Skipping remote rename.")
+                    print(
+                        "This box is not on the remote yet, so there is nothing "
+                        "to rename there; it will be pushed under its new name "
+                        "on the next sync."
+                    )
             else:
                 # Rename box directory
                 old_remote_box_path = boxes_path / remote_index_name

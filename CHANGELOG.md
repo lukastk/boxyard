@@ -1,3 +1,42 @@
+## [0.4.5] - 2026-08-23
+
+### 🐛 Bug Fixes
+
+- **Every rename created a duplicate registration on every other machine.**
+  `sync_missing_boxmetas` diffed `_ls_remote - _ls_local` on the full
+  `{index_name}/boxmeta.toml` path — a purely additive, one-way comparison. But
+  an index name is `{box_id}__{name}` and a rename changes only the name half,
+  so a renamed box looked like a brand-new one. Nothing ever removed the stale
+  pre-rename registration, so every machine *other* than the one that did the
+  rename accumulated two registrations for the same box id.
+
+  Found via `doctor`'s `duplicate-box-id` check, which was reporting three
+  boxes on each of macbook, macstudio and ideapad — identical on all three, and
+  absent on mymain, which had done the renames.
+
+  Reconciliation is now keyed on **box id**. The same id under a different name
+  means the box was renamed elsewhere; since the remote is authoritative for
+  names, the local registration is renamed to match — exactly what
+  `sync-name --direction to_local` does. Ambiguous cases (more than one
+  directory for one id on either side) are skipped rather than guessed at.
+
+  Renames now propagate to every machine on the next meta sync, silently and
+  correctly, with no duplicate and no manual step.
+
+### 🔧 Changes
+
+- `rename` no longer warns "Remote box not found. Skipping remote rename." when
+  a box simply has not been pushed yet. Since v0.4.3 an unreachable remote
+  raises rather than reporting absence, so that path now means only "not on the
+  remote yet" — and it says so, noting the new name will be used on first push.
+
+- The `duplicate-box-id` doctor hint said "inspect the duplicates and delete or
+  re-create one of them", which does not say *which* to delete and whose
+  "re-create" advice would mint a new box id. It now explains that this
+  normally means a rename on another machine, that the remote's name is
+  authoritative, and that the registration to remove is the one the remote does
+  not have.
+
 ## [0.4.4] - 2026-08-23
 
 ### 🐛 Bug Fixes
