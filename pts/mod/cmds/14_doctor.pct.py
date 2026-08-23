@@ -54,9 +54,9 @@
 #     ownership identifies a machine by that name and never by its hostname, so
 #     until it is set this machine can never own a box.
 # 18. **unknown-config-keys** — `config.toml` carries a key this version of
-#     boxyard does not know. Like `unknown-boxmeta-keys`, the key is tolerated
-#     rather than fatal; this check is what keeps that tolerance from turning a
-#     loud typo into a silent one.
+#     boxyard does not know, at the top level or inside one of its tables. Like
+#     `unknown-boxmeta-keys`, the key is tolerated rather than fatal; this check
+#     is what keeps that tolerance from turning a loud typo into a silent one.
 #
 # Doctor never mutates or auto-fixes anything.
 
@@ -1192,6 +1192,10 @@ if config.machine_name is None:
 # fixed. So every key that lands in the passthrough is named here, whether it
 # came from a newer boxyard or from a slip of the fingers — doctor cannot tell
 # the two apart, and the hint says so rather than guessing.
+#
+# Keys are reported by their dotted path, so a key inside a table names the
+# entry it is in (`storage_locations.hetzner-box.some_key`) rather than leaving
+# the reader to search the file for it.
 
 # %%
 #|export

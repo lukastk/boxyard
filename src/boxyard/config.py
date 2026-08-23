@@ -5,7 +5,7 @@ __all__ = ['BoxGroupConfig', 'BoxGroupTitleMode', 'BoxTimestampFormat', 'Config'
 # %% pts/mod/config.pct.py 3
 from pydantic import model_validator
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args, get_origin
 import tomllib
 import os
 from enum import Enum
@@ -129,6 +129,16 @@ class Config(const.StrictModel):
     # of boxyard does not know. `get_config` collects them here instead of
     # letting `extra="forbid"` reject the file.
     #
+    # Keyed by DOTTED PATH, so it covers the whole file and not just its top
+    # level: a key inside `[storage_locations.X]`, `[box_groups.X]` or
+    # `[virtual_box_groups.X]` arrives here as
+    # `storage_locations.X.some_key`. Those entries are StrictModels too, so
+    # tolerating only the top level would have left the same trap one level
+    # down -- and a nested addition is not hypothetical: `symlink_name` was
+    # added to both group models in `8d9e074`. `get_config` derives the tables
+    # to walk from the annotations, so a config model added later is covered
+    # without anyone remembering to update a list.
+    #
     # `config.toml` is the same trap `boxmeta.toml` was, for the same reason
     # and with a wider blast radius: it is a StrictModel too, so a key added
     # for a newer boxyard makes EVERY command fail on any machine that does not
@@ -147,7 +157,8 @@ class Config(const.StrictModel):
     # it. The container exists so the keys can be reported rather than vanish
     # silently: `extra="forbid"` is what catches a TYPO'd key today, and
     # tolerating unknown keys without reporting them would trade a loud typo
-    # for a silent one. `doctor`'s `unknown-config-keys` is that report.
+    # for a silent one. `doctor`'s `unknown-config-keys` is that report, and it
+    # names the dotted path so the finding says WHERE the key is.
     unknown_keys: dict[str, Any] = {}
 
     @property
@@ -234,7 +245,50 @@ class Config(const.StrictModel):
 
         return self
 
-# %% pts/mod/config.pct.py 6
+# %% pts/mod/config.pct.py 7
+def _split_known_keys(
+    parsed: dict, model: type, path_prefix: str
+) -> tuple[dict, dict]:
+    """
+    Split `parsed` into (keys `model` declares, keys it does not).
+
+    Unknown keys come back keyed by `path_prefix + key`, so the caller can
+    merge every level's leftovers into one flat mapping without losing track
+    of where each key came from.
+    """
+    known, unknown = {}, {}
+    for key, value in parsed.items():
+        if key in model.model_fields:
+            known[key] = value
+        else:
+            unknown[f"{path_prefix}{key}"] = value
+    return known, unknown
+
+
+def _nested_model_tables() -> dict[str, type]:
+    """
+    The `Config` fields shaped `dict[str, <some StrictModel>]` — i.e. the TOML
+    tables whose entries need the same tolerance as the top level.
+
+    Derived from the annotations rather than hardcoded, so a config model added
+    later is covered without anyone having to remember this function exists.
+    Forgetting it would reintroduce exactly the gap this closes, in a place no
+    test would obviously cover.
+    """
+    tables = {}
+    for name, field in Config.model_fields.items():
+        if get_origin(field.annotation) is not dict:
+            continue
+        args = get_args(field.annotation)
+        if (
+            len(args) == 2
+            and isinstance(args[1], type)
+            and issubclass(args[1], const.StrictModel)
+        ):
+            tables[name] = args[1]
+    return tables
+
+# %% pts/mod/config.pct.py 8
 def get_config(path: Path | None = None) -> Config:
     if path is None:
         path = const.DEFAULT_CONFIG_PATH
@@ -255,12 +309,43 @@ def get_config(path: Path | None = None) -> Config:
             "boxyard uses internally to carry keys written by a newer version. "
             "Remove it from the file."
         )
-    known_fields = set(Config.model_fields)
-    config_dict = {
-        "config_path": path,
-        **{k: v for k, v in parsed.items() if k in known_fields},
-        "unknown_keys": {k: v for k, v in parsed.items() if k not in known_fields},
-    }
+
+    known, unknown_keys = _split_known_keys(parsed, Config, "")
+
+    # The nested tables need the same tolerance, and for the same reason: the
+    # entries of `[storage_locations.X]`, `[box_groups.X]` and
+    # `[virtual_box_groups.X]` are StrictModels too, so a key added to one of
+    # them by a newer boxyard would break every older machine exactly as a
+    # top-level key would. That is not hypothetical -- `symlink_name` was added
+    # to both group models in `8d9e074`.
+    for table_name, entry_model in _nested_model_tables().items():
+        entries = known.get(table_name)
+        if not isinstance(entries, dict):
+            continue  # absent, or the wrong shape -- let the model raise on it
+        cleaned = {}
+        for entry_name, entry in entries.items():
+            if not isinstance(entry, dict):
+                # An ENTRY that is not a table is deliberately NOT tolerated,
+                # and this is the boundary of the forward compatibility above.
+                # These tables map a name to a group or storage location, so a
+                # scalar here is not a newer boxyard adding an option -- that
+                # would be a new field inside an entry (handled below) or a new
+                # top-level key (handled already). It is almost always a line
+                # appended to the END of the file, which TOML silently lands
+                # inside whatever table came last. Tolerating that would mean
+                # silently ignoring a line the author believed they had added
+                # at top level; pydantic's error names the exact path and says
+                # a table was expected, which is the more useful outcome.
+                cleaned[entry_name] = entry
+                continue
+            entry_known, entry_unknown = _split_known_keys(
+                entry, entry_model, f"{table_name}.{entry_name}."
+            )
+            cleaned[entry_name] = entry_known
+            unknown_keys.update(entry_unknown)
+        known[table_name] = cleaned
+
+    config_dict = {"config_path": path, **known, "unknown_keys": unknown_keys}
 
     # Additively merge default_box_groups from env var (TOML list string, e.g. '["ctx/mac", "ctx/linux"]')
     env_groups = os.environ.get(const.ENV_VAR_DEFAULT_BOX_GROUPS)
@@ -279,7 +364,7 @@ def get_config(path: Path | None = None) -> Config:
 
     return Config(**config_dict)
 
-# %% pts/mod/config.pct.py 7
+# %% pts/mod/config.pct.py 9
 def _get_default_config_dict(config_path=None, data_path=None) -> Config:
     if config_path is None:
         config_path = const.DEFAULT_CONFIG_PATH
@@ -312,6 +397,6 @@ def _get_default_config_dict(config_path=None, data_path=None) -> Config:
     )
     return config_dict
 
-# %% pts/mod/config.pct.py 9
+# %% pts/mod/config.pct.py 11
 _default_rclone_config = """
 """

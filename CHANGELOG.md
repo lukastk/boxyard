@@ -58,6 +58,24 @@ every machine can *read* the new format before any machine can *write* it.
   catches a *typo'd* config key today, and tolerating unknown keys without
   reporting them would trade a loud typo for a silent one.
 
+  **The tolerance reaches inside the config's tables, not just its top level.**
+  `[storage_locations.X]`, `[box_groups.X]` and `[virtual_box_groups.X]`
+  entries are `StrictModel`s too, so covering only the top level would have
+  left the identical trap one level down — and a nested addition is not
+  hypothetical: `symlink_name` was added to both group models in `8d9e074`.
+  Unknown keys are collected by dotted path
+  (`storage_locations.hetzner-box.some_key`), so the doctor finding says where
+  the key is rather than only that the file has one. The tables to walk are
+  derived from the model annotations, so a config model added later is covered
+  without anyone having to remember a list.
+
+  One case is deliberately left as a loud error: an *entry* that is not a table
+  at all, e.g. a bare `some_key = "x"` appended to the end of the file, which
+  TOML silently lands inside whatever table came last. That is not a newer
+  boxyard adding an option — it is a line the author believed they had put at
+  top level — so it raises, naming the exact path, rather than being quietly
+  discarded.
+
 - **`boxyard --version`** — prints the installed version and exits. It exists
   to be a rollout gate: checking a change across the fleet means
   `ssh-target <machine> boxyard --version` on each, and until now boxyard could
