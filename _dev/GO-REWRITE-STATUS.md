@@ -46,12 +46,32 @@ and the `mcd`/`bx`/`nb` shell functions actually invoke. Flags not yet ported
 (`--view tree|groups`, the hierarchy filters) **fail loudly with exit 1** rather
 than being ignored.
 
+## Keeping parity as Python moves
+
+Python reached v0.5.1 while this port sat at the v0.4.x line, and checking the
+port against it found **three gaps, each of which would have shipped as a silent
+data problem**. Re-check on every Python release; do not assume the frozen
+differential still covers you, because it captures the behaviour of the day it
+was taken.
+
+| gap | what it would have done | fixed in |
+|---|---|---|
+| `boxmeta.toml` decoded with `DisallowUnknownFields` | once release 2 writes `write_owner`, every box a Go binary touched would vanish from `boxyard_meta.json`, `boxyard list`, `~/g` and `multi-sync` — silently, and not healed by upgrading | `594a646` |
+| `config.toml` decoded with `DisallowUnknownFields` | the myrig template adding `machine_name` would break EVERY command on EVERY machine at once — config.toml is one shared artefact | `61b9c42` |
+| `LocalLastModified` ignored the sync excludes | pre-v0.4.6 behaviour: a `.DS_Store` alone flips a box to NEEDS_PUSH, and to CONFLICT when the remote has also moved. The mechanism behind boxes wedging on OS debris | `51b3784` |
+
+Two of the three were found by writing the *next* piece and checking its
+assumptions against Python, not by a test failing. The port's own suite was
+green throughout.
+
 ## In progress
 
-Nothing. The next step is wiring: `rclone.Client` takes a `Location`, while
-`syncengine.Storage`, `tombstones.Store` and `remoteindex.Store` take
-`(remote, path)` — a small adapter at the composition layer satisfies all
-three. Do **not** collapse errors into empty results there; that is precisely
+Nothing. Wiring is done: `internal/storage` adapts `rclone.Client` to
+`syncengine.Prober`/`Storage`, `tombstones.Store` and `remoteindex.Store`, with
+compile-time interface assertions so a domain package growing a method fails to
+build at the seam rather than at a call site. It holds no decisions — every
+method is a translation — so there is nothing in it that can disagree with
+Python. Errors are never collapsed into empty results there; that is precisely
 the bug fixed in v0.4.3.
 
 ## Not started
