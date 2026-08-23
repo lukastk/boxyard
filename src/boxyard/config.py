@@ -5,6 +5,7 @@ __all__ = ['BoxGroupConfig', 'BoxGroupTitleMode', 'BoxTimestampFormat', 'Config'
 # %% pts/mod/config.pct.py 3
 from pydantic import model_validator
 from pathlib import Path
+from typing import Any
 import tomllib
 import os
 from enum import Enum
@@ -124,6 +125,31 @@ class Config(const.StrictModel):
     # New box creation settings
     sync_before_new_box: bool = False  # If True, sync boxmetas before creating new box to check for ID collisions on remote
 
+    # Forward-compat passthrough: keys found in config.toml that this version
+    # of boxyard does not know. `get_config` collects them here instead of
+    # letting `extra="forbid"` reject the file.
+    #
+    # `config.toml` is the same trap `boxmeta.toml` was, for the same reason
+    # and with a wider blast radius: it is a StrictModel too, so a key added
+    # for a newer boxyard makes EVERY command fail on any machine that does not
+    # know it -- and on this fleet the file is one myrig-rendered artefact
+    # shared by every machine, so one addition breaks them all at once.
+    #
+    # Read the limit of this carefully: it does NOT rescue a machine already
+    # running a version without it. Tolerance has to be deployed BEFORE the key
+    # it tolerates, so the rollout order still stands -- boxyard everywhere
+    # first, then the config change. Its value is forward-looking: from v0.5.0
+    # on, a config addition costs an older machine a doctor finding instead of
+    # a machine that cannot run boxyard at all.
+    #
+    # Unlike `BoxMeta.unknown_keys` this is not written back, because boxyard
+    # never rewrites config.toml -- `init` creates it, and nothing else touches
+    # it. The container exists so the keys can be reported rather than vanish
+    # silently: `extra="forbid"` is what catches a TYPO'd key today, and
+    # tolerating unknown keys without reporting them would trade a loud typo
+    # for a silent one. `doctor`'s `unknown-config-keys` is that report.
+    unknown_keys: dict[str, Any] = {}
+
     @property
     def local_store_path(self) -> Path:
         return self.boxyard_data_path / "local_store"
@@ -174,6 +200,14 @@ class Config(const.StrictModel):
                 "'macbook' or 'mymain'."
             )
 
+        # The passthrough must stay disjoint from the fields this version owns,
+        # or a report of "keys boxyard does not know" would name one it does.
+        _shadowed = set(self.unknown_keys) & set(type(self).model_fields)
+        if _shadowed:
+            raise ValueError(
+                f"unknown_keys must not contain keys boxyard knows: {sorted(_shadowed)}"
+            )
+
         for name in self.storage_locations.keys():
             if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
                 raise ValueError(
@@ -206,7 +240,27 @@ def get_config(path: Path | None = None) -> Config:
         path = const.DEFAULT_CONFIG_PATH
     path = Path(path).expanduser()
     with open(path, "rb") as _f:
-        config_dict = {"config_path": path, **tomllib.load(_f)}
+        parsed = tomllib.load(_f)
+
+    # Split the file into keys this version knows and keys it does not, so a
+    # config written for a newer boxyard does not make every command on this
+    # machine fail. See `Config.unknown_keys` for why this does not retroactively
+    # help a machine running an older version.
+    #
+    # `unknown_keys` is the container itself, never a key of the file; a config
+    # that carries it is corrupt rather than newer, so say so.
+    if "unknown_keys" in parsed:
+        raise ValueError(
+            f"Config file '{path}' contains the reserved key 'unknown_keys', which "
+            "boxyard uses internally to carry keys written by a newer version. "
+            "Remove it from the file."
+        )
+    known_fields = set(Config.model_fields)
+    config_dict = {
+        "config_path": path,
+        **{k: v for k, v in parsed.items() if k in known_fields},
+        "unknown_keys": {k: v for k, v in parsed.items() if k not in known_fields},
+    }
 
     # Additively merge default_box_groups from env var (TOML list string, e.g. '["ctx/mac", "ctx/linux"]')
     env_groups = os.environ.get(const.ENV_VAR_DEFAULT_BOX_GROUPS)

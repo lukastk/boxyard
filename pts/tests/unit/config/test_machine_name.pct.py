@@ -7,7 +7,7 @@
 # ---
 
 # %% [markdown]
-# # Unit Tests for `machine_name`
+# # Unit Tests for `machine_name` and config forward compatibility
 #
 # `machine_name` is how a machine identifies itself for box write-ownership —
 # the value that will be written as a box's `write_owner`. It is configured and
@@ -18,6 +18,10 @@
 # It is optional, so that installing this version does not break a machine whose
 # config has not been rendered with a name yet. A machine without a name can
 # simply never own a box, which is the safe direction.
+#
+# The second half of this file covers the config's unknown-key passthrough,
+# which is what makes adding a key like `machine_name` survivable in the first
+# place — for the NEXT such key, not this one.
 
 # %%
 #|default_exp unit.config.test_machine_name
@@ -138,3 +142,60 @@ class TestMachineNameEnvOverride:
         monkeypatch.setenv(const.ENV_VAR_BOXYARD_MACHINE_NAME, "not a machine name")
         with pytest.raises(ValidationError, match="machine_name"):
             get_config(write_config(tmp_path))
+
+
+# ============================================================================
+# Forward compatibility: a key this version does not know
+# ============================================================================
+
+# %%
+#|export
+class TestUnknownConfigKeys:
+    """
+    `config.toml` is the same trap `boxmeta.toml` was, with a wider blast
+    radius: `Config` is a StrictModel, and on this fleet the file is one
+    myrig-rendered artefact shared by every machine, so a key added for a
+    newer boxyard would break EVERY command on EVERY machine that does not
+    know it, all at once.
+    """
+
+    def test_an_unknown_key_does_not_break_loading(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(const.ENV_VAR_BOXYARD_MACHINE_NAME, raising=False)
+        config = get_config(write_config(tmp_path, a_key_from_the_future="x"))
+        assert config.unknown_keys == {"a_key_from_the_future": "x"}
+
+    def test_known_keys_are_not_swallowed_into_the_passthrough(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(const.ENV_VAR_BOXYARD_MACHINE_NAME, raising=False)
+        config = get_config(
+            write_config(tmp_path, machine_name="mymain", a_key_from_the_future="x")
+        )
+        assert config.machine_name == "mymain"
+        assert config.unknown_keys == {"a_key_from_the_future": "x"}
+
+    def test_a_plain_config_has_an_empty_passthrough(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(const.ENV_VAR_BOXYARD_MACHINE_NAME, raising=False)
+        assert get_config(write_config(tmp_path)).unknown_keys == {}
+
+    def test_the_container_key_itself_is_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(const.ENV_VAR_BOXYARD_MACHINE_NAME, raising=False)
+        path = write_config(tmp_path, unknown_keys={"foo": "bar"})
+        with pytest.raises(ValueError, match="reserved key"):
+            get_config(path)
+
+    def test_a_passthrough_shadowing_a_known_field_is_rejected(self):
+        with pytest.raises(ValidationError, match="unknown_keys"):
+            Config(
+                config_path="/tmp/config.toml",
+                unknown_keys={"machine_name": "shadow"},
+                **BASE_CONFIG,
+            )
+
+    def test_a_still_invalid_known_key_is_still_rejected(self, tmp_path, monkeypatch):
+        """
+        Tolerating UNKNOWN keys must not weaken validation of known ones --
+        otherwise the passthrough would be `extra="allow"` by another name.
+        """
+        monkeypatch.delenv(const.ENV_VAR_BOXYARD_MACHINE_NAME, raising=False)
+        path = write_config(tmp_path, machine_name="not a machine name")
+        with pytest.raises(ValidationError, match="machine_name"):
+            get_config(path)

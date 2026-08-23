@@ -39,6 +39,33 @@ every machine can *read* the new format before any machine can *write* it.
   what earlier versions wrote — verified against all 583 boxmetas in the live
   yard, none of which this release rewrites.
 
+- **`config.toml` is now forward compatible too**, for the same reason and
+  with a wider blast radius. `Config` is a `StrictModel` as well, and on this
+  fleet `config.toml` is one myrig-rendered artefact shared by every machine —
+  so a key added for a newer boxyard would make **every command on every
+  machine** fail at once, not just one box go quiet. `get_config` now collects
+  unknown keys instead of rejecting the file.
+
+  Read the limit of this carefully: **it does not rescue a machine already
+  running an older version.** Tolerance has to be deployed before the key it
+  tolerates, so v0.5.0 must be installed everywhere before any config gains a
+  new key. Its value is forward-looking — from here on a config addition costs
+  an older machine a doctor finding instead of a machine that cannot run
+  boxyard at all.
+
+  Unlike `boxmeta.toml`, the keys are not written back, because boxyard never
+  rewrites `config.toml`. They are reported instead: `extra="forbid"` is what
+  catches a *typo'd* config key today, and tolerating unknown keys without
+  reporting them would trade a loud typo for a silent one.
+
+- **`boxyard --version`** — prints the installed version and exits. It exists
+  to be a rollout gate: checking a change across the fleet means
+  `ssh-target <machine> boxyard --version` on each, and until now boxyard could
+  not be asked at all — only `pip show boxyard`, which does not answer for a uv
+  tool install. It needs no config file, so it still works on a machine whose
+  config is missing or written for a newer boxyard — exactly the machines worth
+  asking.
+
 - **`machine_name` config key**, overridable by `BOXYARD_MACHINE_NAME`. This
   is how a machine will identify itself as a box's write owner. It is
   configured and never derived: `get_hostname()` cannot serve as an identity —
@@ -54,6 +81,10 @@ every machine can *read* the new format before any machine can *write* it.
   - **`machine-name-unset`** — no `machine_name` is configured, so this
     machine cannot own a box. Expected on every machine until its config is
     rendered with a name.
+  - **`unknown-config-keys`** — `config.toml` carries a key this version does
+    not know. The hint does not assume "newer boxyard": doctor cannot tell that
+    from a typo, and a typo means whatever it was meant to configure is
+    silently not in effect.
 
 ### 🐛 Bug Fixes
 

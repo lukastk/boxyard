@@ -25,6 +25,7 @@ DOCTOR_CHECK_NAMES = [
     "tree-orphans",
     "unknown-boxmeta-keys",
     "machine-name-unset",
+    "unknown-config-keys",
 ]
 
 # Subid format used by boxes created before the current config conventions.
@@ -756,6 +757,20 @@ async def run_doctor(
             f"myrig uses, e.g. 'macbook' or 'mymain') in '{config.config_path}', or "
             f"export {const.ENV_VAR_BOXYARD_MACHINE_NAME} for a one-off.",
             config_path=config.config_path,
+        )
+    if config.unknown_keys:
+        _config_keys = ", ".join(sorted(config.unknown_keys))
+        _add_finding(
+            "unknown-config-keys",
+            f"Config '{config.config_path}' has key(s) this boxyard does not know: "
+            f"{_config_keys}",
+            f"They are ignored, not fatal. Either the config was written for a newer "
+            f"boxyard -- upgrade this machine{_running_suffix} -- or the key is a typo, "
+            f"in which case whatever it was meant to configure is silently not in "
+            f"effect. Check the spelling against `boxyard init`'s generated config "
+            f"before assuming the former.",
+            config_path=config.config_path,
+            unknown_keys=sorted(config.unknown_keys),
         )
     num_findings = sum(len(check["findings"]) for check in checks.values())
     report = {

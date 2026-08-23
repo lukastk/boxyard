@@ -64,6 +64,24 @@ def _call_with_lock_handling(func, *args, **kwargs):
 # %% [markdown]
 # ## Main command
 
+# %% [markdown]
+# `--version` exists to be a rollout gate: rolling a change across the fleet
+# means checking `ssh-target <machine> boxyard --version` on each, and until
+# this existed the only way to ask was `pip show boxyard`, which does not work
+# for a uv tool install. It reports the installed distribution's version, so it
+# answers "what is actually installed here?" rather than "what does this source
+# tree say?".
+
+# %%
+#|exporti
+def _version_callback(value: bool) -> None:
+    if not value:
+        return
+    import importlib.metadata
+
+    typer.echo(importlib.metadata.version("boxyard"))
+    raise typer.Exit()
+
 # %%
 #|export
 @app.callback()
@@ -73,6 +91,13 @@ def entrypoint(
         None,
         "--config",
         help="The path to the config file. Will be '~/.config/boxyard/config.toml' if not provided.",
+    ),
+    version: bool = Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Print the installed boxyard version and exit.",
     ),
 ):
     import os
@@ -2847,8 +2872,8 @@ def cli_doctor(
     syncs, leftovers from removed storage locations, rclone configuration,
     remote boxmetas missing from the local mirror and boxes tombstoned on the
     remote (both unless --no-remote), boxes referencing unknown parents,
-    boxmetas carrying keys written by a newer boxyard, and a missing
-    `machine_name`.
+    boxmetas or a config carrying keys written by a newer boxyard, and a
+    missing `machine_name`.
 
     Never mutates or auto-fixes anything. Exit code is 0 when healthy and 1
     when there is at least one finding, so it can be asserted by cron jobs and

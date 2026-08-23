@@ -184,3 +184,52 @@ def test_machine_name_from_the_environment_satisfies_the_check(temp_boxyard, mon
 
     monkeypatch.setenv(const.ENV_VAR_BOXYARD_MACHINE_NAME, "from-env")
     assert not _findings(_doctor(config_path), "machine-name-unset")
+
+
+# ============================================================================
+# unknown-config-keys
+# ============================================================================
+
+# %%
+#|export
+@pytest.mark.integration
+def test_unknown_config_keys_reported(temp_boxyard):
+    """
+    The other half of the config passthrough. Tolerating an unknown key
+    without reporting it would trade the loud typo `extra="forbid"` catches
+    today for a silent one.
+    """
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    assert not _findings(_doctor(config_path), "unknown-config-keys")
+
+    _set_config_key(config_path, "a_key_from_the_future", "x")
+
+    report = _doctor(config_path)
+    findings = _findings(report, "unknown-config-keys")
+    assert len(findings) == 1
+    assert findings[0]["unknown_keys"] == ["a_key_from_the_future"]
+    assert str(config_path) in findings[0]["message"]
+    # The hint must not assume "newer boxyard"; doctor cannot tell that from a typo.
+    assert "typo" in findings[0]["hint"]
+    assert not report["healthy"]
+
+
+# %%
+#|export
+@pytest.mark.integration
+def test_an_unknown_config_key_does_not_stop_doctor_running(temp_boxyard):
+    """
+    The point of the passthrough: before it, an unknown config key made every
+    command on the machine fail -- doctor included, so the machine could not
+    even be asked what was wrong with it.
+    """
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    _set_config_key(config_path, "a_key_from_the_future", "x")
+
+    report = _doctor(config_path)
+    # Every other check still ran and still found nothing.
+    assert not _findings(report, "broken-registration")
+    assert not _findings(report, "unknown-storage-location")
+    assert not _findings(report, "rclone-config")
