@@ -1,3 +1,25 @@
+## [0.4.4] - 2026-08-23
+
+### 🐛 Bug Fixes
+
+- **A sync record that no operation could ever clear.** `sync_helper`'s
+  `allow_missing_source` branch — used only for the optional `conf` part, which
+  "may not exist on either side" — returns early *before* any sync record is
+  written. So if a `conf` transfer was interrupted and the part then vanished
+  from both sides, the incomplete local record became permanent: no later sync
+  could touch it, and `boxyard doctor` reported `interrupted-sync` for that box
+  forever.
+
+  Found on macbook, where obako's `conf` carried an incomplete record from a
+  pull interrupted in February 2026 while neither the local nor the remote
+  `conf` directory existed at all.
+
+  The record is now cleared when **both** sides are absent — an incomplete
+  record describing an interrupted transfer between two things that do not
+  exist is noise. Only that case is resolved: a missing source with a *present*
+  destination means the part was deleted on the other side, which is a real
+  divergence and is left alone.
+
 ## [0.4.3] - 2026-08-22
 
 ### 🐛 Bug Fixes
