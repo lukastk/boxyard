@@ -121,6 +121,22 @@ class Config(const.StrictModel):
     # via the BOXYARD_RCLONE env var, PATH, then known install dirs (see _utils.rclone).
     rclone_path: Path | None = None
 
+    # This machine's stable name within the yard -- the value that will be
+    # written as a box's `write_owner`. Configured, never derived: hostnames
+    # are not an identity (one machine in this fleet has reported both
+    # `lukas-pocket4` and `pocket4`, and macOS reports editable pretty names
+    # like `Lukas’s MacBook Pro`), so guessing one would hand a box to a
+    # machine that can no longer prove it is the same machine.
+    #
+    # Optional, because making it required would break every machine's config
+    # on upgrade until myrig renders it. A machine without a name simply can
+    # never be an owner, which is the safe direction; `doctor` reports it as
+    # `machine-name-unset`. Overridable by BOXYARD_MACHINE_NAME, which is what
+    # tests and one-offs use -- note that the supervisor that runs the syncs
+    # does not source an interactive shell's environment, so the env var
+    # cannot be the delivery mechanism for the real value.
+    machine_name: str | None = None
+
     # Parent-child settings
     single_parent: bool = False  # If True, each box can have at most one parent
 
@@ -164,6 +180,19 @@ class Config(const.StrictModel):
 
         import re
 
+        # A machine_name that could never be written as a `write_owner` is a
+        # configuration error, not something to discover later at claim time
+        # on one machine only. Fail here, where the message names the file.
+        if self.machine_name is not None and not re.fullmatch(
+            const.MACHINE_NAME_REGEX, self.machine_name
+        ):
+            raise ValueError(
+                f"Invalid machine_name {self.machine_name!r} in '{self.config_path}'. "
+                f"It must match {const.MACHINE_NAME_REGEX} (alphanumeric, '_', '-'; "
+                "1-64 characters). Use the machine's canonical short name, e.g. "
+                "'macbook' or 'mymain'."
+            )
+
         for name in self.storage_locations.keys():
             if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
                 raise ValueError(
@@ -205,6 +234,14 @@ def get_config(path: Path | None = None) -> Config:
         extra = tomllib.loads(f"v = {env_groups}")["v"]
         existing = config_dict.get("default_box_groups", [])
         config_dict["default_box_groups"] = list(dict.fromkeys(existing + extra))
+
+    # BOXYARD_MACHINE_NAME overrides the config key, following the
+    # BOXYARD_CONFIG_PATH / BOXYARD_RCLONE precedent (and the DEFAULT_BOX_GROUPS
+    # handling just above, whose empty-means-unset rule this matches: an empty
+    # value leaves the config key in force rather than blanking it).
+    env_machine_name = os.environ.get(const.ENV_VAR_BOXYARD_MACHINE_NAME)
+    if env_machine_name:
+        config_dict["machine_name"] = env_machine_name
 
     return Config(**config_dict)
 

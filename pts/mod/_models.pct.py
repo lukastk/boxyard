@@ -20,6 +20,7 @@ from nblite import nbl_export, show_doc; nbl_export();
 #|export
 from pydantic import Field, model_validator
 from pathlib import Path
+from typing import Any
 import tomllib
 import tomli_w
 from datetime import datetime, timezone
@@ -169,6 +170,38 @@ class BoxMeta(const.StrictModel):
     creator_hostname: str
     groups: list[str]
     parents: list[str] = []  # box_id values; default [] for backwards compat
+
+    # The `machine_name` of the single machine allowed to PUSH this box's DATA.
+    # `None` means unowned, which means unrestricted -- exactly the pre-v0.5
+    # behaviour. `save()` OMITS the key when it is None, so an unowned box's
+    # boxmeta.toml is byte-identical to what every earlier version wrote.
+    #
+    # Nothing in v0.5.0 sets this; the claim commands arrive in v0.5.1. The
+    # field exists first so that every machine can already read a boxmeta that
+    # carries it before any machine can write one.
+    write_owner: str | None = None
+
+    # Forward-compat passthrough: keys found in `boxmeta.toml` that this
+    # version of boxyard does not know. `load` collects them here and `save`
+    # writes them back verbatim.
+    #
+    # This is deliberately NOT `extra="ignore"`. Ignoring would make an older
+    # machine silently STRIP a newer machine's key -- one `boxyard
+    # add-to-group` on the old machine and the newer machine's `write_owner`
+    # is gone from the shared boxmeta, with no error anywhere. Preserving is
+    # the only behaviour that makes a mixed-version fleet safe.
+    #
+    # It is also not `extra="allow"`: that would silently accept a typo'd key
+    # at every BoxMeta construction site, not just when loading a file, and
+    # `broken-registration` would stop catching it. Here the tolerance is
+    # scoped to reading a file, and `doctor`'s `unknown-boxmeta-keys` reports
+    # every key that lands in it, so a newer key is loud rather than hidden.
+    #
+    # Consequence worth stating plainly: v0.5.0 is the LAST release that a
+    # `boxmeta.toml` addition can break. From here on, an unknown key costs an
+    # older machine a doctor finding instead of making the box vanish from
+    # `boxyard list`, from `~/g` and from `multi-sync`.
+    unknown_keys: dict[str, Any] = {}
 
     @classmethod
     def create(
@@ -325,9 +358,22 @@ class BoxMeta(const.StrictModel):
         save_path = self.get_local_part_path(config, BoxPart.META)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         model_dump = self.model_dump()
+        # These three are derived from the registration's directory name, not
+        # stored in the file.
         del model_dump["creation_timestamp_utc"]
         del model_dump["box_subid"]
         del model_dump["name"]
+        # An unowned box must write the pre-v0.5 file, byte for byte: the key
+        # is absent, not `write_owner = ""` and not a null. That is what keeps
+        # all 583 existing boxmetas untouched by the upgrade, and what makes
+        # `boxyard release` restore a file an older machine can still read.
+        if model_dump["write_owner"] is None:
+            del model_dump["write_owner"]
+        # Keys a newer boxyard wrote go back exactly as they came in. They
+        # cannot shadow a field this version owns: `validate_box_meta` rejects
+        # a known field name in here, so the two key sets are disjoint.
+        unknown_keys = model_dump.pop("unknown_keys")
+        model_dump.update(unknown_keys)
         # Atomic write: temp file + rename
         tmp_path = save_path.with_suffix(".tmp")
         tmp_path.write_text(tomli_w.dumps(model_dump))
@@ -359,13 +405,39 @@ class BoxMeta(const.StrictModel):
         if not boxmeta_path.exists():
             raise ValueError(f"Box meta file {boxmeta_path} does not exist.")
 
+        parsed = tomllib.loads(boxmeta_path.read_text(encoding="utf-8"))
+
+        # Split the file into keys this version knows and keys it does not.
+        # Without this split the model's `extra="forbid"` would reject the
+        # whole registration, and a rejected registration does not merely fail
+        # to parse: `create_boxyard_meta` SKIPS it, so the box drops out of
+        # `boxyard_meta.json` and with it out of `boxyard list`, out of `~/g`
+        # (whose symlinks are then deleted) and out of `multi-sync` -- it stops
+        # syncing altogether, and upgrading afterwards does not heal it.
+        #
+        # `unknown_keys` is the passthrough container itself, never a key of
+        # the file. A boxmeta.toml that carries it is corrupt rather than
+        # merely newer -- silently folding it in would flatten its contents to
+        # top-level keys on the next save -- so say so instead of guessing.
+        if "unknown_keys" in parsed:
+            raise ValueError(
+                f"Box meta file {boxmeta_path} contains the reserved key "
+                "'unknown_keys', which boxyard uses internally to carry keys "
+                "written by a newer version. Remove it from the file."
+            )
+
+        known_fields = set(cls.model_fields)
+        unknown_keys = {k: v for k, v in parsed.items() if k not in known_fields}
+        known_keys = {k: v for k, v in parsed.items() if k in known_fields}
+
         return BoxMeta(
             **{
-                **tomllib.loads(boxmeta_path.read_text(encoding="utf-8")),
+                **known_keys,
                 "creation_timestamp_utc": creation_timestamp,
                 "box_subid": box_subid,
                 "name": name,
                 "storage_location": storage_location_name,
+                "unknown_keys": unknown_keys,
             }
         )
 
@@ -389,6 +461,8 @@ class BoxMeta(const.StrictModel):
 
     @model_validator(mode="after")
     def validate_box_meta(self):
+        import re
+
         # `creator_hostname` is the only free-text field written to
         # boxmeta.toml -- it comes from `scutil --get ComputerName` or
         # `platform.node()`, so its content is not otherwise constrained.
@@ -419,6 +493,29 @@ class BoxMeta(const.StrictModel):
 
         if self.box_id in self.parents:
             raise ValueError("A box cannot be its own parent.")
+
+        # `write_owner` is compared, not printed: it decides which machine may
+        # push this box's DATA. So unlike `creator_hostname` above -- a
+        # historical label that tolerates whatever the OS reported -- it is
+        # constrained to a name that survives comparison, a shell argument and
+        # an error message unchanged.
+        if self.write_owner is not None:
+            if not re.fullmatch(const.MACHINE_NAME_REGEX, self.write_owner):
+                raise ValueError(
+                    f"Invalid write_owner {self.write_owner!r}. A machine name must "
+                    f"match {const.MACHINE_NAME_REGEX} (alphanumeric, '_', '-'; "
+                    "1-64 characters)."
+                )
+
+        # The passthrough must stay disjoint from the fields this version
+        # owns, or `save` would write the same key twice -- once from the
+        # model and once from the container -- and the file would disagree
+        # with itself.
+        _shadowed = set(self.unknown_keys) & set(type(self).model_fields)
+        if _shadowed:
+            raise ValueError(
+                f"unknown_keys must not contain keys boxyard knows: {sorted(_shadowed)}"
+            )
 
         # Test that the creation timestamp is valid
         try:

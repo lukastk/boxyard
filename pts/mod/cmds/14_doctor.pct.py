@@ -46,6 +46,13 @@
 #     machine throughout. They were found by reading a supervisor log. A box that
 #     merely needs pulling is deliberately NOT reported — see the check.
 # 15. **tree-orphans** — boxmeta parents referencing unknown box ids.
+# 16. **unknown-boxmeta-keys** — a `boxmeta.toml` carries a key this version of
+#     boxyard does not know, i.e. it was written by a newer one. The key is
+#     preserved untouched (see `BoxMeta.unknown_keys`); this check is what makes
+#     that preservation visible instead of silent.
+# 17. **machine-name-unset** — no `machine_name` in the config. Box write
+#     ownership identifies a machine by that name and never by its hostname, so
+#     until it is set this machine can never own a box.
 #
 # Doctor never mutates or auto-fixes anything.
 
@@ -87,6 +94,8 @@ DOCTOR_CHECK_NAMES = [
     "tombstoned-box",
     "diverged-box",
     "tree-orphans",
+    "unknown-boxmeta-keys",
+    "machine-name-unset",
 ]
 
 # %% [markdown]
@@ -1094,6 +1103,75 @@ for bm in box_metas:
                 index_name=bm.index_name,
                 parent_box_id=_parent_id,
             )
+
+# %% [markdown]
+# ## Check: `unknown-boxmeta-keys`
+#
+# A `boxmeta.toml` written by a NEWER boxyard than this one. `BoxMeta.load`
+# keeps such keys verbatim rather than rejecting the file, because rejecting it
+# does not merely fail to parse: `create_boxyard_meta` skips the registration,
+# so the box disappears from `boxyard_meta.json`, from `boxyard list`, from
+# `~/g` (its symlinks are deleted) and from `multi-sync` — it stops syncing
+# with no error, and upgrading afterwards does not heal it.
+#
+# Tolerating the key is what prevents that; this check is what stops the
+# tolerance from being silent. Purely local — the keys are already on disk.
+
+# %%
+#|export
+import importlib.metadata as _importlib_metadata
+
+try:
+    _running_version = _importlib_metadata.version("boxyard")
+except _importlib_metadata.PackageNotFoundError:
+    # Running from a source checkout with no installed distribution. Say
+    # nothing about the version rather than inventing one.
+    _running_version = None
+_running_suffix = f" (running {_running_version})" if _running_version else ""
+
+for bm in box_metas:
+    if not bm.unknown_keys:
+        continue
+    _keys = ", ".join(sorted(bm.unknown_keys))
+    _add_finding(
+        "unknown-boxmeta-keys",
+        f"Box '{bm.index_name}' has boxmeta key(s) this boxyard does not know: {_keys}",
+        f"The box was written by a newer boxyard. The key(s) are preserved "
+        f"untouched, so nothing is lost and there is nothing to repair — but this "
+        f"machine cannot act on what they mean. Upgrade boxyard here"
+        f"{_running_suffix} to the version that writes them.",
+        index_name=bm.index_name,
+        storage_location=bm.storage_location,
+        unknown_keys=sorted(bm.unknown_keys),
+    )
+
+# %% [markdown]
+# ## Check: `machine-name-unset`
+#
+# `machine_name` is how a machine identifies itself for box write-ownership.
+# It is configured and never derived: `get_hostname()` cannot serve as an
+# identity — one machine in this fleet has reported both `lukas-pocket4` and
+# `pocket4`, and macOS reports user-editable pretty names like
+# `Lukas’s MacBook Pro`.
+#
+# Reported whenever it is unset, not only once boxes are owned: an unnamed
+# machine can never claim a box, and the point of reporting it is to make the
+# gap between installing this version and configuring the name visible while
+# it is still true, rather than at the moment someone first tries to claim.
+
+# %%
+#|export
+if config.machine_name is None:
+    _add_finding(
+        "machine-name-unset",
+        f"No `machine_name` is configured in '{config.config_path}'",
+        f"Nothing is broken by this today — box write-ownership is not yet "
+        f"enforced — but this machine cannot own a box until it has a name. Set "
+        f"`machine_name` to this machine's canonical short name (the same one "
+        f"myrig uses, e.g. 'macbook' or 'mymain') in '{config.config_path}', or "
+        f"export {const.ENV_VAR_BOXYARD_MACHINE_NAME} for a one-off.",
+        config_path=config.config_path,
+    )
 
 # %% [markdown]
 # Assemble the report.

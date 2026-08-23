@@ -86,7 +86,21 @@ boxyard_meta = get_boxyard_meta(config)
 if box_index_name not in boxyard_meta.by_index_name:
     raise ValueError(f"Box '{box_index_name}' not found.")
 
-box_meta = boxyard_meta.by_index_name[box_index_name]
+# The cache answers "does this box exist here?", but the object we are about
+# to WRITE BACK to boxmeta.toml is re-read from that file. Modifying the
+# cached copy instead is a lost update: `boxyard_meta.json` is a snapshot of
+# the last refresh, and anything that reached boxmeta.toml since -- a META
+# pull from another machine among them -- would be silently overwritten with
+# the older values. That matters most for keys this version does not know
+# (`BoxMeta.unknown_keys`), which the cache can only carry if it was refreshed
+# after they arrived: a stale cache would strip a newer machine's key on an
+# ordinary `boxyard add-to-group`, which is the exact loss the passthrough
+# exists to prevent.
+box_meta = BoxMeta.load(
+    config,
+    boxyard_meta.by_index_name[box_index_name].storage_location,
+    box_index_name,
+)
 
 # %% [markdown]
 # Create modified box meta

@@ -1,3 +1,71 @@
+## [0.5.0] - 2026-08-23
+
+Release 1 of two for single-writer box ownership ("tolerate"). **Zero
+behaviour change**: nothing in this release writes the new `boxmeta.toml` key,
+nothing refuses a sync, and there are no claim commands. It exists so that
+every machine can *read* the new format before any machine can *write* it.
+
+### ✨ Features
+
+- **`boxmeta.toml` is now forward compatible.** A key that this version of
+  boxyard does not know is preserved verbatim through a load/save round-trip
+  instead of making the registration unloadable.
+
+  This is the change that matters most, because the old behaviour was far
+  worse than "fails to parse". An unknown key made `BoxMeta.load` raise, and
+  `create_boxyard_meta` **skips** a registration it cannot load — so on a
+  machine running an older boxyard the box silently disappeared from
+  `boxyard_meta.json`, and with it from `boxyard list`, from `~/g` (its group
+  symlinks are actively deleted), and from `boxyard multi-sync`, which
+  iterates that cache. The box **stopped syncing, with no error**, and
+  upgrading the machine afterwards did not heal it: the half-finished pull
+  leaves no META sync record, which is `SyncCondition.ERROR`, and `sync_box`
+  then raises until someone runs an explicit forced META pull.
+
+  The preservation is deliberately not `extra="ignore"` — ignoring would make
+  an older machine silently **strip** a newer machine's key on the next
+  `boxyard add-to-group`, which is a worse outcome than either. It is not
+  `extra="allow"` either: that would accept a typo'd key at every construction
+  site and `broken-registration` would stop catching it. Unknown keys are
+  collected only when reading a file, and `doctor` reports every one of them.
+
+  **v0.5.0 is therefore the last release that a `boxmeta.toml` addition can
+  break.**
+
+- **`write_owner` on `BoxMeta`** — the machine name of the single machine
+  allowed to push a box's DATA. Nothing reads or writes it yet; the claim
+  commands and the sync refusal arrive in v0.5.1. `save()` **omits** the key
+  when it is unset, so an unowned box's `boxmeta.toml` is byte-identical to
+  what earlier versions wrote — verified against all 583 boxmetas in the live
+  yard, none of which this release rewrites.
+
+- **`machine_name` config key**, overridable by `BOXYARD_MACHINE_NAME`. This
+  is how a machine will identify itself as a box's write owner. It is
+  configured and never derived: `get_hostname()` cannot serve as an identity —
+  one machine in this fleet has reported both `lukas-pocket4` and `pocket4`,
+  and macOS reports user-editable pretty names like `Lukas’s MacBook Pro`. The
+  key is optional, because requiring it would break every machine's config on
+  upgrade; a machine without a name simply can never own a box.
+
+- **Two new `doctor` checks:**
+  - **`unknown-boxmeta-keys`** — a boxmeta carries a key written by a newer
+    boxyard. The key is preserved untouched, so nothing is broken; this check
+    is what stops that preservation from being silent.
+  - **`machine-name-unset`** — no `machine_name` is configured, so this
+    machine cannot own a box. Expected on every machine until its config is
+    rendered with a name.
+
+### 🐛 Bug Fixes
+
+- **`boxyard add-to-group` (and every other `modify_boxmeta` caller) no longer
+  writes `boxmeta.toml` from a cache of it.** It read the box meta from
+  `boxyard_meta.json` — a snapshot of the last refresh — modified that, and
+  wrote it back to disk, so anything that had reached `boxmeta.toml` since the
+  refresh was silently overwritten with the older values. A lost update in
+  general; specifically, it would have stripped a newer machine's key straight
+  back out again, defeating the passthrough above. The file is now re-read
+  from disk before being modified.
+
 ## [0.4.7] - 2026-08-23
 
 ### ✨ Features

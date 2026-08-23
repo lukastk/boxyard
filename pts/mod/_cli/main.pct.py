@@ -2846,7 +2846,9 @@ def cli_doctor(
     symlinks and debris in the group tree, orphaned sync records, interrupted
     syncs, leftovers from removed storage locations, rclone configuration,
     remote boxmetas missing from the local mirror and boxes tombstoned on the
-    remote (both unless --no-remote), and boxes referencing unknown parents.
+    remote (both unless --no-remote), boxes referencing unknown parents,
+    boxmetas carrying keys written by a newer boxyard, and a missing
+    `machine_name`.
 
     Never mutates or auto-fixes anything. Exit code is 0 when healthy and 1
     when there is at least one finding, so it can be asserted by cron jobs and

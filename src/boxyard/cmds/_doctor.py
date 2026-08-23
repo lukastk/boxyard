@@ -23,6 +23,8 @@ DOCTOR_CHECK_NAMES = [
     "tombstoned-box",
     "diverged-box",
     "tree-orphans",
+    "unknown-boxmeta-keys",
+    "machine-name-unset",
 ]
 
 # Subid format used by boxes created before the current config conventions.
@@ -719,6 +721,42 @@ async def run_doctor(
                     index_name=bm.index_name,
                     parent_box_id=_parent_id,
                 )
+    import importlib.metadata as _importlib_metadata
+    
+    try:
+        _running_version = _importlib_metadata.version("boxyard")
+    except _importlib_metadata.PackageNotFoundError:
+        # Running from a source checkout with no installed distribution. Say
+        # nothing about the version rather than inventing one.
+        _running_version = None
+    _running_suffix = f" (running {_running_version})" if _running_version else ""
+    
+    for bm in box_metas:
+        if not bm.unknown_keys:
+            continue
+        _keys = ", ".join(sorted(bm.unknown_keys))
+        _add_finding(
+            "unknown-boxmeta-keys",
+            f"Box '{bm.index_name}' has boxmeta key(s) this boxyard does not know: {_keys}",
+            f"The box was written by a newer boxyard. The key(s) are preserved "
+            f"untouched, so nothing is lost and there is nothing to repair — but this "
+            f"machine cannot act on what they mean. Upgrade boxyard here"
+            f"{_running_suffix} to the version that writes them.",
+            index_name=bm.index_name,
+            storage_location=bm.storage_location,
+            unknown_keys=sorted(bm.unknown_keys),
+        )
+    if config.machine_name is None:
+        _add_finding(
+            "machine-name-unset",
+            f"No `machine_name` is configured in '{config.config_path}'",
+            f"Nothing is broken by this today — box write-ownership is not yet "
+            f"enforced — but this machine cannot own a box until it has a name. Set "
+            f"`machine_name` to this machine's canonical short name (the same one "
+            f"myrig uses, e.g. 'macbook' or 'mymain') in '{config.config_path}', or "
+            f"export {const.ENV_VAR_BOXYARD_MACHINE_NAME} for a one-off.",
+            config_path=config.config_path,
+        )
     num_findings = sum(len(check["findings"]) for check in checks.values())
     report = {
         "healthy": num_findings == 0,
