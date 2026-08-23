@@ -1,3 +1,109 @@
+## [0.5.2] - 2026-08-23
+
+Release 2 of two for single-writer box ownership ("claim"). A box may now be
+**claimed** by one machine, and only that machine pushes its DATA. Ownership is
+**opt-in per box**: a box nobody claimed behaves exactly as it did in v0.4.x, so
+nothing changes for the 583 boxes in the yard until someone claims them.
+
+### ✨ Features
+
+- **`boxyard claim` / `release` / `claim --steal` / `discard-local` / `owner`.**
+  `claim` makes this machine the write owner; `release` gives it up; the tidy
+  handover is release-then-claim, two online steps with no force and no race.
+  `--steal` exists for when the owner is gone, and says plainly that the
+  previous owner's unpushed work will be refused there from then on.
+
+  **`claim` verifies by reading the remote back.** Two machines claiming at the
+  same instant is last-write-wins — measured at 5 trials in 6 — and the loser
+  reverts *silently*, because a completed push writes a fresh sync record so its
+  own claim then reads as an ordinary `needs_pull`. After pushing, `claim`
+  re-reads the remote boxmeta and fails loudly if it does not name this machine.
+  This shrinks the window; it does not close it. **Ownership converges — it is
+  not a lock**, and CONFLICT detection remains load-bearing.
+
+- **A non-owner pulls quietly and never raises.** `SyncCondition.WRITE_DENIED`
+  is a condition, not an exception, and that is the whole design: `multi-sync`
+  runs every 1200s under supervisor and catches per-box exceptions into a red
+  `Error` line, so raising would manufacture ~72 identical unresolvable errors
+  per machine per day — the exact pathology v0.4.0–v0.4.4 spent a week removing.
+  A read-only replica syncs silently when clean, pulls silently when behind, and
+  is reported **once**, by `doctor`, when it holds changes that will never be
+  pushed. `multi-sync` shows it as a yellow `Read-only`, never as an error.
+
+- **A dry-run probe decides whether a non-owner actually has changes.** Asking
+  "is the mtime newer?" is not the same question as "would a push move
+  anything": v0.4.6 stopped *literal* excludes (`.DS_Store`) from looking like
+  changes, but glob patterns are deliberately not interpreted, so a
+  glob-excluded file still flips a box to `needs_push`. On a read-only machine
+  that would be a permanent, false "you have local changes". The probe asks
+  rclone directly, under the box's real filters.
+
+  It uses `rclone check --combined` rather than parsing `sync --dry-run`, and
+  the difference is load-bearing rather than stylistic: measured, a file with
+  identical content but a different mtime makes the dry run print `Skipped
+  update modification time`, so any text-matching approach reports a change that
+  is not one. A check that cannot be performed at all (unreachable remote)
+  counts as "would transfer", so a box is reported rather than silently declared
+  clean.
+
+- **`--sync-setting force` does not bypass ownership**, and there is no
+  `--ignore-ownership` flag. `force` is a sync-*safety* override ("I accept
+  overwriting"); ownership is a *coordination* statement. A forced push that
+  left the remote holding this machine's data while `boxmeta.toml` still named
+  another owner would put a lie in shared state, which is worse than a refusal.
+  The paths that bypass `sync_helper` — `force-push`, `rename --scope
+  remote|both`, `delete` — carry their own gates.
+
+- **`boxyard include` says what it means for writing.** A box owned by another
+  machine prints "included read-only — `<machine>` is the write owner"; an
+  unowned box gets a one-line nudge naming `boxyard claim`, suppressible with
+  `--read-only`.
+
+- **`boxyard list --owner X` / `--show-owner`**, and `write_owner` exposed
+  through `_fast`.
+
+- **Two new `doctor` checks.** `write-denied` is the *only* report of a box
+  whose local changes will never be pushed — sync stays deliberately silent, so
+  if doctor did not say it, nothing would. `stale-owner` reports a box whose
+  owner cannot be a working owner.
+
+### 🛡️ Three ways a box could have been frozen fleet-wide, closed
+
+Each of these was found by reading the design against real usage, and each one
+would have made a box unpushable from *every* machine, silently:
+
+- **`claim` now refuses a box that is not included here.** A box that is not
+  included still has a local registration and boxmeta — that is what
+  `sync-missing-meta` maintains for the hundreds of boxes a machine does not
+  hold — so claiming one would have made this machine the designated writer of
+  DATA it does not have, locking out every machine that does. The refusal names
+  `boxyard include` as the fix.
+
+- **`exclude` on a box this machine owns now releases ownership** in the same
+  operation. `exclude` reads as local housekeeping, but it would have left
+  `boxmeta.toml` naming a machine that no longer has the box. Because releasing
+  pushes META, `exclude` is now a network operation: if the remote is
+  unreachable it **refuses** rather than excluding and leaving a stale owner,
+  and `release` rolls its local change back so that refusal is honest. A box
+  owned by another machine is unaffected.
+
+- **`stale-owner` catches the routes nobody thought of.** Both of the above were
+  found by inspection rather than by anything reporting them. The check reports
+  a box owned by this machine that is not included here (exact), and a box owned
+  by a name that owns nothing else while another machine owns several (a
+  heuristic, and labelled as one in its hint).
+
+### 📋 Known limitations, stated rather than implied
+
+- **This is not a lock.** Simultaneous claims are last-write-wins. Ownership
+  reduces the rate at which conflicts are manufactured; it does not remove the
+  need to detect them.
+- **It does not know whether a machine is alive.** `--steal` from a machine that
+  is offline for a week is indistinguishable from stealing from one that is
+  gone.
+- **`check_last_time_modified` is still not filter-aware.** The probe works
+  around that for non-owners; the underlying no-op pushes across the yard remain.
+
 ## [0.5.1] - 2026-08-23
 
 ### 🐛 Bug Fixes

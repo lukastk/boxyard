@@ -105,6 +105,55 @@ if box_meta.get_storage_location_config(config).storage_type == StorageType.LOCA
     )
 
 # %% [markdown]
+# ## Release write ownership first, if this machine holds it
+#
+# `exclude` reads as local housekeeping — "I do not need this box here any
+# more" — but on a box THIS machine owns it would leave `boxmeta.toml` naming a
+# machine that no longer has the DATA. NO machine could then push it, and the
+# only escape would be `boxyard claim --steal` from somewhere else. A command
+# that looks local would have frozen the box fleet-wide, silently. So the
+# release happens as part of the same operation.
+#
+# Release pushes META, which makes `exclude` a network operation. If that push
+# cannot happen we REFUSE rather than excluding and leaving a stale owner
+# behind: excluding-and-leaving-owned is precisely the state this exists to
+# prevent, and doing it anyway "because the network was down" would just create
+# it by a different route.
+#
+# A box owned by ANOTHER machine is unaffected — this machine was never the
+# writer, so there is nothing to release.
+
+# %%
+#|export
+from boxyard._models import BoxMeta
+
+_box_meta_on_disk = BoxMeta.load(config, box_meta.storage_location, box_index_name)
+
+if _box_meta_on_disk.write_owner is not None and (
+    _box_meta_on_disk.write_owner == config.machine_name
+):
+    from boxyard.cmds import release_box
+
+    try:
+        await release_box(
+            config_path=config_path, box_index_name=box_index_name, verbose=False
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Cannot exclude '{box_index_name}': this machine is its write "
+            f"owner, and giving that up requires pushing the boxmeta, which "
+            f"failed ({e}).\n"
+            f"Excluding anyway would leave the box owned by a machine that no "
+            f"longer has it, which no machine could then push. Run `boxyard "
+            f"release -r '{box_index_name}'` once the remote is reachable, then "
+            f"exclude."
+        ) from e
+    print(
+        f"Released write ownership of '{box_index_name}' — excluding a box this "
+        f"machine owned would otherwise leave it unpushable everywhere."
+    )
+
+# %% [markdown]
 # Acquire per-box sync lock
 
 # %%

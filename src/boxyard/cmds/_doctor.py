@@ -26,6 +26,8 @@ DOCTOR_CHECK_NAMES = [
     "unknown-boxmeta-keys",
     "machine-name-unset",
     "unknown-config-keys",
+    "write-denied",
+    "stale-owner",
 ]
 
 # Subid format used by boxes created before the current config conventions.
@@ -772,6 +774,127 @@ async def run_doctor(
             config_path=config.config_path,
             unknown_keys=sorted(config.unknown_keys),
         )
+    _owner_counts: dict[str, int] = {}
+    for bm in box_metas:
+        if bm.write_owner is not None:
+            _owner_counts[bm.write_owner] = _owner_counts.get(bm.write_owner, 0) + 1
+    
+    # Is there a machine in this yard that owns more than one box? Until there is,
+    # "owns exactly one box" says nothing.
+    _yard_has_an_established_owner = any(count > 1 for count in _owner_counts.values())
+    
+    for bm in box_metas:
+        if bm.write_owner is None:
+            continue
+    
+        if bm.write_owner == config.machine_name:
+            if not bm.check_included(config):
+                _add_finding(
+                    "stale-owner",
+                    f"Box '{bm.index_name}' names this machine "
+                    f"('{config.machine_name}') as its write owner, but it is not "
+                    f"included here — so the one machine allowed to push it does not "
+                    f"have it",
+                    f"No machine can push this box until that is fixed. Either give it "
+                    f"up with `boxyard release -r '{bm.index_name}'`, or take the box "
+                    f"back with `boxyard include -r '{bm.index_name}'`.",
+                    index_name=bm.index_name,
+                    write_owner=bm.write_owner,
+                    storage_location=bm.storage_location,
+                )
+            continue
+    
+        if _yard_has_an_established_owner and _owner_counts[bm.write_owner] == 1:
+            _add_finding(
+                "stale-owner",
+                f"Box '{bm.index_name}' is owned by '{bm.write_owner}', which owns no "
+                f"other box in this yard",
+                f"Probably a machine that was renamed or retired, in which case no "
+                f"machine can push this box. If '{bm.write_owner}' is real and simply "
+                f"owns only this box, nothing is wrong. Otherwise take it over from "
+                f"the machine that should have it: `boxyard claim --steal -r "
+                f"'{bm.index_name}'`.",
+                index_name=bm.index_name,
+                write_owner=bm.write_owner,
+                storage_location=bm.storage_location,
+            )
+    if not check_remote or not _rclone_available:
+        checks["write-denied"]["skipped"] = True
+    else:
+        from boxyard._models import BoxPart as _BoxPart, SyncRecord as _SyncRec
+        from boxyard._ownership import (
+            push_would_transfer,
+            write_denied_hint,
+            write_denied_message,
+        )
+        from boxyard._utils import check_last_time_modified, literal_exclude_names
+    
+        for bm in box_metas:
+            if bm.write_owner is None or bm.write_owner == config.machine_name:
+                continue
+            _sl_config = config.storage_locations.get(bm.storage_location)
+            if _sl_config is None or _sl_config.storage_type != StorageType.RCLONE:
+                continue
+            if storage_locations is not None and bm.storage_location not in storage_locations:
+                continue
+            if not bm.check_included(config):
+                continue  # not here at all, so nothing of ours can be stranded
+    
+            _data_path = bm.get_local_part_path(config, _BoxPart.DATA)
+            _conf_exclude = (
+                bm.get_local_part_path(config, _BoxPart.CONF) / const.RCLONE_EXCLUDE_FILENAME
+            )
+            _effective_exclude = (
+                _conf_exclude if _conf_exclude.exists() else config.default_rclone_exclude_path
+            )
+    
+            _rec_path = bm.get_local_sync_record_path(config, _BoxPart.DATA)
+            if not _rec_path.exists():
+                continue  # never synced here; `interrupted-sync`/`stale-cache` territory
+            try:
+                _rec = _SyncRec.model_validate_json(_rec_path.read_text())
+            except Exception:
+                continue  # a malformed record is `interrupted-sync`'s business
+    
+            _modified = check_last_time_modified(
+                _data_path, exclude_names=literal_exclude_names(_effective_exclude)
+            )
+            if _modified is None or _modified <= _rec.timestamp:
+                continue  # unchanged since our own record: nothing is stranded
+    
+            # Only now is a remote call worth making. `needs_push` is not evidence
+            # of a real change -- a single `.DS_Store` sets it -- so ask what a push
+            # would ACTUALLY move, under the box's real filters.
+            _remote_data_path = (
+                _sl_config.store_path
+                / const.REMOTE_BOXES_REL_PATH
+                / bm.index_name
+                / const.BOX_DATA_REL_PATH
+            )
+            _conf_path = bm.get_local_part_path(config, _BoxPart.CONF)
+            _include_file = _conf_path / const.RCLONE_INCLUDE_FILENAME
+            _filters_file = _conf_path / const.RCLONE_FILTERS_FILENAME
+    
+            if not await push_would_transfer(
+                config,
+                local_path=_data_path,
+                remote=bm.storage_location,
+                remote_path=_remote_data_path,
+                include_path=_include_file if _include_file.exists() else None,
+                exclude_path=_effective_exclude,
+                filters_path=_filters_file if _filters_file.exists() else None,
+            ):
+                continue
+    
+            _add_finding(
+                "write-denied",
+                write_denied_message(config, bm)
+                + " This copy has local changes that will never leave this machine.",
+                write_denied_hint(config, bm),
+                index_name=bm.index_name,
+                write_owner=bm.write_owner,
+                storage_location=bm.storage_location,
+            )
     num_findings = sum(len(check["findings"]) for check in checks.values())
     report = {
         "healthy": num_findings == 0,

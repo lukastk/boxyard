@@ -4,7 +4,8 @@ from pathlib import Path
 import asyncio
 
 from ..config import get_config
-from .._models import get_boxyard_meta, BoxPart, SyncRecord
+from .._models import get_boxyard_meta, BoxPart, SyncRecord, BoxMeta
+from .._ownership import owner_gate
 from .._remote_index import find_remote_box_by_id
 from .._utils.rclone import rclone_sync, rclone_mkdir, rclone_purge
 from .._utils.perms import generate_exec_manifest
@@ -57,6 +58,17 @@ async def force_push_to_remote(
         raise ValueError(f"Box '{box_index_name}' does not exist locally.")
     
     box_meta = boxyard_meta.by_index_name[box_index_name]
+    
+    # Ownership is checked BEFORE and INDEPENDENTLY of any force/safety flag. A
+    # `--force` that also bypassed ownership would leave the remote holding this
+    # machine's data while `boxmeta.toml` still names another machine as the owner
+    # -- a lie in shared state, which is worse than a refusal.
+    # This path bypasses `sync_helper` entirely, so it needs its own gate.
+    owner_gate(
+        config,
+        BoxMeta.load(config, box_meta.storage_location, box_index_name),
+        f"force-push to '{box_index_name}'",
+    )
     storage_location = box_meta.storage_location
     sl_config = config.storage_locations[storage_location]
     

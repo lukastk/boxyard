@@ -28,6 +28,7 @@ from boxyard.config import get_config, StorageType
 from boxyard._utils.locking import BoxyardLockManager, LockAcquisitionError, BOX_SYNC_LOCK_TIMEOUT, acquire_lock_async
 from boxyard._remote_index import update_remote_index_cache, find_remote_box_by_id
 from boxyard._enums import RenameScope
+from boxyard._ownership import owner_gate
 from boxyard._models import validate_box_name
 from boxyard import const
 
@@ -100,6 +101,17 @@ if box_index_name not in boxyard_meta.by_index_name:
 box_meta = boxyard_meta.by_index_name[box_index_name]
 box_id = BoxMeta.extract_box_id(box_index_name)
 storage_location = box_meta.storage_location
+
+# A remote-scoped rename renames the box's directory ON THE REMOTE, so it is a
+# write to shared state and needs the ownership gate. A LOCAL-scope rename
+# touches only this machine and is deliberately left alone: a read-only replica
+# may still call its own copy whatever it likes.
+if scope in (RenameScope.REMOTE, RenameScope.BOTH):
+    owner_gate(
+        config,
+        BoxMeta.load(config, storage_location, box_index_name),
+        f"rename '{box_index_name}' on the remote",
+    )
 
 # Compute new index name. The name is used verbatim as a directory name, so it
 # has to be a single path component.

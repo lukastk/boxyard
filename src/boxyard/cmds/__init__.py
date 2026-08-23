@@ -2,9 +2,11 @@ def __getattr__(name):
     import importlib
 
     _name_to_module = {
+        "claim_box": "._claim_box",
         "copy_from_remote": "._copy_from_remote",
         "create_user_symlinks": "._create_user_symlinks",
         "delete_box": "._delete_box",
+        "discard_local": "._discard_local",
         "exclude_box": "._exclude_box",
         "force_push_to_remote": "._force_push_to_remote",
         "get_box_sync_status": "._get_box_sync_status",
@@ -12,6 +14,7 @@ def __getattr__(name):
         "init_boxyard": "._init_boxyard",
         "modify_boxmeta": "._modify_boxmeta",
         "new_box": "._new_box",
+        "release_box": "._release_box",
         "rename_box": "._rename_box",
         "run_doctor": "._doctor",
         "sync_box": "._sync_box",
