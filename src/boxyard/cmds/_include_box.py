@@ -10,8 +10,19 @@ async def include_box(
     config_path: Path,
     box_index_name: str,
     soft_interruption_enabled: bool = True,
+    read_only: bool = False,
 ):
-    """ """
+    """
+    Bring a box's DATA onto this machine.
+
+    Args:
+        config_path: Path to the boxyard config file.
+        box_index_name: Index name of the box to include.
+        soft_interruption_enabled: Enable soft interruption handling.
+        read_only: Suppress the nudge to claim an unowned box. Use when you
+            only want to read the box here and do not intend to become its
+            writer.
+    """
     config = get_config(config_path)
     from boxyard._models import get_boxyard_meta
     
@@ -64,3 +75,24 @@ async def include_box(
         _sync_lock.release()
     
     print(f"Included box '{box_meta.name}'")
+    from boxyard._models import BoxMeta as _BoxMeta
+    
+    _included_meta = _BoxMeta.load(config, box_meta.storage_location, box_index_name)
+    
+    if _included_meta.write_owner is None:
+        # Unowned means unrestricted, so nothing is being withheld -- but a box
+        # nobody has claimed is a box two machines can still diverge on, which is
+        # the problem this feature exists to remove. One line, no ceremony.
+        if not read_only:
+            print(
+                f"'{box_index_name}' has no write owner. If this machine is where "
+                f"you will work on it, claim it: "
+                f"`boxyard claim -r '{box_index_name}'`."
+            )
+    elif _included_meta.write_owner != config.machine_name:
+        print(
+            f"Included read-only — '{_included_meta.write_owner}' is the write "
+            f"owner of '{box_index_name}', so this copy pulls but never pushes. "
+            f"To work on it here, take it over with "
+            f"`boxyard claim --steal -r '{box_index_name}'`."
+        )

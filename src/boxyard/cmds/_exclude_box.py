@@ -32,6 +32,33 @@ async def exclude_box(
         raise ValueError(
             f"Box '{box_index_name}' in local storage location '{box_meta.storage_location}' cannot be excluded."
         )
+    from boxyard._models import BoxMeta
+    
+    _box_meta_on_disk = BoxMeta.load(config, box_meta.storage_location, box_index_name)
+    
+    if _box_meta_on_disk.write_owner is not None and (
+        _box_meta_on_disk.write_owner == config.machine_name
+    ):
+        from boxyard.cmds import release_box
+    
+        try:
+            await release_box(
+                config_path=config_path, box_index_name=box_index_name, verbose=False
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Cannot exclude '{box_index_name}': this machine is its write "
+                f"owner, and giving that up requires pushing the boxmeta, which "
+                f"failed ({e}).\n"
+                f"Excluding anyway would leave the box owned by a machine that no "
+                f"longer has it, which no machine could then push. Run `boxyard "
+                f"release -r '{box_index_name}'` once the remote is reachable, then "
+                f"exclude."
+            ) from e
+        print(
+            f"Released write ownership of '{box_index_name}' — excluding a box this "
+            f"machine owned would otherwise leave it unpushable everywhere."
+        )
     import shutil
     from boxyard._models import BoxPart
     from boxyard.cmds import sync_box

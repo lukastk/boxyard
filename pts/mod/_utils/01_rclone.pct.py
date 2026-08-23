@@ -430,6 +430,79 @@ assert "file1_copied.txt" in ls
 #|hide
 show_doc(this_module.rclone_sync)
 
+# %% [markdown]
+# ## `rclone_check` — "would a sync actually move anything?"
+#
+# Used by the write-ownership probe. `rclone check --combined -` emits one line
+# per path with a documented single-character prefix (`=` identical, `+` only
+# on the source, `-` only on the destination, `*` differing, `!` error), which
+# is a stable machine-readable answer — unlike the text of `sync --dry-run`.
+#
+# That distinction is load-bearing rather than cosmetic. Measured: with
+# identical content but a different mtime, `sync --dry-run` prints
+# `NOTICE: f.txt: Skipped update modification time as --dry-run is set`, so any
+# "did the dry run mention this file?" test calls an unchanged box changed —
+# which is precisely the false positive the probe exists to eliminate.
+# `check --combined` reports `= f.txt` for the same pair.
+#
+# One honest limitation: `check` compares by hash where both sides offer one
+# and falls back to size otherwise, so on a backend with no hash support two
+# same-size files with different content compare equal. That failure is in the
+# safe direction here — see the probe's caller.
+
+# %%
+#|export
+async def rclone_check(
+    rclone_config_path: str,
+    source: str,
+    source_path: str,
+    dest: str,
+    dest_path: str,
+    include: list[str] = [],
+    exclude: list[str] = [],
+    filter: list[str] = [],
+    include_file: str | None = None,
+    exclude_file: str | None = None,
+    filters_file: str | None = None,
+) -> tuple[bool, list[str]]:
+    """
+    Compare `source` against `dest` under the given filters.
+
+    Returns `(answered, differing_paths)`. `answered` is False when the check
+    could not be performed at all (an unreachable remote, a bad config) — the
+    caller must not read that as "no differences", because rclone exits
+    non-zero both for "found differences" and for "could not look".
+    """
+    cmd = _rclone_cmd_helper(
+        "check",
+        rclone_config_path,
+        source,
+        source_path,
+        dest,
+        dest_path,
+        include,
+        exclude,
+        filter,
+        include_file,
+        exclude_file,
+        filters_file,
+        False,  # dry_run is meaningless for a read-only comparison
+        False,  # progress
+    )
+    cmd += ["--combined", "-"]
+    ret_code, stdout, stderr = await run_cmd_async(cmd)
+
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    differing = [line[2:] for line in lines if not line.startswith("= ")]
+
+    # Exit 0 means the comparison ran and found everything identical -- including
+    # the both-sides-empty case, which produces no lines at all. A non-zero exit
+    # with no lines means the comparison did not happen (rclone reports "found
+    # differences" and "could not look" with the same code), so we cannot answer.
+    if ret_code != 0 and not lines:
+        return False, []
+    return True, differing
+
 # %%
 #|export
 async def rclone_sync(

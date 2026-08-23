@@ -228,8 +228,16 @@ class TestSyncCondition:
         assert SyncCondition.ERROR.value == "error"
 
     def test_condition_count(self):
-        """There are exactly 9 sync conditions."""
-        assert len(SyncCondition) == 9
+        """
+        There are exactly 10 sync conditions.
+
+        A count assertion exists so that ADDING one is a deliberate act: every
+        renderer that switches on the condition (`multi-sync`'s status colours,
+        `box-status`, `doctor`) has to be taught about a new member, and a
+        silently-added condition would fall through to whatever the default
+        branch happens to be. v0.5.2 added `WRITE_DENIED`, taking it from 9.
+        """
+        assert len(SyncCondition) == 10
 
     def test_conditions_are_unique(self):
         """All condition values are unique."""

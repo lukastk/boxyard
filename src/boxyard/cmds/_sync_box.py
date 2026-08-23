@@ -4,7 +4,8 @@ from pathlib import Path
 import asyncio
 
 from .._utils.sync_helper import sync_helper, SyncSetting, SyncDirection
-from .._models import SyncStatus, BoxPart, BoxMeta, SyncCondition
+from .._models import SyncStatus, BoxPart, BoxMeta, SyncCondition, get_sync_status
+from .._ownership import may_push, push_would_transfer, write_denied_message
 from ..config import get_config, StorageType
 from .._utils import (
     check_interrupted,
@@ -162,11 +163,19 @@ async def sync_box(
         if check_interrupted():
             raise SoftInterruption()
     
+        # META is synced whenever DATA is, even when the caller did not ask for it:
+        # the ownership decision below reads `write_owner` out of the boxmeta, and
+        # `boxyard sync -c data` would otherwise decide it from a local copy that
+        # predates another machine's claim. That is the one path by which a
+        # non-owner could push without ever learning it had been claimed.
+        #
+        # Its result is only RECORDED when META was actually requested, so the
+        # returned dict still answers exactly what the caller asked about.
         sync_part = BoxPart.META
-        if sync_part in sync_choices:
+        if sync_part in sync_choices or BoxPart.DATA in sync_choices:
             if verbose:
                 print(f"Syncing {sync_part.value}.")
-            sync_results[BoxPart.META] = await sync_helper(
+            _meta_sync_result = await sync_helper(
                 rclone_config_path=config.rclone_config_path,
                 sync_direction=sync_direction,
                 sync_setting=sync_setting,
@@ -182,6 +191,98 @@ async def sync_box(
                 verbose=verbose,
                 show_rclone_progress=show_rclone_progress,
             )
+            if sync_part in sync_choices:
+                sync_results[BoxPart.META] = _meta_sync_result
+    
+        # ---- Write ownership -------------------------------------------------
+        #
+        # Decided HERE: after the META sync, so it reads whatever the rest of the
+        # fleet last said about this box, and before CONF/DATA, which are the parts
+        # ownership governs. Not in `sync_helper` -- that takes paths and knows
+        # nothing about boxes, and pushing box semantics into it would be the wrong
+        # layer.
+        #
+        # `box_meta` above came from `get_boxyard_meta`, a cache read BEFORE the
+        # META sync, and is stale the moment that sync pulls: re-read from disk.
+        _box_meta_on_disk = BoxMeta.load(config, storage_location, box_index_name)
+        _write_owner = _box_meta_on_disk.write_owner
+        _may_push = may_push(config, _box_meta_on_disk)
+    
+        def _deny(status: SyncStatus) -> tuple[SyncStatus, bool]:
+            return (
+                status._replace(
+                    sync_condition=SyncCondition.WRITE_DENIED,
+                    error_message=write_denied_message(config, _box_meta_on_disk),
+                ),
+                False,
+            )
+    
+        async def _sync_part(
+            *,
+            probe_include_path=None,
+            probe_exclude_path=None,
+            probe_filters_path=None,
+            **helper_kwargs,
+        ) -> tuple[SyncStatus, bool]:
+            """
+            `sync_helper`, except that a non-owner never pushes.
+    
+            A non-owner is a read-only replica doing its job, so it pulls quietly
+            and says nothing; it only speaks up when it holds changes that will
+            never leave this machine. Nothing here raises -- see
+            `SyncCondition.WRITE_DENIED`.
+            """
+            if _may_push:
+                return await sync_helper(**helper_kwargs)
+    
+            # Only a non-owner pays for this extra status read; an unowned box or
+            # one we own takes the path above untouched.
+            _status = await get_sync_status(
+                rclone_config_path=config.rclone_config_path,
+                local_path=helper_kwargs["local_path"],
+                local_sync_record_path=helper_kwargs["local_sync_record_path"],
+                remote=helper_kwargs["remote"],
+                remote_path=helper_kwargs["remote_path"],
+                remote_sync_record_path=helper_kwargs["remote_sync_record_path"],
+                exclude_path=probe_exclude_path,
+            )
+            _condition = _status.sync_condition
+    
+            if _condition == SyncCondition.SYNCED:
+                return _status, False
+    
+            if _condition == SyncCondition.NEEDS_PULL:
+                # The ordinary state of a read-only replica. Pull, silently.
+                return await sync_helper(
+                    **{**helper_kwargs, "sync_direction": SyncDirection.PULL}
+                )
+    
+            if _condition == SyncCondition.NEEDS_PUSH:
+                # `needs_push` is not evidence of a real change: it comes from a
+                # tree walk, so a single `.DS_Store` sets it even though the file
+                # can never be transferred. Ask what a push would ACTUALLY move.
+                _would_transfer = await push_would_transfer(
+                    config,
+                    local_path=Path(helper_kwargs["local_path"]),
+                    remote=helper_kwargs["remote"],
+                    remote_path=Path(helper_kwargs["remote_path"]),
+                    include_path=probe_include_path,
+                    exclude_path=probe_exclude_path,
+                    filters_path=probe_filters_path,
+                )
+                if not _would_transfer:
+                    # Nothing to send. Report it as what it is rather than as a
+                    # refusal, or every machine would carry a permanent complaint
+                    # about changes that do not exist.
+                    return _status._replace(sync_condition=SyncCondition.SYNCED), False
+                return _deny(_status)
+    
+            if _condition == SyncCondition.CONFLICT:
+                return _deny(_status)
+    
+            # ERROR, EXCLUDED, TOMBSTONED, and the interrupted-sync conditions are
+            # not ownership's business: they are handled exactly as before.
+            return await sync_helper(**helper_kwargs)
     
         # Sync the boxconf
         if check_interrupted():
@@ -191,7 +292,14 @@ async def sync_box(
         if sync_part in sync_choices:
             if verbose:
                 print("Syncing", sync_part.value)
-            sync_results[sync_part] = await sync_helper(
+            # CONF follows DATA: `conf/.rclone_include|_exclude|_filters` decide
+            # what DATA syncs, so letting a non-owner push CONF would let it change
+            # the owner's filters. Non-owners pull it only.
+            #
+            # META, by contrast, stays writable by every machine -- without that,
+            # ownership could never be transferred and `groups`/`parents` could not
+            # be edited from a non-owner.
+            sync_results[sync_part] = await _sync_part(
                 rclone_config_path=config.rclone_config_path,
                 sync_direction=sync_direction,
                 sync_setting=sync_setting,
@@ -236,7 +344,10 @@ async def sync_box(
         if sync_part in sync_choices:
             if verbose:
                 print("Syncing", sync_part.value)
-            sync_results[sync_part] = await sync_helper(
+            sync_results[sync_part] = await _sync_part(
+                probe_include_path=_rclone_include_path,
+                probe_exclude_path=_rclone_exclude_path,
+                probe_filters_path=_rclone_filters_path,
                 rclone_config_path=config.rclone_config_path,
                 sync_direction=sync_direction,
                 sync_setting=sync_setting,

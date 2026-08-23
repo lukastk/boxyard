@@ -57,6 +57,15 @@
 #     boxyard does not know, at the top level or inside one of its tables. Like
 #     `unknown-boxmeta-keys`, the key is tolerated rather than fatal; this check
 #     is what keeps that tolerance from turning a loud typo into a silent one.
+# 19. **write-denied** — a box owned by another machine that has local changes
+#     here which will never be pushed. This is the ONLY report of that state:
+#     sync stays deliberately silent about it (see `SyncCondition.WRITE_DENIED`),
+#     so if doctor did not say it, nothing would.
+# 20. **stale-owner** — a box whose `write_owner` cannot be a working owner:
+#     either it names a machine that owns nothing else in this yard, or it names
+#     THIS machine for a box this machine does not have. Both mean no machine
+#     can push the box. `claim` and `exclude` each close one known route into
+#     that state; this check is what catches the routes nobody thought of.
 #
 # Doctor never mutates or auto-fixes anything.
 
@@ -101,6 +110,8 @@ DOCTOR_CHECK_NAMES = [
     "unknown-boxmeta-keys",
     "machine-name-unset",
     "unknown-config-keys",
+    "write-denied",
+    "stale-owner",
 ]
 
 # %% [markdown]
@@ -1213,6 +1224,176 @@ if config.unknown_keys:
         config_path=config.config_path,
         unknown_keys=sorted(config.unknown_keys),
     )
+
+# %% [markdown]
+# ## Check: `stale-owner`
+#
+# A box whose `write_owner` cannot be a working owner — meaning NO machine can
+# push it, and the only way back is `--steal` from somewhere. Purely local.
+#
+# Two sub-cases, and they are not equally certain:
+#
+# - **Owned by this machine, but not included here.** Exact, with no false
+#   positives: this machine is the designated writer of DATA it does not hold.
+#   `claim` now refuses a box that is not included, and `exclude` releases a box
+#   it owns, so both known routes into this are closed — but they were both
+#   found by inspection rather than by anything reporting them, which is the
+#   whole reason this check exists.
+# - **Owned by a name that owns exactly one box, while some other machine owns
+#   several.** A heuristic, and labelled as one. A real machine in a migrated
+#   yard owns tens to hundreds of boxes, so a name holding exactly one — in a
+#   yard where another name holds more — is far more likely a machine that was
+#   renamed or retired than a machine with one box. The "some other machine owns
+#   several" condition is what keeps this quiet during the migration itself,
+#   when the first machine to claim is legitimately the only owner in the yard.
+#
+# Note what is deliberately NOT reported: a box owned by another machine that is
+# not included here. That is the ordinary state of most boxes on most machines.
+
+# %%
+#|export
+_owner_counts: dict[str, int] = {}
+for bm in box_metas:
+    if bm.write_owner is not None:
+        _owner_counts[bm.write_owner] = _owner_counts.get(bm.write_owner, 0) + 1
+
+# Is there a machine in this yard that owns more than one box? Until there is,
+# "owns exactly one box" says nothing.
+_yard_has_an_established_owner = any(count > 1 for count in _owner_counts.values())
+
+for bm in box_metas:
+    if bm.write_owner is None:
+        continue
+
+    if bm.write_owner == config.machine_name:
+        if not bm.check_included(config):
+            _add_finding(
+                "stale-owner",
+                f"Box '{bm.index_name}' names this machine "
+                f"('{config.machine_name}') as its write owner, but it is not "
+                f"included here — so the one machine allowed to push it does not "
+                f"have it",
+                f"No machine can push this box until that is fixed. Either give it "
+                f"up with `boxyard release -r '{bm.index_name}'`, or take the box "
+                f"back with `boxyard include -r '{bm.index_name}'`.",
+                index_name=bm.index_name,
+                write_owner=bm.write_owner,
+                storage_location=bm.storage_location,
+            )
+        continue
+
+    if _yard_has_an_established_owner and _owner_counts[bm.write_owner] == 1:
+        _add_finding(
+            "stale-owner",
+            f"Box '{bm.index_name}' is owned by '{bm.write_owner}', which owns no "
+            f"other box in this yard",
+            f"Probably a machine that was renamed or retired, in which case no "
+            f"machine can push this box. If '{bm.write_owner}' is real and simply "
+            f"owns only this box, nothing is wrong. Otherwise take it over from "
+            f"the machine that should have it: `boxyard claim --steal -r "
+            f"'{bm.index_name}'`.",
+            index_name=bm.index_name,
+            write_owner=bm.write_owner,
+            storage_location=bm.storage_location,
+        )
+
+# %% [markdown]
+# ## Check: `write-denied`
+#
+# A box owned by another machine that has local changes here which will never be
+# pushed. **This is the only report of that state.** The sync path deliberately
+# says nothing — see `SyncCondition.WRITE_DENIED`, and the ~72 supervisor passes
+# per machine per day that would otherwise each produce an identical error — so
+# a state doctor does not surface is a state nobody ever sees.
+#
+# Cost is the deciding constraint, as it was for `diverged-box`. The expensive
+# question ("would a push actually transfer anything?") is asked only of boxes
+# that pass two free local filters first: owned by someone else AND included
+# here AND locally modified since their own sync record. On a machine where
+# every box is owned correctly, that is zero remote calls.
+#
+# The modification test is the sync engine's own exclude-aware scan, so doctor
+# and sync cannot disagree about whether a box has changed.
+
+# %%
+#|export
+if not check_remote or not _rclone_available:
+    checks["write-denied"]["skipped"] = True
+else:
+    from boxyard._models import BoxPart as _BoxPart, SyncRecord as _SyncRec
+    from boxyard._ownership import (
+        push_would_transfer,
+        write_denied_hint,
+        write_denied_message,
+    )
+    from boxyard._utils import check_last_time_modified, literal_exclude_names
+
+    for bm in box_metas:
+        if bm.write_owner is None or bm.write_owner == config.machine_name:
+            continue
+        _sl_config = config.storage_locations.get(bm.storage_location)
+        if _sl_config is None or _sl_config.storage_type != StorageType.RCLONE:
+            continue
+        if storage_locations is not None and bm.storage_location not in storage_locations:
+            continue
+        if not bm.check_included(config):
+            continue  # not here at all, so nothing of ours can be stranded
+
+        _data_path = bm.get_local_part_path(config, _BoxPart.DATA)
+        _conf_exclude = (
+            bm.get_local_part_path(config, _BoxPart.CONF) / const.RCLONE_EXCLUDE_FILENAME
+        )
+        _effective_exclude = (
+            _conf_exclude if _conf_exclude.exists() else config.default_rclone_exclude_path
+        )
+
+        _rec_path = bm.get_local_sync_record_path(config, _BoxPart.DATA)
+        if not _rec_path.exists():
+            continue  # never synced here; `interrupted-sync`/`stale-cache` territory
+        try:
+            _rec = _SyncRec.model_validate_json(_rec_path.read_text())
+        except Exception:
+            continue  # a malformed record is `interrupted-sync`'s business
+
+        _modified = check_last_time_modified(
+            _data_path, exclude_names=literal_exclude_names(_effective_exclude)
+        )
+        if _modified is None or _modified <= _rec.timestamp:
+            continue  # unchanged since our own record: nothing is stranded
+
+        # Only now is a remote call worth making. `needs_push` is not evidence
+        # of a real change -- a single `.DS_Store` sets it -- so ask what a push
+        # would ACTUALLY move, under the box's real filters.
+        _remote_data_path = (
+            _sl_config.store_path
+            / const.REMOTE_BOXES_REL_PATH
+            / bm.index_name
+            / const.BOX_DATA_REL_PATH
+        )
+        _conf_path = bm.get_local_part_path(config, _BoxPart.CONF)
+        _include_file = _conf_path / const.RCLONE_INCLUDE_FILENAME
+        _filters_file = _conf_path / const.RCLONE_FILTERS_FILENAME
+
+        if not await push_would_transfer(
+            config,
+            local_path=_data_path,
+            remote=bm.storage_location,
+            remote_path=_remote_data_path,
+            include_path=_include_file if _include_file.exists() else None,
+            exclude_path=_effective_exclude,
+            filters_path=_filters_file if _filters_file.exists() else None,
+        ):
+            continue
+
+        _add_finding(
+            "write-denied",
+            write_denied_message(config, bm)
+            + " This copy has local changes that will never leave this machine.",
+            write_denied_hint(config, bm),
+            index_name=bm.index_name,
+            write_owner=bm.write_owner,
+            storage_location=bm.storage_location,
+        )
 
 # %% [markdown]
 # Assemble the report.

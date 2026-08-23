@@ -27,7 +27,7 @@ from boxyard._cli.app import app, app_state
 
 # %%
 #|export
-from boxyard._models import get_boxyard_meta
+from boxyard._models import get_boxyard_meta, SyncCondition
 from boxyard.cmds import sync_box
 from rich.live import Live
 from rich.text import Text
@@ -217,9 +217,19 @@ async def _task(num, box_meta):
             tombstoned_box_ids=_tombstoned_ids_by_sl.get(box_meta.storage_location),
             verbose=False,
         )
+        # A box this machine may not push is NOT an error, and must never be
+        # rendered as one. `multi-sync` runs every 1200s under supervisor, so a
+        # red line here would repeat ~72 times a day per machine for a state
+        # that is working as designed and cannot be resolved by retrying --
+        # exactly the noise the v0.4.x work existed to remove. It gets its own
+        # status instead, and `doctor` explains it once with both ways out.
+        _write_denied = any(
+            status.sync_condition == SyncCondition.WRITE_DENIED
+            for status, _ in sync_results.values()
+        )
         sync_stats[box_meta.index_name] = (
             num,
-            "Success",
+            "Read-only" if _write_denied else "Success",
             None,
             datetime.now(),
             sync_results,
@@ -260,12 +270,14 @@ def get_status_lines(box_index_name):
     status_color = {
         "Syncing": "yellow",
         "Success": "green",
+        "Read-only": "yellow",
         "Interrupted": "magenta",
         "Error": "red",
     }.get(sync_stat, "")
 
     name_color = {
         "Success": "green",
+        "Read-only": "yellow",
         "Interrupted": "magenta",
         "Error": "red",
     }.get(sync_stat, "")
@@ -294,13 +306,36 @@ def get_status_lines(box_index_name):
     indent = "    "
     if e:
         lines.append(f"{indent}[red]{e}[/red]")
-    elif sync_stat == "Success":
+    elif sync_stat in ("Success", "Read-only"):
         line = []
         for box_part, synced in zip(sync_choices, syncs_happened):
-            line.append(
-                f"[bold]{box_part.value}:[/bold] {'[green]Synced[/green]' if synced else '[blue]Skipped[/blue]'}"
+            _denied = (
+                sync_results is not None
+                and sync_results[box_part][0].sync_condition
+                == SyncCondition.WRITE_DENIED
             )
+            if _denied:
+                _cell = "[yellow]Write denied[/yellow]"
+            elif synced:
+                _cell = "[green]Synced[/green]"
+            else:
+                _cell = "[blue]Skipped[/blue]"
+            line.append(f"[bold]{box_part.value}:[/bold] {_cell}")
         lines.append(indent + f",{indent}".join(line))
+        if sync_stat == "Read-only":
+            _owner = next(
+                (
+                    status.error_message
+                    for status, _ in sync_results.values()
+                    if status.sync_condition == SyncCondition.WRITE_DENIED
+                ),
+                None,
+            )
+            if _owner:
+                lines.append(f"{indent}[yellow]{_owner}[/yellow]")
+                lines.append(
+                    f"{indent}[dim]`boxyard doctor` names both ways out.[/dim]"
+                )
     else:
         lines.append(f"{indent}[yellow]Results pending...[/yellow]")
 

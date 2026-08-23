@@ -931,6 +931,19 @@ class SyncCondition(Enum):
     EXCLUDED = "excluded"
     ERROR = "error"
     TOMBSTONED = "tombstoned"  # Box was deleted on remote
+    # This machine is not the box's `write_owner`, and the part has local
+    # changes that would have to be pushed. Substituted by `sync_box` into the
+    # status it returns for the refused part; `get_sync_status` never produces
+    # it, because that function is a pure function of paths and records and
+    # knows nothing about boxes or machines.
+    #
+    # Deliberately a CONDITION and not an exception. `multi-sync` runs every
+    # 1200s under supervisor and catches per-box exceptions into a red `Error`
+    # line, so raising here would manufacture ~72 identical unresolvable errors
+    # per machine per day -- the exact pathology v0.4.0-v0.4.4 spent a week
+    # removing. The box simply does not push; the state is reported once by
+    # `doctor` and shown by `multi-sync` as its own non-error status.
+    WRITE_DENIED = "write_denied"
 
 
 class SyncStatus(NamedTuple):
