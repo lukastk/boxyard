@@ -177,13 +177,70 @@ show_doc(this_module.check_last_time_modified)
 
 # %%
 #|export
-def check_last_time_modified(path: str | Path) -> float | None:
+def literal_exclude_names(exclude_path: "str | Path | None") -> set[str]:
+    """
+    Read an rclone exclude file and return the patterns that are LITERAL names.
+
+    Only literal names are returned -- `node_modules/`, `.DS_Store` -- with any
+    trailing slash stripped. Glob patterns (`*.tmp`, `**/build`) are deliberately
+    NOT interpreted: reimplementing rclone's filter language here would be a
+    second, subtly-different implementation of the thing that actually decides
+    what gets transferred.
+
+    The consequence is a one-sided inaccuracy, which is the safe side to err on:
+    a glob-excluded file can still make a box look modified (a false "needs
+    push", which sync then resolves as a no-op), but nothing that WOULD be
+    synced is ever skipped.
+    """
+    if exclude_path is None:
+        return set()
+    try:
+        text = Path(exclude_path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return set()
+    names = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if any(ch in line for ch in "*?[]{}") or "/" in line.rstrip("/"):
+            continue  # a glob or a path pattern -- not a literal name
+        names.add(line.rstrip("/"))
+    return names
+
+
+def check_last_time_modified(
+    path: "str | Path",
+    exclude_names: "set[str] | None" = None,
+) -> float | None:
+    """
+    Return the most recent modification time beneath `path`, or None if there is
+    nothing to measure.
+
+    `exclude_names` are literal file/directory names to skip -- normally derived
+    from the box's effective rclone exclude file via `literal_exclude_names`.
+
+    Skipping them matters because this answer drives the sync decision. Without
+    it, a file that can NEVER be transferred still marks the box as locally
+    modified: macOS Finder writing a `.DS_Store` was enough to flip a box to
+    `NEEDS_PUSH`, and -- when the remote had also moved on -- to `CONFLICT`.
+    That is exactly how a box ends up wedged with no real changes on one side.
+
+    The patterns must be the box's OWN effective excludes, not a hardcoded list:
+    a per-box `conf/.rclone_exclude` REPLACES the global default, so assuming
+    the defaults for a box that overrides them could skip a directory the box
+    really does sync -- which would hide genuine changes.
+    """
     import os
     from datetime import datetime, timezone
+
+    exclude_names = exclude_names or set()
 
     path = Path(path).expanduser().resolve()
 
     if path.is_file():
+        if path.name in exclude_names:
+            return None
         max_mtime = path.stat().st_mtime
     else:
         max_mtime = None
@@ -216,6 +273,8 @@ def check_last_time_modified(path: str | Path) -> float | None:
                 ) from e
 
             for entry in entries:
+                if entry.name in exclude_names:
+                    continue
                 if entry.is_file(follow_symlinks=False):
                     try:
                         stat_result = entry.stat()
