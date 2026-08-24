@@ -113,14 +113,37 @@ result;
 - **`src/boxyard/cmds/`** - Command implementations (init, new_box, sync_box, etc.)
 - **`src/boxyard/_remote_index.py`** - Remote-index caching
 - **`src/boxyard/_tombstones.py`** - Tombstone tracking for delete propagation
+- **`src/boxyard/_ownership.py`** - Single-writer ownership gate: `may_push`,
+  `owner_gate`, `require_machine_name`, `OwnershipRefused`, and the shared
+  write-denied message/hint used by sync, multi-sync and doctor
+- **`src/boxyard/_shell_helper.py`** - Backing for the shell integration
 - **`src/boxyard/_utils/`** - Utilities (rclone wrapper, sync helpers, async locking, logical-expression group filters)
 
 ### Key Concepts
 
-- **box_id**: `{timestamp}_{5-char-subid}` (e.g., `20251122_143022_a7kx9`)
+- **box_id**: `{timestamp}_{subid}` — BOTH halves are config-driven, so do not
+  hardcode a shape. `box_timestamp_format` is either `date_only` (`%Y%m%d`) or
+  `date_and_time` (`%Y%m%d_%H%M%S`); `box_subid_length` defaults to 5
+  (`DEFAULT_BOX_SUBID_LENGTH`). Lukas's rig sets `date_only` + length 6, so real
+  boxes look like `20260222_5xt51m` — matching the package defaults instead would
+  never match one of his boxes.
 - **index_name**: `{box_id}__{name}` - unique identifier for each box
 - **Storage locations**: local filesystem or rclone remotes (S3, SFTP, etc.)
 - **Sync records**: Track sync state between local/remote in `~/.boxyard/sync_records/`
+- **Write ownership (single-writer, v0.5.2)**: `BoxMeta.write_owner` names the one
+  machine allowed to push a box's DATA/CONF. `write_owner is None` means UNOWNED and is
+  fully unrestricted — exactly the pre-feature behaviour — so ownership is opt-in per box
+  and never silently blocks an unclaimed box. The owner is compared against
+  `config.machine_name`, which is **configured, never derived from the hostname**: one
+  machine in this fleet reports both `lukas-pocket4` and `pocket4`, and macOS hostnames
+  are user-editable. `BOXYARD_MACHINE_NAME` overrides it. Commands: `claim` (add
+  `--steal` to take it from the current owner, `--all-included` to claim every unowned box
+  here), `release`, `owner` (who may push), and `discard-local` (replace this machine's
+  copy with the remote's — what it overwrites is kept under the sync backups directory and
+  the path is printed). Enforcement is `may_push()` on the sync paths plus `owner_gate()`
+  on the three that bypass `sync_helper` and would otherwise write to the remote
+  unchecked: `force-push`, `rename --scope remote|both`, and `delete` (which purges the
+  remote and writes a tombstone). A refusal raises `OwnershipRefused`.
 - **Exec-bit manifest**: `.boxyard-perms.json` at a box's DATA root records which
   files are executable, so `+x` survives sync over backends that drop Unix mode
   (e.g. SFTP). Generated before push / applied after pull by `_utils/perms.py`.
