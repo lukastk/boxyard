@@ -97,27 +97,16 @@ func newListCommand() *cobra.Command {
 		rootsOnly        bool
 		leavesOnly       bool
 		hideGroups       []string
+		owner            string
+		showOwner        bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all boxes in the yard",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			for flag, set := range map[string]bool{
-				"--children-of":    childrenOf != "",
-				"--descendants-of": descendantsOf != "",
-				"--parent-of":      parentOf != "",
-				"--ancestors-of":   ancestorsOf != "",
-				"--roots":          rootsOnly,
-				"--leaves":         leavesOnly,
-				"--hide-group":     len(hideGroups) > 0,
-			} {
-				if set {
-					return notPorted(flag)
-				}
-			}
-			if view != "flat" {
-				return notPorted("--view " + view)
+			if view != "flat" && view != "tree" && view != "groups" {
+				return &usageError{err: fmt.Errorf("invalid view: %q", view)}
 			}
 			if outputFormat != "text" && outputFormat != "json" {
 				return fmt.Errorf("invalid output format %q (want text or json)", outputFormat)
@@ -158,6 +147,86 @@ func newListCommand() *cobra.Command {
 				return err
 			}
 
+			// The hierarchy filters resolve their reference against the WHOLE
+			// yard, not the already-filtered set: `--children-of X` means the
+			// children of X, and X itself may well be excluded by a group
+			// filter without that changing who its children are.
+			for _, hf := range []struct {
+				name, ref string
+				pick      func(*models.BoxyardMeta, *models.BoxMeta) map[string]bool
+			}{
+				{"--children-of", childrenOf, func(m *models.BoxyardMeta, ref *models.BoxMeta) map[string]bool {
+					return idsOf(m.ChildrenOf(ref.BoxID()))
+				}},
+				{"--descendants-of", descendantsOf, func(m *models.BoxyardMeta, ref *models.BoxMeta) map[string]bool {
+					return idsOf(m.DescendantsOf(ref.BoxID()))
+				}},
+				{"--parent-of", parentOf, func(_ *models.BoxyardMeta, ref *models.BoxMeta) map[string]bool {
+					out := map[string]bool{}
+					for _, id := range ref.Parents {
+						out[id] = true
+					}
+					return out
+				}},
+				{"--ancestors-of", ancestorsOf, func(m *models.BoxyardMeta, ref *models.BoxMeta) map[string]bool {
+					return idsOf(m.AncestorsOf(ref.BoxID()))
+				}},
+			} {
+				if hf.ref == "" {
+					continue
+				}
+				ref := resolveListRef(meta, hf.ref)
+				if ref == nil {
+					fmt.Fprintf(os.Stderr, "Box '%s' not found.\n", hf.ref)
+					os.Exit(1)
+				}
+				keep := hf.pick(meta, ref)
+				metas = filterByIDs(metas, keep)
+			}
+
+			// 'none' is the only way to ask for "unowned" on a command line,
+			// since an absent --owner already means "do not filter".
+			if cmd.Flags().Changed("owner") {
+				var kept []*models.BoxMeta
+				for _, bm := range metas {
+					if strings.EqualFold(owner, "none") {
+						if bm.WriteOwner == "" {
+							kept = append(kept, bm)
+						}
+					} else if bm.WriteOwner == owner {
+						kept = append(kept, bm)
+					}
+				}
+				metas = kept
+			}
+			if rootsOnly {
+				var kept []*models.BoxMeta
+				for _, bm := range metas {
+					if len(bm.Parents) == 0 {
+						kept = append(kept, bm)
+					}
+				}
+				metas = kept
+			}
+			if leavesOnly {
+				var kept []*models.BoxMeta
+				for _, bm := range metas {
+					if len(meta.ChildrenOf(bm.BoxID())) == 0 {
+						kept = append(kept, bm)
+					}
+				}
+				metas = kept
+			}
+
+			if view == "groups" {
+				printGroupsView(cfg, metas, hideGroups, showStatus)
+				return nil
+			}
+			if view == "tree" {
+				printListTreeView(cfg, metas, showStatus)
+				return nil
+			}
+
 			if outputFormat == "json" {
 				// A list of full BoxMeta objects, exactly as
 				// json.dumps([rm.model_dump() ...], indent=2) produces. myrig's
@@ -180,6 +249,13 @@ func newListCommand() *cobra.Command {
 			for _, bm := range metas {
 				b.WriteString(statusMarker(cfg, bm, showStatus))
 				b.WriteString(bm.IndexName())
+				if showOwner {
+					ownerCol := bm.WriteOwner
+					if ownerCol == "" {
+						ownerCol = "-"
+					}
+					b.WriteString("  [" + ownerCol + "]")
+				}
 				b.WriteString("\n")
 			}
 			fmt.Print(b.String())
@@ -203,6 +279,9 @@ func newListCommand() *cobra.Command {
 	f.BoolVar(&rootsOnly, "roots", false, "Only show root boxes (no parents).")
 	f.BoolVar(&leavesOnly, "leaves", false, "Only show leaf boxes (no children).")
 	f.StringArrayVar(&hideGroups, "hide-group", nil, "Hide a group branch in --view groups.")
+	f.StringVar(&owner, "owner", "",
+		"Only show boxes whose write owner is this machine name. Pass 'none' for boxes with no owner.")
+	f.BoolVar(&showOwner, "show-owner", false, "Show each box's write owner.")
 	return cmd
 }
 
