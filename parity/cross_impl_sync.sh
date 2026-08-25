@@ -116,6 +116,18 @@ BOXYARD_CONFIG_PATH="$B" "$PYBIN" sync -r "$idx" --sync-choices meta >/dev/null 
 BOXYARD_CONFIG_PATH="$B" "$PYBIN" owner -r "$idx" -o json | python3 -c "
 import json,sys; print('   B sees write_owner =', json.load(sys.stdin)['write_owner'])"
 
+echo "== multi-sync: the finished line is byte-identical across implementations"
+GO_LINE=$(COLUMNS=80 "$GOBIN" --config "$A" multi-sync --no-refresh-user-symlinks --print-skipped 2>&1 \
+  | grep -oE '\(1/1\) [^ ]+ \.+ [A-Za-z-]+' | head -1)
+# The LAST non-"Syncing" match: rich redraws the line in place while the sync
+# runs, so the earlier matches are transient frames, not the result.
+PY_LINE=$(COLUMNS=80 BOXYARD_CONFIG_PATH="$A" "$PYBIN" multi-sync --no-refresh-user-symlinks --no-no-print-skipped 2>&1 \
+  | sed 's/\x1b\[[0-9;]*m//g' | tr '\r' '\n' | grep -oE '\(1/1\) [^ ]+ \.+ [A-Za-z-]+' \
+  | grep -v 'Syncing' | tail -1)
+echo "   go: $GO_LINE"
+echo "   py: $PY_LINE"
+[ -n "$GO_LINE" ] && [ "$GO_LINE" = "$PY_LINE" ] && echo "multi-sync finished line IDENTICAL"
+
 echo "== Go box-status agrees with Python box-status"
 "$GOBIN" --config "$A" box-status -r "$idx" -o json > "$ROOT/go-status.json"
 BOXYARD_CONFIG_PATH="$A" "$PYBIN" box-status -r "$idx" -o json > "$ROOT/py-status.json"

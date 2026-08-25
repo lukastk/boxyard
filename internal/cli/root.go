@@ -115,6 +115,7 @@ func NewRootCommand() *cobra.Command {
 		newForcePushCommand(),
 		newTreeCommand(),
 		newYardStatusCommand(),
+		newMultiSyncCommand(),
 	)
 	return root
 }

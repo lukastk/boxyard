@@ -64,6 +64,10 @@ func TestCrossImplementationSync(t *testing.T) {
 		// if the fleet agrees about it.
 		"B sees write_owner = A",
 		"B sees write_owner = None",
+		// multi-sync's per-box line is what the supervisor log is made of, and
+		// its dot padding is computed from the terminal width — an off-by-one
+		// there would change every line of every pass.
+		"multi-sync finished line IDENTICAL",
 		"box-status IDENTICAL across implementations",
 		"OK",
 	} {
