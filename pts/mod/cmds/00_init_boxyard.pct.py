@@ -140,7 +140,13 @@ for path in paths:
 from boxyard.config import StorageType
 
 for storage_location_name, storage_location in config.storage_locations.items():
-    if storage_location.storage_type != StorageType.LOCAL.value:
+    # Compared against the ENUM MEMBER, not `.value`. `StorageType` is a plain
+    # Enum, not a `str, Enum`, so `StorageType.LOCAL == "local"` is False and
+    # the old `!= StorageType.LOCAL.value` was ALWAYS true -- this loop
+    # `continue`d every time and the symlink below was never created for any
+    # storage location. Silent: `init` reported success, and a `local` storage
+    # location simply had no entry in `local_store`.
+    if storage_location.storage_type != StorageType.LOCAL:
         continue
     storage_location.store_path.mkdir(parents=True, exist_ok=True)
     if (config.local_store_path / storage_location_name).exists():

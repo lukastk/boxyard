@@ -1,3 +1,23 @@
+## [0.5.4] - 2026-08-25
+
+### 🐛 Bug Fixes
+
+- **`init` never linked a `local` storage location.** The guard read
+  `storage_type != StorageType.LOCAL.value`, but `StorageType` is a plain
+  `Enum`, not a `str, Enum` — so `StorageType.LOCAL == "local"` is **False**,
+  the comparison was always true, and the loop `continue`d for every storage
+  location. The `local_store` entry was never created and the location's
+  `store_path` never made.
+
+  Silent in the worst way: `init` printed "Done!" and reported success. A
+  `local` storage location was configured but unusable, and nothing said so.
+
+  Confirmed on the live yard before fixing — `~/.boxyard/local_store/` held
+  only the rclone location, and the configured `local` one had never existed.
+
+  Every other `storage_type` comparison in the codebase already used the enum
+  member correctly; this was the only site.
+
 ## [0.5.3] - 2026-08-23
 
 ### 🐛 Bug Fixes
