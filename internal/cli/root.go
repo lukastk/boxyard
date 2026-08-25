@@ -113,6 +113,8 @@ func NewRootCommand() *cobra.Command {
 		newSyncNameCommand(),
 		newCopyCommand(),
 		newForcePushCommand(),
+		newTreeCommand(),
+		newYardStatusCommand(),
 	)
 	return root
 }

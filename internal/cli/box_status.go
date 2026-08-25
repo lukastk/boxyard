@@ -195,3 +195,11 @@ func handleResolveError(err error) error {
 	}
 	return err
 }
+
+// marshalIndentedAt renders a payload with json.dumps(indent=2)'s layout,
+// nested `depth` levels in. encoding/json's MarshalIndent takes the prefix as a
+// string rather than a level, so the callers that assemble ordered objects by
+// hand need this.
+func marshalIndentedAt(p statusPayload, depth int) ([]byte, error) {
+	return json.MarshalIndent(p, strings.Repeat("  ", depth), "  ")
+}
