@@ -32,6 +32,10 @@ type SyncStore interface {
 	ForRemoteIndex() remoteindex.Store
 }
 
+// PermsWithSync is the exec-bit handling the sync engine needs, named here so
+// the commands that merely pass it through do not have to import syncengine.
+type PermsWithSync = syncengine.Perms
+
 // PartResult pairs a part's decided status with whether a transfer happened.
 type PartResult struct {
 	Status syncengine.SyncStatus
@@ -434,4 +438,14 @@ func existingOrEmpty(p string) string {
 		return p
 	}
 	return ""
+}
+
+// errOutOr returns w when it is a writer we can warn through, and stderr
+// otherwise. A warning that vanishes because the caller passed no writer is a
+// silent failure.
+func errOutOr(w io.Writer) io.Writer {
+	if w != nil {
+		return w
+	}
+	return os.Stderr
 }
