@@ -61,7 +61,7 @@ func newBoxStatusCommand() *cobra.Command {
 		Short: "Get the sync status of a box",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if outputFormat != "text" && outputFormat != "json" {
-				return fmt.Errorf("invalid output format: %q (want text or json)", outputFormat)
+				return &usageError{err: fmt.Errorf("invalid output format: %q (want text or json)", outputFormat)}
 			}
 			cfg, err := appState.Config()
 			if err != nil {

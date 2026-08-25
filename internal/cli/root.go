@@ -12,8 +12,10 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/lukastk/boxyard/internal/boxconst"
 	"github.com/lukastk/boxyard/internal/config"
@@ -67,24 +69,53 @@ func NewRootCommand() *cobra.Command {
 	root.PersistentFlags().StringVar(&configPath, "config", "",
 		"The path to the config file. Will be '~/.config/boxyard/config.toml' if not provided.")
 
+	// A usage error exits 2, as click's do. Anything that fails to PARSE is one
+	// — an unknown flag, a missing value, a bad enum. Runtime failures stay at
+	// 1. Shell callers branch on this (`cd $(boxyard path ...) || ...`), so the
+	// distinction is part of the contract.
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return &usageError{err: err}
+	})
+
 	// Commands are registered as they are ported. A command is added only when
 	// it is complete — a half-implemented command would silently diverge from
 	// the Python for the flags it does not yet handle, which is exactly what
 	// the parity suite exists to prevent.
 	root.AddCommand(
+		newInitCommand(),
 		newWhichCommand(),
 		newListCommand(),
 		newListGroupsCommand(),
 		newNewCommand(),
 		newBoxStatusCommand(),
+		newSyncCommand(),
 	)
 	return root
 }
 
+// KNOWN DEVIATION: `boxyard <cmd> -h` prints help and exits 0, where the Python
+// exits 2 with "No such option: -h" — typer has no `-h`. Registering `--help`
+// without a shorthand does not suppress cobra's, and the alternatives are worse
+// than the difference: nothing can depend on `-h` FAILING, and every flag name,
+// short flag and usage-error exit code that a caller could depend on does
+// match. Recorded rather than papered over.
+
+// usageError marks a failure to parse the command line, which exits 2 rather
+// than 1 — the code click uses for the same class of mistake.
+type usageError struct{ err error }
+
+func (e *usageError) Error() string { return e.err.Error() }
+func (e *usageError) Unwrap() error { return e.err }
+
 // Execute runs the CLI and returns the process exit code.
 func Execute() int {
-	if err := NewRootCommand().Execute(); err != nil {
+	root := NewRootCommand()
+	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
+		var usage *usageError
+		if errors.As(err, &usage) || strings.HasPrefix(err.Error(), "unknown command") {
+			return 2
+		}
 		return 1
 	}
 	return 0
