@@ -4,6 +4,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -62,7 +65,14 @@ func TestCrossImplementationSync(t *testing.T) {
 // pythonCLI finds the `boxyard` console script that goes with an interpreter
 // able to import boxyard. The system one usually cannot: boxyard is installed
 // as a uv TOOL, into its own venv.
+//
+// BOXYARD_PARITY_CLI overrides it, which is how these tests are pointed at a
+// development checkout instead of the deployed tool — the deployed one always
+// lags the fixes being ported.
 func pythonCLI() string {
+	if override := os.Getenv("BOXYARD_PARITY_CLI"); override != "" {
+		return override
+	}
 	py := pythonBin()
 	if py == "" {
 		return ""
@@ -72,4 +82,122 @@ func pythonCLI() string {
 		return ""
 	}
 	return cli
+}
+
+// TestNewBoxFlagsMatchPython runs `new --parent` (all three documented forms)
+// and `new --group` through BOTH implementations and compares what each yard
+// ends up holding.
+//
+// The interesting part is not that they agree on the happy path, but that they
+// agree on the REFUSALS: --group goes through modify_boxmeta, which is what
+// enforces the virtual-group and unique-name rules, and a port that skipped
+// them would look perfectly healthy until a box quietly joined a computed
+// group.
+func TestNewBoxFlagsMatchPython(t *testing.T) {
+	py := pythonCLI()
+	if py == "" {
+		t.Skip("no boxyard console script that can drive the Python CLI")
+	}
+	// `--parent <index name>` and `--parent <box id>` only started working in
+	// Python v0.5.8. Gated explicitly rather than left to fail: a parity test
+	// that fails because the INSTALLED Python is older says nothing about the
+	// port, and a skip for an unexamined reason is indistinguishable from a
+	// pass.
+	// The version gate applies to the DEPLOYED tool only. An explicitly
+	// overridden CLI is taken at its word — an editable checkout reports the
+	// version its distribution metadata was written with, not the one in
+	// pyproject.toml, so gating on it there would skip forever.
+	if os.Getenv("BOXYARD_PARITY_CLI") == "" {
+		if v := pythonVersion(py); v != "" && versionLess(v, "0.5.8") {
+			t.Skipf("the installed boxyard is %s; `--parent <index name>` needs v0.5.8", v)
+		}
+	}
+
+	root := t.TempDir()
+	goBin := filepath.Join(root, "boxyard-go")
+	if out, err := exec.Command("go", "build", "-o", goBin, "../cmd/boxyard").CombinedOutput(); err != nil {
+		t.Fatalf("building the Go binary: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command("sh", "new_box_flags.sh", filepath.Join(root, "yards"), goBin, py)
+	cmd.Env = append(os.Environ(), "DEFAULT_BOX_GROUPS=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("new-flag comparison failed: %v\n%s", err, out)
+	}
+
+	// Reduce each implementation's section to the facts, dropping the box ids,
+	// which differ by construction.
+	sections := map[string][]string{}
+	current := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "GO "):
+			current = "GO"
+		case strings.HasPrefix(trimmed, "PY "):
+			current = "PY"
+		}
+		if current == "" {
+			continue
+		}
+		if strings.Contains(trimmed, "groups=") || strings.Contains(trimmed, "refused") ||
+			strings.Contains(trimmed, "NOT REFUSED") {
+			sections[current] = append(sections[current], normaliseFacts(trimmed))
+		}
+	}
+
+	if len(sections["GO"]) == 0 || len(sections["PY"]) == 0 {
+		t.Fatalf("could not read both sections from:\n%s", out)
+	}
+	sort.Strings(sections["GO"])
+	sort.Strings(sections["PY"])
+	if strings.Join(sections["GO"], "\n") != strings.Join(sections["PY"], "\n") {
+		t.Fatalf("implementations disagree\nGo:\n%s\n\nPython:\n%s\n\nfull output:\n%s",
+			strings.Join(sections["GO"], "\n"), strings.Join(sections["PY"], "\n"), out)
+	}
+	if !strings.Contains(string(out), "refused") {
+		t.Errorf("neither implementation refused the virtual group:\n%s", out)
+	}
+}
+
+// normaliseFacts strips the parts that differ by construction: the random box
+// subid, and the timestamp prefix of a parent id.
+var boxIDPattern = regexp.MustCompile(`\d{8}(_\d{6})?_[A-Za-z0-9]+`)
+
+func normaliseFacts(line string) string {
+	return boxIDPattern.ReplaceAllString(line, "<box-id>")
+}
+
+// pythonVersion reports the installed boxyard's version, or "" if it cannot be
+// read.
+func pythonVersion(cli string) string {
+	out, err := exec.Command(cli, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// versionLess compares dotted numeric versions COMPONENT BY COMPONENT.
+//
+// Not a string comparison: "0.5.10" sorts before "0.5.8" lexicographically,
+// and a version gate that silently inverts once the patch number reaches two
+// digits is the kind of thing nobody notices until a test has been skipping for
+// months.
+func versionLess(a, b string) bool {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		av, bv := 0, 0
+		if i < len(as) {
+			av, _ = strconv.Atoi(as[i])
+		}
+		if i < len(bs) {
+			bv, _ = strconv.Atoi(bs[i])
+		}
+		if av != bv {
+			return av < bv
+		}
+	}
+	return false
 }
