@@ -218,6 +218,15 @@ func (a *Adapter) LocalLastModified(path string, excludeNames map[string]bool) (
 	return newest, found, nil
 }
 
+// Check compares a local path against a remote one under the box's filters,
+// answering "would a push actually move anything?".
+//
+// `answered` false means the comparison could not be performed at all — the
+// caller must not read that as "no differences".
+func (a *Adapter) Check(ctx context.Context, src, dst rclone.Location, o rclone.TransferOptions) (bool, []string, error) {
+	return a.Client.Check(ctx, src, dst, o)
+}
+
 // ListJSON returns a listing for tombstones. An ABSENT directory yields an
 // empty slice and no error: for tombstones that genuinely means "nothing has
 // been deleted here", and the callers rely on the distinction.
@@ -259,3 +268,12 @@ func (i indexAdapter) ListJSON(ctx context.Context, remote, path string) ([]remo
 	}
 	return out, nil
 }
+
+// Compile-time proof that the adapter is everything the sync command needs.
+// The assertion lives here rather than in cmds so that a domain package growing
+// a method fails to build at the seam, not at a call site.
+var _ interface {
+	syncengine.Storage
+	tombstones.Store
+	ForRemoteIndex() remoteindex.Store
+} = (*Adapter)(nil)

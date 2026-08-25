@@ -198,6 +198,45 @@ func List(ctx context.Context, s Store, cfg *config.Config, storageLocation stri
 	return out, nil
 }
 
+// ListBoxIDs returns every tombstoned box id at a storage location, from a
+// SINGLE listing.
+//
+// This exists because the per-box probe did not scale. A `multi-sync` pass over
+// 587 boxes made 587 separate SFTP connections to the same storage box, every
+// 20 minutes, on every machine — which saturated the server's connection limit
+// and was measurably failing ~8 boxes per pass on three machines with
+// "couldn't initialise SFTP" (Python v0.5.1). Callers hold this set for the
+// whole pass and check membership.
+//
+// Unlike List, it never reads a tombstone's CONTENT: the filename is the box
+// id, and membership is all a sync decision needs.
+//
+// A listing failure is an ERROR, and that is the whole safety property: an
+// empty set means "nothing is tombstoned", and returning that when we simply
+// could not look would let a box another machine deleted be silently
+// resurrected here. A MISSING tombstones directory is different — it genuinely
+// means nothing has ever been deleted at this location — and is the only case
+// that yields an empty set.
+func ListBoxIDs(ctx context.Context, s Store, cfg *config.Config, storageLocation string) (map[string]bool, error) {
+	dir, err := dirPath(cfg, storageLocation)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := s.ListJSON(ctx, storageLocation, dir)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	// A nil slice means the directory does not exist — see above.
+	for _, e := range entries {
+		if e.IsDir || !strings.HasSuffix(e.Name, ".json") {
+			continue
+		}
+		out[strings.TrimSuffix(e.Name, ".json")] = true
+	}
+	return out, nil
+}
+
 // Remove deletes a tombstone, resurrecting the box id. Reports whether there
 // was one to remove.
 func Remove(ctx context.Context, s Store, cfg *config.Config, storageLocation, boxID string) (bool, error) {

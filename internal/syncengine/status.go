@@ -48,6 +48,19 @@ const (
 	// for the whole box. Python learned in v0.5.5 that the alternative — an
 	// early return with no result — makes `multi-sync` raise on every pass.
 	LocalStorage SyncCondition = "local_storage"
+	// WriteDenied: this machine is not the box's write_owner, and the part has
+	// local changes that would have to be pushed.
+	//
+	// Substituted by sync_box into the status it returns for the refused part;
+	// GetSyncStatus never produces it, because that function is a pure function
+	// of paths and records and knows nothing about boxes or machines.
+	//
+	// Deliberately a CONDITION and not an error. `multi-sync` runs every 1200s
+	// under supervisor and turns per-box errors into a red line, so failing
+	// here would manufacture ~72 identical unresolvable errors per machine per
+	// day — the exact pathology v0.4.0–v0.4.4 spent a week removing. The box
+	// simply does not push; doctor explains the state once, with both ways out.
+	WriteDenied SyncCondition = "write_denied"
 )
 
 // SyncStatus is the full result of probing one box part.

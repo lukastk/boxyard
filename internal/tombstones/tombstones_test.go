@@ -2,6 +2,7 @@ package tombstones
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -13,6 +14,10 @@ type fakeStore struct {
 	entries map[string][]Entry
 	deleted []string
 	listNil bool
+	listErr error
+	// catCalls counts content fetches. ListBoxIDs must make none: one listing
+	// per storage location is the whole point of it.
+	catCalls int
 }
 
 func newFake() *fakeStore {
@@ -26,6 +31,7 @@ func (f *fakeStore) Write(_ context.Context, remote, p, content string) error {
 	return nil
 }
 func (f *fakeStore) Cat(_ context.Context, remote, p string) (bool, string, error) {
+	f.catCalls++
 	c, ok := f.files[key(remote, p)]
 	return ok, c, nil
 }
@@ -34,6 +40,9 @@ func (f *fakeStore) PathExists(_ context.Context, remote, p string) (bool, bool,
 	return ok, false, nil
 }
 func (f *fakeStore) ListJSON(_ context.Context, remote, p string) ([]Entry, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	if f.listNil {
 		return nil, nil
 	}
@@ -212,5 +221,63 @@ func TestUnknownStorageLocationIsLoud(t *testing.T) {
 	s, c := newFake(), cfg(t)
 	if _, err := IsTombstoned(context.Background(), s, c, "nope", "b"); err == nil {
 		t.Fatal("unknown storage location was accepted")
+	}
+}
+
+// ListBoxIDs exists because the per-box probe did not scale: a `multi-sync`
+// pass over 587 boxes made 587 separate SFTP connections to the same storage
+// box, every 20 minutes, on every machine. The property that matters is ONE
+// listing and NO content fetches, so that is what is asserted.
+func TestListBoxIDsMakesOneListingAndNoFetches(t *testing.T) {
+	s, c := newFake(), cfg(t)
+	dir := "boxyard/tombstones"
+	s.entries[key("remote", dir)] = []Entry{
+		{Name: "20240102_aaaaa.json"},
+		{Name: "notes.txt"},
+		{Name: "sub", IsDir: true},
+		{Name: "20240103_bbbbb.json"},
+	}
+	// Content that would be read if the implementation fetched it.
+	s.files[key("remote", dir+"/20240102_aaaaa.json")] = `{"box_id":"a","deleted_at_utc":"2026-08-22T21:30:00Z","deleted_by_hostname":"h","last_known_name":"na"}`
+
+	got, err := ListBoxIDs(context.Background(), s, c, "remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"20240102_aaaaa": true, "20240103_bbbbb": true}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for id := range want {
+		if !got[id] {
+			t.Errorf("missing %q", id)
+		}
+	}
+	if s.catCalls != 0 {
+		t.Fatalf("ListBoxIDs fetched %d tombstone bodies; it must fetch none", s.catCalls)
+	}
+}
+
+// A missing tombstones directory genuinely means nothing has been deleted at
+// this location — the ONLY case that may yield an empty set.
+func TestListBoxIDsOnFreshRemoteIsEmpty(t *testing.T) {
+	s, c := newFake(), cfg(t)
+	s.listNil = true
+	got, err := ListBoxIDs(context.Background(), s, c, "remote")
+	if err != nil {
+		t.Fatalf("a missing tombstones directory must not be an error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected none, got %v", got)
+	}
+}
+
+// A listing FAILURE must not be reported as "nothing is tombstoned": that
+// would let a box another machine deleted be silently resurrected here.
+func TestListBoxIDsSurfacesAListingFailure(t *testing.T) {
+	s, c := newFake(), cfg(t)
+	s.listErr = errors.New("couldn't initialise SFTP")
+	if _, err := ListBoxIDs(context.Background(), s, c, "remote"); err == nil {
+		t.Fatal("a listing failure was swallowed into an empty set")
 	}
 }
