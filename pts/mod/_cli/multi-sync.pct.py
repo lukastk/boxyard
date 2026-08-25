@@ -227,9 +227,16 @@ async def _task(num, box_meta):
             status.sync_condition == SyncCondition.WRITE_DENIED
             for status, _ in sync_results.values()
         )
+        # A box in a `local` storage location has no remote to sync against.
+        # "Success" would be true but misleading, so it gets its own label --
+        # for the same reason "Read-only" is not folded into "Error".
+        _local_only = all(
+            status.sync_condition == SyncCondition.LOCAL_STORAGE
+            for status, _ in sync_results.values()
+        )
         sync_stats[box_meta.index_name] = (
             num,
-            "Read-only" if _write_denied else "Success",
+            "Read-only" if _write_denied else "Local" if _local_only else "Success",
             None,
             datetime.now(),
             sync_results,
@@ -271,6 +278,7 @@ def get_status_lines(box_index_name):
         "Syncing": "yellow",
         "Success": "green",
         "Read-only": "yellow",
+        "Local": "blue",
         "Interrupted": "magenta",
         "Error": "red",
     }.get(sync_stat, "")
@@ -278,6 +286,7 @@ def get_status_lines(box_index_name):
     name_color = {
         "Success": "green",
         "Read-only": "yellow",
+        "Local": "blue",
         "Interrupted": "magenta",
         "Error": "red",
     }.get(sync_stat, "")
@@ -306,7 +315,7 @@ def get_status_lines(box_index_name):
     indent = "    "
     if e:
         lines.append(f"{indent}[red]{e}[/red]")
-    elif sync_stat in ("Success", "Read-only"):
+    elif sync_stat in ("Success", "Read-only", "Local"):
         line = []
         for box_part, synced in zip(sync_choices, syncs_happened):
             _denied = (
@@ -364,7 +373,11 @@ def print_finished(box_index_name: str):
         False if sync_results is None else sync_results[box_part][1]
         for box_part in sync_choices
     ]
-    if no_print_skipped and sync_stat == "Success" and not any(syncs_happened):
+    if (
+        no_print_skipped
+        and sync_stat in ("Success", "Local")
+        and not any(syncs_happened)
+    ):
         return
     lines = get_status_lines(box_index_name)
     console.print(Text.from_markup("\n".join(lines).strip()))

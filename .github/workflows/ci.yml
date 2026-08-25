@@ -14,7 +14,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ['3.11', '3.12']
+        # 3.14 is what `uv tool install boxyard` actually picks, so it is
+        # what the tool RUNS on. Testing only 3.11/3.12 let a fault ship that
+        # is deprecated in 3.12 and RAISES in 3.14
+        # (`asyncio.get_event_loop()`, fixed in v0.5.5) -- green on every
+        # version CI tested. Test the floor and the deployed version, and 3.13
+        # in between.
+        python-version: ['3.11', '3.12', '3.13', '3.14']
 
     steps:
       - uses: actions/checkout@v4

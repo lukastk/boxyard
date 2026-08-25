@@ -149,9 +149,40 @@ box_meta = boxyard_meta.by_index_name[box_index_name]
 
 # %%
 #|export
+# A `local` storage location has no remote: its store is a directory on this
+# machine, so there is nothing to sync against. That is a legitimate,
+# permanent state -- not an error, and not something a retry resolves.
+#
+# It used to `return` with no value, while the signature promises a dict and
+# every caller reads one. `multi-sync` calls `.values()` on the result, so a
+# single local-storage box became an `AttributeError` rendered as a red
+# `Error` line, every 1200s, on every machine. The shape below mirrors the
+# TOMBSTONED path, which had the same "a fact about the whole box" problem.
 if box_meta.get_storage_location_config(config).storage_type == StorageType.LOCAL:
-    pass
-    #|func_return_line
+    if verbose:
+        print(
+            f"Box '{box_index_name}' is in the local storage location "
+            f"'{box_meta.storage_location}'. Nothing to sync."
+        )
+    from boxyard._models import SyncRecord as _SyncRecord
+
+    _local_only_record = _SyncRecord.create(sync_complete=False)
+    sync_results = {
+        part: (
+            SyncStatus(
+                sync_condition=SyncCondition.LOCAL_STORAGE,
+                local_path_exists=True,
+                remote_path_exists=False,
+                local_sync_record=_local_only_record,
+                remote_sync_record=_local_only_record,
+                is_dir=True,
+                error_message=None,
+            ),
+            False,
+        )
+        for part in sync_choices
+    }
+    sync_results #|func_return_line
 
 # %% [markdown]
 # Check if box has been tombstoned (deleted on remote by another machine)
@@ -402,8 +433,19 @@ try:
     if check_interrupted():
         raise SoftInterruption()
 
+    # CONF is synced whenever DATA is, even when the caller did not ask for it,
+    # for the same reason META is: `conf/.rclone_include|_exclude|_filters`
+    # decide WHAT DATA syncs, and they are read off the local disk immediately
+    # below. `boxyard sync -c data` on a machine that has never pulled this
+    # box's conf/ would otherwise sync DATA with the GLOBAL filters -- so a box
+    # whose `.rclone_include` narrows what it syncs would sync EVERYTHING.
+    # That is precisely the harm v0.5.3 fixed, still reachable through `-c
+    # data` (which `multi-sync` also accepts, i.e. across the whole yard).
+    #
+    # Its result is only RECORDED when CONF was actually requested, so the
+    # returned dict still answers exactly what the caller asked about.
     sync_part = BoxPart.CONF
-    if sync_part in sync_choices:
+    if sync_part in sync_choices or BoxPart.DATA in sync_choices:
         if verbose:
             print("Syncing", sync_part.value)
         # CONF follows DATA: `conf/.rclone_include|_exclude|_filters` decide
@@ -413,7 +455,7 @@ try:
         # META, by contrast, stays writable by every machine -- without that,
         # ownership could never be transferred and `groups`/`parents` could not
         # be edited from a non-owner.
-        sync_results[sync_part] = await _sync_part(
+        _conf_sync_result = await _sync_part(
             rclone_config_path=config.rclone_config_path,
             sync_direction=sync_direction,
             sync_setting=sync_setting,
@@ -437,6 +479,8 @@ try:
             # the second machine.
             local_absence_means_excluded=False,
         )
+        if sync_part in sync_choices:
+            sync_results[sync_part] = _conf_sync_result
 
     # Get the now locally synced conf files for the sync of the box data
     _rclone_include_path = (

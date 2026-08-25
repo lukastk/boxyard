@@ -112,10 +112,36 @@ def _create_box_subid(character_set: str, length: int) -> str:
 
 # %%
 #|export
+def format_creation_timestamp(
+    config: boxyard.config.Config, dt: datetime
+) -> str:
+    """
+    Render `dt` in the timestamp format this yard's box ids use.
+
+    Extracted so that the format switch lives in exactly one place. It used to
+    be written out twice -- here and in `new_box`, for the
+    `creation_timestamp_utc` override -- and a box id whose timestamp half was
+    formatted by a *different* copy of this switch is precisely the kind of
+    drift that produces ids the rest of the yard cannot parse.
+    """
+    from boxyard.config import BoxTimestampFormat
+
+    if config.box_timestamp_format == BoxTimestampFormat.DATE_AND_TIME:
+        return dt.strftime(const.BOX_TIMESTAMP_FORMAT)
+    elif config.box_timestamp_format == BoxTimestampFormat.DATE_ONLY:
+        return dt.strftime(const.BOX_TIMESTAMP_FORMAT_DATE_ONLY)
+    else:
+        raise Exception(
+            f"Invalid box timestamp format: {config.box_timestamp_format}"
+        )
+
+# %%
+#|export
 def generate_unique_box_id(
     config: boxyard.config.Config,
     existing_ids: set[str],
     max_attempts: int = 100,
+    creation_timestamp: str | None = None,
 ) -> tuple[str, str]:
     """
     Generate a box ID that doesn't collide with existing IDs.
@@ -124,6 +150,13 @@ def generate_unique_box_id(
         config: Boxyard config (for timestamp format and subid settings)
         existing_ids: Set of existing box IDs to check against
         max_attempts: Maximum generation attempts before raising error
+        creation_timestamp: Use this already-formatted timestamp instead of
+            "now". The caller that passes it (`new_box`, for
+            `--creation-timestamp-utc`) needs the collision check to run
+            against the id it will ACTUALLY use: it used to let this function
+            pick a timestamp, check `<generated_ts>_<subid>` for collisions,
+            and then substitute its own timestamp afterwards -- so the id that
+            got written was never the id that was checked.
 
     Returns:
         Tuple of (creation_timestamp, box_subid)
@@ -131,29 +164,19 @@ def generate_unique_box_id(
     Raises:
         RuntimeError: If unable to generate unique ID after max_attempts
     """
-    from boxyard.config import BoxTimestampFormat
-
     for _ in range(max_attempts):
-        if config.box_timestamp_format == BoxTimestampFormat.DATE_AND_TIME:
-            creation_timestamp = datetime.now(timezone.utc).strftime(
-                const.BOX_TIMESTAMP_FORMAT
-            )
-        elif config.box_timestamp_format == BoxTimestampFormat.DATE_ONLY:
-            creation_timestamp = datetime.now(timezone.utc).strftime(
-                const.BOX_TIMESTAMP_FORMAT_DATE_ONLY
-            )
+        if creation_timestamp is None:
+            timestamp = format_creation_timestamp(config, datetime.now(timezone.utc))
         else:
-            raise Exception(
-                f"Invalid box timestamp format: {config.box_timestamp_format}"
-            )
+            timestamp = creation_timestamp
 
         box_subid = _create_box_subid(
             config.box_subid_character_set, config.box_subid_length
         )
-        box_id = f"{creation_timestamp}_{box_subid}"
+        box_id = f"{timestamp}_{box_subid}"
 
         if box_id not in existing_ids:
-            return creation_timestamp, box_subid
+            return timestamp, box_subid
 
     raise RuntimeError(
         f"Failed to generate unique box ID after {max_attempts} attempts. "
@@ -944,6 +967,18 @@ class SyncCondition(Enum):
     # removing. The box simply does not push; the state is reported once by
     # `doctor` and shown by `multi-sync` as its own non-error status.
     WRITE_DENIED = "write_denied"
+    # The box's storage location is `local`, so there is nothing to sync
+    # against: the store is a directory on this machine. Substituted by
+    # `sync_box` for the whole box, like TOMBSTONED and for the same reason --
+    # it is a fact about the BOX, not about any pair of paths, so
+    # `get_sync_status` cannot produce it.
+    #
+    # A condition rather than an early `return None`, which is what `sync_box`
+    # used to do: its contract is a dict, every caller reads one, and
+    # `multi-sync` called `.values()` on it. A local-storage box therefore
+    # turned into a red `Error` line repeated every 1200s -- for a state that
+    # is working exactly as designed.
+    LOCAL_STORAGE = "local_storage"
 
 
 class SyncStatus(NamedTuple):

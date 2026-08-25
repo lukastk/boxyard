@@ -89,6 +89,37 @@ if box_index_name not in boxyard_meta.by_index_name:
 
 box_meta = boxyard_meta.by_index_name[box_index_name]
 
+# %% [markdown]
+# A `local` storage location has no rclone remote
+
+# %%
+#|export
+# `remote=box_meta.storage_location` is passed to rclone as a remote NAME, and
+# a `local` storage location has no section in `boxyard_rclone.conf` -- so this
+# used to fail with `didn't find section in config file`, i.e. `box-status`,
+# `yard-status` and `list --status` all blew up on a local-storage box. There
+# is nothing to report against: the store IS this machine. Same shape as
+# `sync_box`'s branch, so both commands say the same thing.
+from boxyard._models import SyncCondition as _SyncCondition, SyncRecord as _SyncRecord
+from boxyard._models import SyncStatus as _SyncStatus, BoxPart as _BoxPart
+from boxyard.config import StorageType as _StorageType
+
+if box_meta.get_storage_location_config(config).storage_type == _StorageType.LOCAL:
+    _local_only_record = _SyncRecord.create(sync_complete=False)
+    box_sync_status = {
+        box_part: _SyncStatus(
+            sync_condition=_SyncCondition.LOCAL_STORAGE,
+            local_path_exists=True,
+            remote_path_exists=False,
+            local_sync_record=_local_only_record,
+            remote_sync_record=_local_only_record,
+            is_dir=True,
+            error_message=None,
+        )
+        for box_part in _BoxPart
+    }
+    box_sync_status #|func_return_line
+
 # %%
 #|export
 from boxyard._models import get_sync_status, BoxPart
