@@ -1145,11 +1145,18 @@ def cli_tree(
     # Text output using rich.tree
     from rich.tree import Tree as RichTree
     from rich.console import Console
+    from rich.text import Text as RichText
 
     def _label(bm):
+        # A `Text`, not a markup string. rich parses `[...]` as a style tag, so
+        # the `[groups: ...]` suffix below was SWALLOWED whole -- `boxyard tree`
+        # has never once shown a box's groups, and left a stray trailing space
+        # where they should have been. Box NAMES have the same problem: one
+        # containing `[` is valid (validate_box_name forbids only path
+        # separators and the like) and would be mangled the same way.
         status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
         groups_str = f" [groups: {', '.join(bm.groups)}]" if bm.groups else ""
-        return f"{status}{bm.name} ({bm.box_id}){groups_str}"
+        return RichText(f"{status}{bm.name} ({bm.box_id}){groups_str}")
 
     def _add_children(rich_node, parent_id):
         children = [bm for bm in box_metas if parent_id in bm.parents]
@@ -1197,7 +1204,10 @@ def cli_tree(
     # Show orphaned children (parent not in filtered set)
     orphans = [bm for bm in box_metas if bm.box_id not in shown_ids]
     if orphans:
-        unknown_node = tree.add("[unknown parent]")
+        # A `Text` for the same reason the labels are: as a markup string,
+        # "[unknown parent]" is parsed as a style tag and vanishes, leaving a
+        # bare "└── " above the orphans with nothing to explain them.
+        unknown_node = tree.add(RichText("[unknown parent]"))
         for orphan in sorted(orphans, key=lambda x: x.index_name):
             child_node = unknown_node.add(_label(orphan))
             _add_children(child_node, orphan.box_id)
@@ -2033,19 +2043,26 @@ def cli_list(
                 ungrouped.append(bm)
 
         tree = RichTree("boxyard")
+        # This view DOES want styling, so it stays a markup string -- but every
+        # interpolated value is escaped now. The suffix was already escaped by
+        # hand (`\\[`), which is what makes the two unescaped `[groups: ...]`
+        # sites an oversight rather than a choice; the NAMES were not escaped,
+        # and a box or group name may contain a bracket.
+        from rich.markup import escape as _rich_escape
+
         for group_name in sorted(groups_map.keys()):
-            group_node = tree.add(f"[bold]{group_name}[/bold]")
+            group_node = tree.add(f"[bold]{_rich_escape(group_name)}[/bold]")
             for bm in sorted(groups_map[group_name], key=lambda x: x.name):
                 other_groups = sorted(g for g in bm.groups if g != group_name)
                 suffix = f" [dim]\\[{', '.join(other_groups)}][/dim]" if other_groups else ""
                 status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
-                group_node.add(f"{status}{bm.name} ({bm.box_id}){suffix}")
+                group_node.add(f"{status}{_rich_escape(bm.name)} ({bm.box_id}){suffix}")
         if ungrouped:
             ug_node = tree.add("[dim](ungrouped)[/dim]")
             for bm in sorted(ungrouped, key=lambda x: x.name):
                 status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
                 suffix = f" [dim]\\[{', '.join(sorted(bm.groups))}][/dim]" if bm.groups else ""
-                ug_node.add(f"{status}{bm.name} ({bm.box_id}){suffix}")
+                ug_node.add(f"{status}{_rich_escape(bm.name)} ({bm.box_id}){suffix}")
 
         Console().print(tree)
         return
@@ -2053,14 +2070,17 @@ def cli_list(
     if view == "tree":
         from rich.tree import Tree as RichTree
         from rich.console import Console
+        from rich.text import Text as RichText
 
         filtered_meta = BoxyardMeta(box_metas=box_metas)
         filtered_ids = {bm.box_id for bm in box_metas}
 
         def _label(bm):
+            # See `boxyard tree`: a markup string here means rich eats the
+            # `[groups: ...]` suffix, and any box name containing `[` with it.
             status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
             groups_str = f" [groups: {', '.join(bm.groups)}]" if bm.groups else ""
-            return f"{status}{bm.name} ({bm.box_id}){groups_str}"
+            return RichText(f"{status}{bm.name} ({bm.box_id}){groups_str}")
 
         def _add_children(rich_node, parent_id, shown):
             children = [bm for bm in box_metas if parent_id in bm.parents]

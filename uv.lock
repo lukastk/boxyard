@@ -183,7 +183,7 @@ css = [
 
 [[package]]
 name = "boxyard"
-version = "0.5.8"
+version = "0.5.9"
 source = { editable = "." }
 dependencies = [
     { name = "filelock" },
