@@ -2,7 +2,10 @@
  "executable": [
   "dev_scripts/clean-project",
   "dev_scripts/publish-new",
-  "dev_scripts/run-tests"
+  "dev_scripts/run-tests",
+  "parity/cross_impl_sync.sh",
+  "parity/group_parent_cmds.sh",
+  "parity/new_box_flags.sh"
  ],
  "version": 1
 }

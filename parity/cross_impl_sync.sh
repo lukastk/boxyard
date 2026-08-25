@@ -78,6 +78,10 @@ echo "== Go: sync (push) from yard A"
 echo "== remote now holds:"
 find "$ROOT/store" -maxdepth 4 | sed "s|$ROOT/store|<store>|" | sort | head -20
 
+echo "== Go discovers the box in yard B with sync-missing-meta"
+"$GOBIN" --config "$B" sync-missing-meta --no-refresh-user-symlinks 2>&1 | tail -3
+"$GOBIN" --config "$B" list | grep -q "$idx" && echo "yard B now knows the box"
+
 echo "== Python: pull into yard B"
 BOXYARD_CONFIG_PATH="$B" "$PYBIN" sync-missing-meta 2>&1 | tail -3
 BOXYARD_CONFIG_PATH="$B" "$PYBIN" include -r "$idx" 2>&1 | tail -3

@@ -103,6 +103,7 @@ func NewRootCommand() *cobra.Command {
 		newCreateUserSymlinksCommand(),
 		newIncludeCommand(),
 		newExcludeCommand(),
+		newSyncMissingMetaCommand(),
 	)
 	return root
 }

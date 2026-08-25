@@ -50,6 +50,7 @@ func TestCrossImplementationSync(t *testing.T) {
 
 	text := string(out)
 	for _, want := range []string{
+		"yard B now knows the box",  // Go's sync-missing-meta discovered it
 		"hello from go",             // Go pushed, Python pulled
 		"run.sh is executable in B", // the exec-bit manifest round-tripped
 		"hello from python",         // Python pushed, Go pulled

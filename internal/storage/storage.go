@@ -283,3 +283,10 @@ var _ interface {
 func (a *Adapter) Moveto(ctx context.Context, src, dst rclone.Location) (rclone.Output, error) {
 	return a.Client.Moveto(ctx, src, dst)
 }
+
+// Lsjson exposes the raw listing, options and all. `sync_missing_boxmetas`
+// needs the filtered, depth-limited form that ListJSON's fixed shape cannot
+// express.
+func (a *Adapter) Lsjson(ctx context.Context, loc rclone.Location, o rclone.LsjsonOptions) ([]rclone.Entry, bool, error) {
+	return a.Client.Lsjson(ctx, loc, o)
+}
