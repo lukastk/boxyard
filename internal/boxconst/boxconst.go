@@ -41,6 +41,18 @@ const (
 	BoxPermsManifestRelPath = ".boxyard-perms.json"
 )
 
+// Per-box rclone filter files, relative to a box's CONF part.
+//
+// A box's own exclude file REPLACES the global default rather than adding to
+// it, so anything deciding what a box syncs must resolve the effective file
+// first — assuming the defaults for a box that overrides them can prune a
+// directory the box really does sync.
+const (
+	RcloneIncludeFilename = ".rclone_include"
+	RcloneExcludeFilename = ".rclone_exclude"
+	RcloneFiltersFilename = ".rclone_filters"
+)
+
 // SoftInterruptCount is how many interrupts are absorbed as "finish the current
 // box then stop" before the process gives up and dies.
 const SoftInterruptCount = 3

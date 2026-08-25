@@ -40,6 +40,14 @@ const (
 	Error SyncCondition = "error"
 	// Tombstoned: the box was deleted on the remote.
 	Tombstoned SyncCondition = "tombstoned"
+	// LocalStorage: the box's storage location is `local`, so there is no
+	// remote to compare against — the store is a directory on this machine.
+	//
+	// Like Tombstoned, this is a fact about the BOX, not about a pair of
+	// paths, so GetSyncStatus never produces it; the commands substitute it
+	// for the whole box. Python learned in v0.5.5 that the alternative — an
+	// early return with no result — makes `multi-sync` raise on every pass.
+	LocalStorage SyncCondition = "local_storage"
 )
 
 // SyncStatus is the full result of probing one box part.
