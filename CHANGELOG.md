@@ -1,9 +1,9 @@
 ## [0.5.5] - 2026-08-25
 
-Five faults in `new_box`, all found by reading it line by line while porting it
-to Go. Every one of them was invisible: nothing in the suite reached the
-branches, and the branches that were reached were unreachable in a different
-sense — dead code behind a `check=True`.
+Seven faults, all found by reading the code line by line while porting it to
+Go — five in `new_box`, and two in how a `local` storage location is handled. Every one of them was invisible: nothing
+in the suite reached the branches, and the branches that were reached were
+unreachable in a different sense — dead code behind a `check=True`.
 
 ### 🐛 Bug Fixes
 
@@ -54,6 +54,26 @@ sense — dead code behind a `check=True`.
   `new` was the only command that declared the flag and then ignored it; every
   other command guards the call.
 
+- **Syncing a box in a `local` storage location returned `None`.** The
+  signature promises `dict[BoxPart, tuple[SyncStatus, bool]]` and every caller
+  reads one — `multi-sync` calls `.values()` on it. So a single local-storage
+  box became an `AttributeError` caught into a red `Error` line, repeated every
+  1200s under supervisor, on every machine, for a state that is working exactly
+  as designed. It now returns a real result carrying a new
+  `SyncCondition.LOCAL_STORAGE`, and `multi-sync` shows it as its own `Local`
+  status rather than a success or an error.
+
+- **`box-status` on a local-storage box died inside rclone.**
+  `get_box_sync_status` passes `remote=<storage_location>` as an rclone remote
+  *name*, and a `local` storage location has no section in
+  `boxyard_rclone.conf` — so `box-status`, `yard-status` and `list --status`
+  all failed with `didn't find section in config file`. It now reports
+  `LOCAL_STORAGE`, the same thing `sync` says.
+
+  Both of these are latent rather than live: v0.5.4 is what made `local`
+  storage locations usable at all, so the paths only became reachable then, and
+  the fleet has no boxes in one yet.
+
 ### 🧹 Robustness
 
 - The global lock is now released in a `finally`, and the box-id collision
@@ -69,6 +89,12 @@ sense — dead code behind a `check=True`.
   `test_timeout_kills_child_processes`, was additionally spawning `python` from
   *inside* its own script, so it had never actually tested that the process
   group dies.
+
+- CI now tests Python **3.13 and 3.14** as well as 3.11 and 3.12. 3.14 is what
+  `uv tool install boxyard` picks, so it is what the tool actually runs on —
+  and the `asyncio.get_event_loop()` fault above is exactly the class of thing
+  that gap hides: deprecated in 3.12, raising in 3.14, green on every version
+  CI tested. Verified: the whole suite passes on 3.14 (939 passed, 2 skipped).
 
 ## [0.5.4] - 2026-08-25
 

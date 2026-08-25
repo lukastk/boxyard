@@ -59,9 +59,40 @@ async def sync_box(
         raise ValueError(f"Box '{box_index_name}' not found.")
     
     box_meta = boxyard_meta.by_index_name[box_index_name]
+    # A `local` storage location has no remote: its store is a directory on this
+    # machine, so there is nothing to sync against. That is a legitimate,
+    # permanent state -- not an error, and not something a retry resolves.
+    #
+    # It used to `return` with no value, while the signature promises a dict and
+    # every caller reads one. `multi-sync` calls `.values()` on the result, so a
+    # single local-storage box became an `AttributeError` rendered as a red
+    # `Error` line, every 1200s, on every machine. The shape below mirrors the
+    # TOMBSTONED path, which had the same "a fact about the whole box" problem.
     if box_meta.get_storage_location_config(config).storage_type == StorageType.LOCAL:
-        pass
-        return
+        if verbose:
+            print(
+                f"Box '{box_index_name}' is in the local storage location "
+                f"'{box_meta.storage_location}'. Nothing to sync."
+            )
+        from boxyard._models import SyncRecord as _SyncRecord
+    
+        _local_only_record = _SyncRecord.create(sync_complete=False)
+        sync_results = {
+            part: (
+                SyncStatus(
+                    sync_condition=SyncCondition.LOCAL_STORAGE,
+                    local_path_exists=True,
+                    remote_path_exists=False,
+                    local_sync_record=_local_only_record,
+                    remote_sync_record=_local_only_record,
+                    is_dir=True,
+                    error_message=None,
+                ),
+                False,
+            )
+            for part in sync_choices
+        }
+        return sync_results
     box_id = BoxMeta.extract_box_id(box_index_name)
     storage_location = box_meta.storage_location
     

@@ -914,6 +914,18 @@ class SyncCondition(Enum):
     # removing. The box simply does not push; the state is reported once by
     # `doctor` and shown by `multi-sync` as its own non-error status.
     WRITE_DENIED = "write_denied"
+    # The box's storage location is `local`, so there is nothing to sync
+    # against: the store is a directory on this machine. Substituted by
+    # `sync_box` for the whole box, like TOMBSTONED and for the same reason --
+    # it is a fact about the BOX, not about any pair of paths, so
+    # `get_sync_status` cannot produce it.
+    #
+    # A condition rather than an early `return None`, which is what `sync_box`
+    # used to do: its contract is a dict, every caller reads one, and
+    # `multi-sync` called `.values()` on it. A local-storage box therefore
+    # turned into a red `Error` line repeated every 1200s -- for a state that
+    # is working exactly as designed.
+    LOCAL_STORAGE = "local_storage"
 
 
 class SyncStatus(NamedTuple):
