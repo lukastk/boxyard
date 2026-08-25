@@ -108,6 +108,11 @@ func NewRootCommand() *cobra.Command {
 		newReleaseCommand(),
 		newOwnerCommand(),
 		newDiscardLocalCommand(),
+		newDeleteCommand(),
+		newRenameCommand(),
+		newSyncNameCommand(),
+		newCopyCommand(),
+		newForcePushCommand(),
 	)
 	return root
 }

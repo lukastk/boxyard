@@ -290,3 +290,13 @@ func (a *Adapter) Moveto(ctx context.Context, src, dst rclone.Location) (rclone.
 func (a *Adapter) Lsjson(ctx context.Context, loc rclone.Location, o rclone.LsjsonOptions) ([]rclone.Entry, bool, error) {
 	return a.Client.Lsjson(ctx, loc, o)
 }
+
+// Copy and Copyto are the plain transfers `copy` uses to take a box OUT of the
+// yard: no sync records, no state changes.
+func (a *Adapter) Copy(ctx context.Context, src, dst rclone.Location, o rclone.TransferOptions) (rclone.Output, error) {
+	return a.Client.Copy(ctx, src, dst, o)
+}
+
+func (a *Adapter) Copyto(ctx context.Context, src, dst rclone.Location, o rclone.CopytoOptions) (rclone.Output, error) {
+	return a.Client.Copyto(ctx, src, dst, o)
+}

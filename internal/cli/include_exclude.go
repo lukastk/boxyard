@@ -192,8 +192,14 @@ func newExcludeCommand() *cobra.Command {
 	return cmd
 }
 
-// newStore builds the rclone-backed store the sync commands need.
-func newStore(cfg *config.Config) (cmds.SyncStore, error) {
+// newStore builds the rclone-backed store the commands need.
+//
+// It returns the CONCRETE adapter rather than one of the interfaces: the
+// command layer declares several narrow ones (SyncStore, RenameStore,
+// MetaSyncStore, CopyStore) and a call site should not have to pick which
+// alias to hold. The compile-time assertions in internal/cmds are what keep the
+// adapter honest.
+func newStore(cfg *config.Config) (*storage.Adapter, error) {
 	client, err := rclone.New(cfg.RcloneConfigPath())
 	if err != nil {
 		return nil, err
