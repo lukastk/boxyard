@@ -1,3 +1,21 @@
+## [0.5.6] - 2026-08-25
+
+### 🧹 Robustness
+
+- **A picker can no longer act on the wrong box.** `run_fzf` and
+  `run_fzf_multi` return the *line* the user chose and map it back to a term
+  with `disp_terms.index(...)`, which returns the **first** match. Two items
+  rendering to the same line resolved to the same term, so picking the second
+  silently acted on the first — and these pickers feed `boxyard include` and
+  `boxyard exclude`, so that is the wrong box being removed from a machine.
+
+  Every caller today embeds the box id in its display line, so this could not
+  fire; the guard exists so a caller that forgets gets a loud error rather than
+  a wrong box. Mismatched `terms`/`disp_terms` lengths are refused for the same
+  reason — the mapping is positional.
+
+  Found while reading `run_fzf` to port it to Go.
+
 ## [0.5.5] - 2026-08-25
 
 Eight faults, all found by reading the code line by line while porting it to
