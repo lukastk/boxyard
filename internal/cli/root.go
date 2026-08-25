@@ -22,6 +22,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// boxyardVersion is what `--version` prints. It is a ROLLOUT GATE, not a
+// nicety: rolling a change across the fleet means checking
+// `ssh-target <machine> boxyard --version` on each one, so it has to report
+// what is actually installed rather than what a source tree says.
+//
+// Set at build time with -ldflags "-X github.com/lukastk/boxyard/internal/cli.boxyardVersion=X.Y.Z".
+// The default is deliberately not a number: an unstamped binary saying "0.0.0"
+// would look like a real version to that rollout check.
+var boxyardVersion = "dev"
+
 // state holds what every subcommand needs.
 type state struct {
 	configPath string
@@ -37,6 +47,7 @@ func (s *state) Config() (*config.Config, error) {
 // NewRootCommand builds the `boxyard` command tree.
 func NewRootCommand() *cobra.Command {
 	var configPath string
+	var showVersion bool
 
 	root := &cobra.Command{
 		Use:   "boxyard",
@@ -46,6 +57,12 @@ func NewRootCommand() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// --version is EAGER in the Python: it prints and exits before any
+			// subcommand runs, and before the config is even resolved.
+			if showVersion {
+				fmt.Println(boxyardVersion)
+				os.Exit(0)
+			}
 			// Config path precedence: --config, then BOXYARD_CONFIG_PATH, then
 			// the default. The Python CLI ignored the environment variable
 			// until v0.4.0; both implementations honour it now.
@@ -60,6 +77,10 @@ func NewRootCommand() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if showVersion {
+				fmt.Println(boxyardVersion)
+				return nil
+			}
 			// Typer's invoke_without_command prints help when no subcommand is
 			// given.
 			return cmd.Help()
@@ -68,6 +89,8 @@ func NewRootCommand() *cobra.Command {
 
 	root.PersistentFlags().StringVar(&configPath, "config", "",
 		"The path to the config file. Will be '~/.config/boxyard/config.toml' if not provided.")
+	root.PersistentFlags().BoolVar(&showVersion, "version", false,
+		"Print the installed boxyard version and exit.")
 
 	// A usage error exits 2, as click's do. Anything that fails to PARSE is one
 	// — an unknown flag, a missing value, a bad enum. Runtime failures stay at
@@ -116,6 +139,7 @@ func NewRootCommand() *cobra.Command {
 		newTreeCommand(),
 		newYardStatusCommand(),
 		newMultiSyncCommand(),
+		newDoctorCommand(),
 	)
 	return root
 }

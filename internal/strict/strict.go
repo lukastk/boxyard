@@ -251,3 +251,18 @@ func MarshalJSONCompact(v any) ([]byte, error) {
 	// Encode appends a newline; pydantic's model_dump_json does not.
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
+
+// MarshalJSONIndentAt is MarshalJSONIndent with a prefix, for the callers that
+// assemble an ordered object by hand and need a value indented to its place in
+// it. Non-ASCII is escaped exactly as json.dumps does — one of this fleet's
+// hostnames is "Lukas’s MacBook Pro", so the difference shows up in real data.
+func MarshalJSONIndentAt(v any, prefix string) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent(prefix, "  ")
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return ensureASCII(bytes.TrimRight(buf.Bytes(), "\n")), nil
+}
