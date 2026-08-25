@@ -1,3 +1,35 @@
+## [0.5.7] - 2026-08-25
+
+### 🐛 Bug Fixes
+
+- **A bare command now means "the box I am standing in".**
+  `_get_box_index_name` ended with a cwd-inference fallback whose error message
+  read *"Box not specified and could not be inferred from current working
+  directory."* — and the block was **unreachable**. With no selector the
+  function always entered the picker branch first, so `boxyard sync` typed
+  inside a box opened an fzf picker over all 586 boxes instead of syncing that
+  box. The skill documentation already described the inference, so the code was
+  the odd one out.
+
+  The inference now runs *before* the picker, and the dead tail (with its
+  misleading message) is gone. If the cwd is not inside a box, the picker still
+  appears exactly as before.
+
+  A cwd box must also be a *candidate*: several callers pass a filtered
+  `box_metas` — `include` passes only excluded boxes, `exclude` only eligible
+  ones, `path` a group-filtered set — and a cwd box outside that set is not a
+  valid answer for the command, so it falls through to the picker.
+
+  Affects the nine commands that allow a bare invocation: `sync`, `include`,
+  `exclude`, `box-status`, `path`, `add-to-group`, `remove-from-group`,
+  `add-parent`, `remove-parent`. The destructive ones (`delete`, `rename`,
+  `copy`, `force-push`, `sync-name`) already refuse a bare invocation
+  (`allow_no_args=False`) and are untouched — which matters, because `delete`
+  has no confirmation prompt.
+
+  No shell helper or automation was relying on the old behaviour: every myrig
+  and mysystem call site passes an explicit selector.
+
 ## [0.5.6] - 2026-08-25
 
 ### 🧹 Robustness

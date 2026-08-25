@@ -214,7 +214,13 @@ Name matching options:
 --pick-first           # available on `path`; use only when ambiguity is acceptable
 ```
 
-If no box is provided for some commands, Boxyard may infer it from the current working directory when inside `<user_boxes_path>/<index_name>/...`.
+With no `--box`/`--box-id`/`--box-name` at all, boxyard uses the box you are
+standing in — anywhere under `<user_boxes_path>/<index_name>/...`. If the cwd is
+not inside a box (or the box is not a candidate for that command, e.g. an
+already-included box for `include`), it falls back to an fzf picker over the
+candidates. Commands that destroy something — `delete`, `rename`, `copy`,
+`force-push`, `sync-name` — refuse a bare invocation outright and always need
+an explicit selector.
 
 ## Creating boxes
 

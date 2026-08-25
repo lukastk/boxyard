@@ -207,6 +207,30 @@ def _get_box_index_name(
         box_metas = get_boxyard_meta(config).box_metas
     boxyard_meta = BoxyardMeta(box_metas=box_metas)
 
+    if search_mode:
+        # No selector at all: use the box the user is standing in.
+        #
+        # This USED to sit at the very end of the function, after the picker
+        # branch below -- where it could never run, because search_mode always
+        # entered that branch first. So `boxyard sync` typed inside a box
+        # opened an fzf picker over the whole yard instead of syncing that box,
+        # while the function still carried an error message ("could not be
+        # inferred from current working directory") describing behaviour it did
+        # not have.
+        #
+        # The candidate check is load-bearing: several callers pass a FILTERED
+        # `box_metas` (`include` passes only excluded boxes, `exclude` only
+        # eligible ones, `path` a group-filtered set). A cwd box outside that
+        # set is not a valid answer for the command, so fall through to the
+        # picker rather than returning something the command will reject.
+        from boxyard._utils import get_box_index_name_from_sub_path
+
+        _cwd_index_name = get_box_index_name_from_sub_path(
+            config=config, sub_path=Path.cwd()
+        )
+        if _cwd_index_name is not None and _cwd_index_name in boxyard_meta.by_index_name:
+            return _cwd_index_name
+
     if (box_id is not None or box_name is not None) or search_mode:
         if box_id is not None:
             if box_id not in boxyard_meta.by_id:
@@ -262,18 +286,6 @@ def _get_box_index_name(
                     )
                     if box_index_name is None:
                         raise typer.Exit(code=0)
-
-    if box_index_name is None:
-        from boxyard._utils import get_box_index_name_from_sub_path
-
-        box_index_name = get_box_index_name_from_sub_path(
-            config=config,
-            sub_path=Path.cwd(),
-        )
-        if box_index_name is None:
-            raise typer.Exit(
-                "Box not specified and could not be inferred from current working directory."
-            )
 
     return box_index_name
 
