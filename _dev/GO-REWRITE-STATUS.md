@@ -37,7 +37,8 @@ Twelve bugs found so far this way, all released in v0.4.0–v0.4.3. Every one wa
 | `internal/symlinks` | `create_user_box_group_symlinks` | 19 scenarios run through the real Python builder |
 | `internal/runner` | `run_cmd_async` + suspend watchdog | separate wall/monotonic seams; mutation-checked |
 | `internal/rclone` | `_utils/rclone.py` | all 65 Python argv tests ported + real-rclone round trip |
-| `internal/cli` | `_cli/main.py` — **`which`, `list`, `list-groups`** | byte-identical to Python on the real yard |
+| `internal/cli` | `_cli/main.py` — **`which`, `list`, `list-groups`, `new`** | byte-identical to Python on the real yard |
+| `internal/cmds` | `cmds/` — **`init`, `new_box`** | isolated test yards; git-URL differential over 17 URLs |
 
 `boxyard which -i` on the real 583-box yard: **185 ms → 6.3 ms (29×)**.
 
@@ -79,6 +80,33 @@ green throughout. The frozen differential does not protect you here: it
 captures the behaviour of the day it was taken, and all its scenarios exercise
 the DATA meaning — which is exactly why they still passed after the CONF fix.
 
+## What porting `new_box` turned up
+
+Nothing wrong on the Go side — but five faults in the Python, all found by
+reading it line by line rather than by any test failing. They shipped as
+**v0.5.5**, and the corrected behaviour is what the Go port implements.
+
+| fault | why nothing caught it |
+|---|---|
+| `sync_before_new_box` imported `sync_boxmetas`, a name `boxyard.cmds` has never exported, and drove it through `asyncio.get_event_loop()`, which RAISES on Python 3.14 | the setting defaults to `False`, so the branch had never once run |
+| `--creation-timestamp-utc` checked `<now>_<subid>` for collisions and then substituted the caller's timestamp — the id written was never the id checked | the subid space makes a real collision rare; the *guarantee* was void, not the outcome |
+| a failing `git init` rolled the whole box back, despite a "Warning: …" branch the code has always carried | `check=True` raised before the warning could run — dead code |
+| a failed `git clone` reported only an exit status; `stderr` went to `DEVNULL` | you only notice when a clone fails, and then you blame the URL |
+| `boxyard new --no-refresh-user-symlinks` rebuilt the symlinks anyway | `new` was the ONLY command that declared the flag and then ignored it |
+
+Two more of the same shape, fixed alongside: the global lock was released
+outside any `try`, and the box-id collision snapshot was read **before** the
+lock was taken, which made the lock's guarantee vacuous.
+
+The Go port additionally found that the Python suite spawns a bare `python` for
+its subprocess tests — absent on a machine that installs only `python3`, so ten
+tests failed locally while CI stayed green (uv provides `python` there). One of
+them had therefore never tested what it claims.
+
+**The dev/CI interpreter is not the deployed one.** CI runs 3.11 and 3.12;
+`uv tool install` picked **3.14**. The `get_event_loop` fault is exactly that
+gap: deprecated in 3.12, raising in 3.14, and green on every version CI tests.
+
 ## In progress
 
 Nothing. Wiring is done: `internal/storage` adapts `rclone.Client` to
@@ -91,10 +119,12 @@ the bug fixed in v0.4.3.
 
 ## Not started
 
-- Remaining CLI commands (21 of 24; ~213 flags total), plus `list`'s tree and
-  grouped views and its hierarchy filters
-- `internal/cmds` — the command implementations (init, new, sync, include,
-  exclude, delete, rename, copy, force-push, doctor, …)
+- Remaining CLI commands (20 of 24; ~213 flags total), plus `list`'s tree and
+  grouped views and its hierarchy filters, and `new`'s `--group` / `--parent`
+  (both need `modify_boxmeta`)
+- `internal/cmds` — the remaining command implementations (sync, include,
+  exclude, delete, rename, copy, force-push, doctor, …). `new_box` refuses
+  loudly on `sync_before_new_box = true`, which needs `sync_missing_boxmetas`
 - The two render surfaces: `path`'s Textual TUI and `multi-sync`'s live table.
   **Open question:** `path`'s TUI may be dead weight — the picker actually in
   daily use is `boxyard-pick` (fzf + `boxyard-groups.py` over
