@@ -90,6 +90,11 @@ func NewRootCommand() *cobra.Command {
 		newBoxStatusCommand(),
 		newSyncCommand(),
 		newPathCommand(),
+		newAddToGroupCommand(),
+		newRemoveFromGroupCommand(),
+		newAddParentCommand(),
+		newRemoveParentCommand(),
+		newCreateUserSymlinksCommand(),
 	)
 	return root
 }

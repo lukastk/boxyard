@@ -201,3 +201,70 @@ func versionLess(a, b string) bool {
 	}
 	return false
 }
+
+// TestGroupAndParentCommandsMatchPython runs add-to-group, remove-from-group,
+// add-parent, remove-parent and create-user-symlinks through BOTH
+// implementations and compares the resulting yards.
+//
+// The already-there / not-there paths are included on purpose: their EXIT CODES
+// are asymmetric in the Python (add-parent on a parent it already has exits 0,
+// remove-parent on one it does not have exits 1), and that asymmetry is the
+// contract, not an accident to tidy up in the port.
+func TestGroupAndParentCommandsMatchPython(t *testing.T) {
+	py := pythonCLI()
+	if py == "" {
+		t.Skip("no boxyard console script that can drive the Python CLI")
+	}
+
+	root := t.TempDir()
+	goBin := filepath.Join(root, "boxyard-go")
+	if out, err := exec.Command("go", "build", "-o", goBin, "../cmd/boxyard").CombinedOutput(); err != nil {
+		t.Fatalf("building the Go binary: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command("sh", "group_parent_cmds.sh", filepath.Join(root, "yards"), goBin, py)
+	cmd.Env = append(os.Environ(), "DEFAULT_BOX_GROUPS=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("comparison failed: %v\n%s", err, out)
+	}
+
+	goFacts, pyFacts := splitFacts(string(out))
+	if len(goFacts) == 0 || len(pyFacts) == 0 {
+		t.Fatalf("could not read both sections from:\n%s", out)
+	}
+	if strings.Join(goFacts, "\n") != strings.Join(pyFacts, "\n") {
+		t.Fatalf("implementations disagree\nGo:\n%s\n\nPython:\n%s\n\nfull output:\n%s",
+			strings.Join(goFacts, "\n"), strings.Join(pyFacts, "\n"), out)
+	}
+}
+
+// splitFacts collects the comparable lines of each implementation's section,
+// with box ids normalised away.
+func splitFacts(out string) (goFacts, pyFacts []string) {
+	current := ""
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "GO ") || strings.HasPrefix(trimmed, "GO:") {
+			current = "GO"
+		} else if strings.HasPrefix(trimmed, "PY ") || strings.HasPrefix(trimmed, "PY:") {
+			current = "PY"
+		}
+		if current == "" || trimmed == "" {
+			continue
+		}
+		if !strings.Contains(trimmed, "groups=") && !strings.Contains(trimmed, "nparents=") &&
+			!strings.Contains(trimmed, "remove-parent") && !strings.HasPrefix(trimmed, "./") {
+			continue
+		}
+		fact := normaliseFacts(strings.TrimPrefix(strings.TrimPrefix(trimmed, "GO:"), "PY:"))
+		if current == "GO" {
+			goFacts = append(goFacts, fact)
+		} else {
+			pyFacts = append(pyFacts, fact)
+		}
+	}
+	sort.Strings(goFacts)
+	sort.Strings(pyFacts)
+	return goFacts, pyFacts
+}
