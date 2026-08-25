@@ -64,7 +64,44 @@ def get_hostname():
         hostname = platform.node()
     return hostname
 
-# %% pts/mod/_utils/00_base.pct.py 9
+# %% pts/mod/_utils/00_base.pct.py 8
+def _reject_ambiguous_disp_terms(terms: list[str], disp_terms: list[str]) -> None:
+    """
+    Refuse a picker whose display lines cannot be mapped back to one term.
+
+    fzf returns the LINE the user chose, and both wrappers map that back to a
+    term with `disp_terms.index(...)` -- which returns the FIRST match. Two
+    items rendering to the same line therefore resolve to the same term, so
+    picking the second one silently acts on the first. For a picker that feeds
+    `boxyard exclude`, that is the wrong box being removed from the machine.
+
+    Every caller today embeds the box id in its display line, so this cannot
+    fire; it exists so that a caller which forgets gets a loud error instead of
+    a wrong box. Lines are compared after `.strip()`, because that is what the
+    lookup does.
+
+    Mismatched list lengths are refused for the same reason: the mapping is
+    positional, so a short `terms` would resolve a high index to the wrong item
+    or raise an opaque IndexError deep inside the wrapper.
+    """
+    if len(terms) != len(disp_terms):
+        raise ValueError(
+            f"run_fzf: {len(terms)} terms but {len(disp_terms)} display terms; "
+            f"the two are mapped positionally and must be the same length."
+        )
+    stripped = [t.strip() for t in disp_terms]
+    seen = set()
+    for term in stripped:
+        if term in seen:
+            raise ValueError(
+                f"run_fzf: duplicate display term {term!r}. fzf returns the "
+                f"chosen LINE, so duplicates cannot be mapped back to a single "
+                f"item and picking one would act on another. Include something "
+                f"unique (the box id) in each display term."
+            )
+        seen.add(term)
+
+# %% pts/mod/_utils/00_base.pct.py 10
 def run_fzf(terms: list[str], disp_terms: list[str] | None = None):
     """
     Launches the fzf command-line fuzzy finder with a list of terms and returns
@@ -84,6 +121,7 @@ def run_fzf(terms: list[str], disp_terms: list[str] | None = None):
 
     if disp_terms is None:
         disp_terms = terms
+    _reject_ambiguous_disp_terms(terms, disp_terms)
     try:
         # Launch fzf with the list of strings
         result = subprocess.run(
@@ -98,7 +136,7 @@ def run_fzf(terms: list[str], disp_terms: list[str] | None = None):
     except FileNotFoundError:
         raise RuntimeError("fzf is not installed or not found in PATH.")
 
-# %% pts/mod/_utils/00_base.pct.py 11
+# %% pts/mod/_utils/00_base.pct.py 12
 def run_fzf_multi(terms: list[str], disp_terms: list[str] | None = None):
     """
     Launches fzf in multi-select mode and returns all selected terms.
@@ -120,6 +158,7 @@ def run_fzf_multi(terms: list[str], disp_terms: list[str] | None = None):
 
     if disp_terms is None:
         disp_terms = terms
+    _reject_ambiguous_disp_terms(terms, disp_terms)
     try:
         result = subprocess.run(
             ["fzf", "--multi"], input="\n".join(disp_terms), text=True, capture_output=True
@@ -136,7 +175,7 @@ def run_fzf_multi(terms: list[str], disp_terms: list[str] | None = None):
     except FileNotFoundError:
         raise RuntimeError("fzf is not installed or not found in PATH.")
 
-# %% pts/mod/_utils/00_base.pct.py 13
+# %% pts/mod/_utils/00_base.pct.py 14
 def literal_exclude_names(exclude_path: "str | Path | None") -> set[str]:
     """
     Read an rclone exclude file and return the patterns that are LITERAL names.
@@ -253,7 +292,7 @@ def check_last_time_modified(
         else None
     )
 
-# %% pts/mod/_utils/00_base.pct.py 15
+# %% pts/mod/_utils/00_base.pct.py 16
 # Semaphore to limit concurrent subprocess creation and avoid fd exhaustion
 _subprocess_semaphore: asyncio.Semaphore | None = None
 _MAX_CONCURRENT_SUBPROCESSES = 10
@@ -384,7 +423,7 @@ async def run_cmd_async(
             _live_procs.discard(proc)
             _suspend_killed_pids.discard(proc.pid)
 
-# %% pts/mod/_utils/00_base.pct.py 18
+# %% pts/mod/_utils/00_base.pct.py 19
 async def async_throttler(
     coros: list[Coroutine],
     max_concurrency: int,
@@ -415,7 +454,7 @@ async def async_throttler(
             raise r
     return res
 
-# %% pts/mod/_utils/00_base.pct.py 21
+# %% pts/mod/_utils/00_base.pct.py 22
 def is_in_event_loop():
     try:
         asyncio.get_running_loop()
@@ -423,7 +462,7 @@ def is_in_event_loop():
     except RuntimeError:
         return False
 
-# %% pts/mod/_utils/00_base.pct.py 23
+# %% pts/mod/_utils/00_base.pct.py 24
 import sys
 
 _interrupted = False
@@ -460,7 +499,7 @@ def check_interrupted():
     global _interrupted
     return _interrupted
 
-# %% pts/mod/_utils/00_base.pct.py 26
+# %% pts/mod/_utils/00_base.pct.py 27
 def count_files_in_dir(path: Path) -> int:
     import os
     num_files = 0

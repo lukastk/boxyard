@@ -91,6 +91,44 @@ def get_hostname():
     return hostname
 
 # %%
+#|exporti
+def _reject_ambiguous_disp_terms(terms: list[str], disp_terms: list[str]) -> None:
+    """
+    Refuse a picker whose display lines cannot be mapped back to one term.
+
+    fzf returns the LINE the user chose, and both wrappers map that back to a
+    term with `disp_terms.index(...)` -- which returns the FIRST match. Two
+    items rendering to the same line therefore resolve to the same term, so
+    picking the second one silently acts on the first. For a picker that feeds
+    `boxyard exclude`, that is the wrong box being removed from the machine.
+
+    Every caller today embeds the box id in its display line, so this cannot
+    fire; it exists so that a caller which forgets gets a loud error instead of
+    a wrong box. Lines are compared after `.strip()`, because that is what the
+    lookup does.
+
+    Mismatched list lengths are refused for the same reason: the mapping is
+    positional, so a short `terms` would resolve a high index to the wrong item
+    or raise an opaque IndexError deep inside the wrapper.
+    """
+    if len(terms) != len(disp_terms):
+        raise ValueError(
+            f"run_fzf: {len(terms)} terms but {len(disp_terms)} display terms; "
+            f"the two are mapped positionally and must be the same length."
+        )
+    stripped = [t.strip() for t in disp_terms]
+    seen = set()
+    for term in stripped:
+        if term in seen:
+            raise ValueError(
+                f"run_fzf: duplicate display term {term!r}. fzf returns the "
+                f"chosen LINE, so duplicates cannot be mapped back to a single "
+                f"item and picking one would act on another. Include something "
+                f"unique (the box id) in each display term."
+            )
+        seen.add(term)
+
+# %%
 #|hide
 show_doc(this_module.run_fzf)
 
@@ -115,6 +153,7 @@ def run_fzf(terms: list[str], disp_terms: list[str] | None = None):
 
     if disp_terms is None:
         disp_terms = terms
+    _reject_ambiguous_disp_terms(terms, disp_terms)
     try:
         # Launch fzf with the list of strings
         result = subprocess.run(
@@ -156,6 +195,7 @@ def run_fzf_multi(terms: list[str], disp_terms: list[str] | None = None):
 
     if disp_terms is None:
         disp_terms = terms
+    _reject_ambiguous_disp_terms(terms, disp_terms)
     try:
         result = subprocess.run(
             ["fzf", "--multi"], input="\n".join(disp_terms), text=True, capture_output=True
