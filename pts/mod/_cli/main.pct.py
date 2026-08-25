@@ -460,9 +460,13 @@ def cli_new(
             modifications={"parents": [parent_meta.box_id]},
         )
 
-    from boxyard.cmds import create_user_symlinks
+    # `new` was the ONLY command that declared `--refresh-user-symlinks` and
+    # then ignored it -- every other command guards the call. So
+    # `--no-refresh-user-symlinks` rebuilt the symlink tree anyway, silently.
+    if refresh_user_symlinks:
+        from boxyard.cmds import create_user_symlinks
 
-    create_user_symlinks(config_path=app_state["config_path"])
+        create_user_symlinks(config_path=app_state["config_path"])
 
 # %% [markdown]
 # # `sync`

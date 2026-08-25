@@ -16,6 +16,7 @@
 #|export
 import pytest
 import asyncio
+import sys
 import tempfile
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -252,7 +253,7 @@ class TestRunCmdAsync:
         """Captures stderr output."""
         async def _test():
             returncode, stdout, stderr = await run_cmd_async(
-                ["python", "-c", "import sys; sys.stderr.write('error\\n')"]
+                [sys.executable, "-c", "import sys; sys.stderr.write('error\\n')"]
             )
             assert returncode == 0
             assert "error" in stderr
@@ -263,7 +264,7 @@ class TestRunCmdAsync:
         """Handles command failure."""
         async def _test():
             returncode, stdout, stderr = await run_cmd_async(
-                ["python", "-c", "import sys; sys.exit(1)"]
+                [sys.executable, "-c", "import sys; sys.exit(1)"]
             )
             assert returncode == 1
 
@@ -273,7 +274,7 @@ class TestRunCmdAsync:
         """Handles commands with multiple arguments."""
         async def _test():
             returncode, stdout, stderr = await run_cmd_async(
-                ["python", "-c", "print('arg1', 'arg2')"]
+                [sys.executable, "-c", "print('arg1', 'arg2')"]
             )
             assert returncode == 0
             assert "arg1" in stdout
@@ -315,7 +316,7 @@ class TestRunCmdAsyncTimeout:
         async def _test():
             with pytest.raises(CommandTimeout):
                 await run_cmd_async(
-                    ["python", "-c", "import time; time.sleep(30)"], timeout=0.5
+                    [sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.5
                 )
 
         asyncio.run(_test())
@@ -336,7 +337,7 @@ class TestRunCmdAsyncTimeout:
             with patch("asyncio.create_subprocess_exec", _spy):
                 with pytest.raises(CommandTimeout):
                     await run_cmd_async(
-                        ["python", "-c", "import time; time.sleep(30)"], timeout=0.5
+                        [sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.5
                     )
 
         asyncio.run(_test())
@@ -353,14 +354,14 @@ class TestRunCmdAsyncTimeout:
         # and the marker would appear.
         script = (
             "import subprocess, time; "
-            f"subprocess.Popen(['python','-c',\"import time; time.sleep(2); "
+            f"subprocess.Popen([{sys.executable!r},'-c',\"import time; time.sleep(2); "
             f"open({str(marker)!r},'w').write('orphan')\"]); "
             "time.sleep(30)"
         )
 
         async def _test():
             with pytest.raises(CommandTimeout):
-                await run_cmd_async(["python", "-c", script], timeout=0.5)
+                await run_cmd_async([sys.executable, "-c", script], timeout=0.5)
 
         asyncio.run(_test())
         time.sleep(3)
@@ -370,7 +371,7 @@ class TestRunCmdAsyncTimeout:
         """timeout=None keeps the old unbounded behaviour for transfers."""
         async def _test():
             returncode, stdout, _ = await run_cmd_async(
-                ["python", "-c", "import time; time.sleep(1); print('done')"],
+                [sys.executable, "-c", "import time; time.sleep(1); print('done')"],
                 timeout=None,
             )
             assert returncode == 0
@@ -400,7 +401,7 @@ class TestSuspendWatchdog:
 
     async def _spawn_sleeper(self, seconds: int = 30):
         return await asyncio.create_subprocess_exec(
-            "python", "-c", f"import time; time.sleep({seconds})",
+            sys.executable, "-c", f"import time; time.sleep({seconds})",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
@@ -467,7 +468,7 @@ class TestSuspendWatchdog:
                     try:
                         with pytest.raises(SuspendInterruption):
                             await run_cmd_async(
-                                ["python", "-c", "import time; time.sleep(30)"]
+                                [sys.executable, "-c", "import time; time.sleep(30)"]
                             )
                     finally:
                         suspend.cancel()

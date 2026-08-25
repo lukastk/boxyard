@@ -1,3 +1,75 @@
+## [0.5.5] - 2026-08-25
+
+Five faults in `new_box`, all found by reading it line by line while porting it
+to Go. Every one of them was invisible: nothing in the suite reached the
+branches, and the branches that were reached were unreachable in a different
+sense — dead code behind a `check=True`.
+
+### 🐛 Bug Fixes
+
+- **`sync_before_new_box` had never once run.** Two independent faults sat on
+  top of each other, and the setting defaults to `False`, so nothing ever tried:
+
+  * `from boxyard.cmds import sync_boxmetas` — a name `boxyard.cmds` has never
+    exported. The function is `sync_missing_boxmetas`, and has been since the
+    repoyard→boxyard rename (`32e1b24`). The import raised `ImportError`.
+  * `asyncio.get_event_loop().run_until_complete(...)` raises `RuntimeError:
+    There is no current event loop` on Python 3.14, which is what boxyard is
+    installed under. It has been deprecated for this use since 3.12. Every
+    other call site in the codebase already used `asyncio.run`; this was the
+    only holdout.
+
+  So turning the setting on did not sync boxmetas before creating a box — it
+  made `boxyard new` fail outright. The setting exists to catch a box id
+  already taken on the remote, which is exactly what a multi-machine fleet
+  wants.
+
+- **`--creation-timestamp-utc` could mint a duplicate box id.** `new_box` asked
+  `generate_unique_box_id` for an id, which checked `<now>_<subid>` against the
+  existing ids — and then `new_box` overwrote the timestamp half with the
+  caller's. The id that got written was never the id that was checked, so every
+  collision guarantee was void for that path. `doctor`'s `duplicate-box-id`
+  check exists to find precisely this.
+
+  `generate_unique_box_id` now takes the resolved timestamp, and the format
+  switch moved into a new `format_creation_timestamp` so it is written once
+  rather than twice.
+
+- **A failing `git init` destroyed the box.** The code has always carried a
+  "Warning: Failed to initialise git box" branch — but `check=True` raised
+  first, so the warning was unreachable and the failure instead rolled the
+  whole box back. On a machine without git, `boxyard new` produced a
+  `CalledProcessError` and no box. The box is complete and registered before
+  `git init` runs; it is now kept, with a warning on **stderr**
+  (unconditionally — the CLI passes `verbose=False`, so gating it on verbosity
+  would have made a failed `git init` silent).
+
+- **A failed `git clone` said nothing about why.** `stderr` went to `DEVNULL`
+  and `check=True` raised a `CalledProcessError` carrying only an exit status,
+  while the `if res.returncode != 0: raise RuntimeError(...)` beneath it was
+  dead code. Bad URL, no network and no permission were indistinguishable.
+  git's own message is now captured and included.
+
+- **`boxyard new --no-refresh-user-symlinks` rebuilt the symlinks anyway.**
+  `new` was the only command that declared the flag and then ignored it; every
+  other command guards the call.
+
+### 🧹 Robustness
+
+- The global lock is now released in a `finally`, and the box-id collision
+  snapshot is re-read **after** the lock is taken. The snapshot used to be read
+  before it, which made the lock's guarantee vacuous: a box created by a
+  concurrent `boxyard new` in between would be missing from the check.
+
+- The test suite spawned a bare `python` for its subprocess tests, which does
+  not exist on a machine that installs only `python3` — ten tests failed
+  locally while CI (where uv provides `python`) stayed green. They now use
+  `sys.executable`, which is also more correct: they test with the interpreter
+  running the suite. One of them,
+  `test_timeout_kills_child_processes`, was additionally spawning `python` from
+  *inside* its own script, so it had never actually tested that the process
+  group dies.
+
 ## [0.5.4] - 2026-08-25
 
 ### 🐛 Bug Fixes
