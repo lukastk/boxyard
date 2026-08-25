@@ -89,6 +89,7 @@ func NewRootCommand() *cobra.Command {
 		newNewCommand(),
 		newBoxStatusCommand(),
 		newSyncCommand(),
+		newPathCommand(),
 	)
 	return root
 }
