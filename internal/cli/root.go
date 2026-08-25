@@ -95,6 +95,8 @@ func NewRootCommand() *cobra.Command {
 		newAddParentCommand(),
 		newRemoveParentCommand(),
 		newCreateUserSymlinksCommand(),
+		newIncludeCommand(),
+		newExcludeCommand(),
 	)
 	return root
 }

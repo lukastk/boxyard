@@ -53,6 +53,11 @@ func TestCrossImplementationSync(t *testing.T) {
 		"hello from go",             // Go pushed, Python pulled
 		"run.sh is executable in B", // the exec-bit manifest round-tripped
 		"hello from python",         // Python pushed, Go pulled
+		// Go's own exclude removes the DATA, and its include puts it back
+		// WITH the exec bit — the manifest has to survive a Go->Go round trip
+		// as well as a cross-implementation one.
+		"DATA gone from A after exclude",
+		"run.sh still executable after a Go include",
 		"box-status IDENTICAL across implementations",
 		"OK",
 	} {

@@ -95,6 +95,13 @@ echo "== Go: pull into yard A"
 "$GOBIN" --config "$A" sync -r "$idx" --no-refresh-user-symlinks 2>&1 | tail -3
 cat "$ROOT/A/boxes/$idx/from-b.txt"
 
+echo "== Go excludes the box from yard A, then includes it again"
+"$GOBIN" --config "$A" exclude -r "$idx" --skip-sync --no-refresh-user-symlinks 2>&1 | tail -2
+test ! -e "$ROOT/A/boxes/$idx" && echo "DATA gone from A after exclude"
+"$GOBIN" --config "$A" include -r "$idx" --no-refresh-user-symlinks 2>&1 | tail -2
+cat "$ROOT/A/boxes/$idx/from-b.txt"
+test -x "$ROOT/A/boxes/$idx/run.sh" && echo "run.sh still executable after a Go include"
+
 echo "== Go box-status agrees with Python box-status"
 "$GOBIN" --config "$A" box-status -r "$idx" -o json > "$ROOT/go-status.json"
 BOXYARD_CONFIG_PATH="$A" "$PYBIN" box-status -r "$idx" -o json > "$ROOT/py-status.json"
