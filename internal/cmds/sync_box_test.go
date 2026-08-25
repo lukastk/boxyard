@@ -503,3 +503,30 @@ func TestSyncBoxUsesTheBoxsOwnFilters(t *testing.T) {
 			dataCall.ExcludeFile, boxExclude)
 	}
 }
+
+// A cancelled context abandons the box at a PART BOUNDARY, which is where
+// abandoning it is safe. This is the Go equivalent of Python's soft
+// interruption: a Ctrl-C during a long multi-sync stops between parts rather
+// than mid-transfer.
+func TestSyncBoxStopsOnACancelledContext(t *testing.T) {
+	cfg := remoteYard(t)
+	cfg.MachineName = "macbook"
+	bm := ownedBox(t, cfg, "interrupted", "macbook")
+
+	s := newFakeStore()
+	setUpNeedsPush(t, cfg, s, bm, "boxyard")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := SyncBox(ctx, cfg, s, nopPerms{}, SyncBoxOptions{
+		BoxIndexName:     bm.IndexName(),
+		TombstonedBoxIDs: map[string]bool{},
+	})
+	if err == nil {
+		t.Fatal("a cancelled context must stop the sync")
+	}
+	if len(s.syncCalls) != 0 {
+		t.Fatalf("transfers ran after cancellation: %+v", s.syncCalls)
+	}
+}

@@ -184,6 +184,16 @@ func SyncBox(ctx context.Context, cfg *config.Config, s SyncStore, p syncengine.
 		}, nil
 	}
 
+	// Python installs a "soft interruption" flag and checks it between parts,
+	// so a Ctrl-C during a long multi-sync abandons the box at a part boundary
+	// rather than mid-transfer. Go's equivalent is the context: a caller
+	// cancels it, and this checks at the same three points Python does. Doing
+	// it here rather than relying on the transfer to notice is the point —
+	// the boundary is where abandoning a box is safe.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// --- META ---------------------------------------------------------
 	//
 	// Synced whenever DATA is, even when the caller did not ask for it: the
@@ -292,6 +302,10 @@ func SyncBox(ctx context.Context, cfg *config.Config, s SyncStore, p syncengine.
 		return syncengine.Run(ctx, s, p, req)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// --- CONF ---------------------------------------------------------
 	//
 	// Synced whenever DATA is, for the same reason META is:
@@ -330,6 +344,10 @@ func SyncBox(ctx context.Context, cfg *config.Config, s SyncStore, p syncengine.
 		if wanted[enums.PartConf] {
 			results[enums.PartConf] = PartResult{Status: status, Synced: synced}
 		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	// --- DATA ---------------------------------------------------------
