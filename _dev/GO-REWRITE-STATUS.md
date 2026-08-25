@@ -39,14 +39,35 @@ Twelve bugs found so far this way, all released in v0.4.0–v0.4.3. Every one wa
 | `internal/rclone` | `_utils/rclone.py` | all 65 Python argv tests ported + real-rclone round trip |
 | `internal/cli` | `_cli/main.py` — **`which`, `list`, `list-groups`, `new`** | byte-identical to Python on the real yard |
 | `internal/ownership` | `_ownership.py` | refusals asserted to name the fix and BOTH ways out |
-| `internal/cmds` | `cmds/` — **`init`, `new_box`, `get_box_sync_status`, `sync_box`** | isolated test yards; git-URL differential; the four ownership/ordering properties mutation-checked |
+| `internal/boxref` | `_get_box_index_name` + `run_fzf` | **1008-comparison differential** of the three match modes |
+| `internal/cmds` | `cmds/` — `init`, `new_box`, `get_box_sync_status`, **`sync_box`**, `modify_boxmeta`, `release_box`, `include_box`, `exclude_box` | isolated test yards; every guard mutation-checked |
 
 `boxyard which -i` on the real 583-box yard: **185 ms → 6.3 ms (29×)**.
 
-The three ported commands cover everything myrig's box picker, the sesh plugin
-and the `mcd`/`bx`/`nb` shell functions actually invoke. Flags not yet ported
-(`--view tree|groups`, the hierarchy filters) **fail loudly with exit 1** rather
-than being ignored.
+**15 of 29 CLI commands** are registered: `init`, `which`, `list`,
+`list-groups`, `new`, `sync`, `box-status`, `path`, `include`, `exclude`,
+`add-to-group`, `remove-from-group`, `add-parent`, `remove-parent`,
+`create-user-symlinks`. Still to come: `claim`, `release`, `owner`,
+`discard-local`, `delete`, `rename`, `sync-name`, `copy`, `force-push`,
+`doctor`, `multi-sync`, `tree`, `yard-status`, `sync-missing-meta`.
+
+Flags not yet ported (`--interactive` and its companions, `--view tree|groups`,
+the hierarchy filters) **fail loudly with exit 1** rather than being ignored.
+Cobra's volunteered `completion` and `help` subcommands are disabled: an extra
+command is as much a surface difference as an extra flag.
+
+### Verified against the real yard, not just against tests
+
+Byte-for-byte identical to the Python on the live 586-box yard: `list` (588
+lines), `which -j`, `list-groups`, `box-status` in both output formats, and
+`path` in every variant tried. Exit codes match too, including 2 for usage
+errors.
+
+`parity/cross_impl_sync.sh` goes further, in two throwaway yards sharing an
+rclone remote: Go pushes and Python pulls, Python pushes and Go pulls, Go
+excludes and re-includes, and both report the same `box-status` bytes. It is
+the only test that can see what lives BETWEEN the implementations — and it is
+what caught the registry-JSON gap below.
 
 ## Keeping parity as Python moves
 
@@ -91,6 +112,24 @@ probe that stops a `.DS_Store` from reading as a real change. The four
 properties that matter — a non-owner never pushes, META follows DATA, CONF
 follows DATA, and DATA uses the box's OWN exclude file — are each
 mutation-checked.
+
+### The gap running against the real yard found
+
+`boxyard which` on the live yard failed outright:
+
+    Error: ~/.boxyard/boxyard_meta.json: invalid JSON: unknown field "unknown_keys"
+
+EVERY Go command that reads the registry had been broken since Python v0.5.0
+started writing that field, and the round-trip test did not notice because its
+golden fixture was a PRE-v0.5.0 sample. Two fields differ between boxmeta.toml
+and boxyard_meta.json — `write_owner` is always present and null when unowned
+(318 of 586 boxes), and `unknown_keys` is always present — and the Go struct
+used one set of tags for both. Fixed in `d99ec65`, with the fixture re-cut from
+the live file to carry both an owned and an unowned record.
+
+The lesson is the one this document already states and had not yet been made to
+follow: **a frozen fixture only proves parity with the day it was taken.** Build
+the binary and run it against the real yard.
 
 ## What porting `new_box` turned up
 

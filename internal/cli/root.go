@@ -77,6 +77,12 @@ func NewRootCommand() *cobra.Command {
 		return &usageError{err: err}
 	})
 
+	// Cobra volunteers `completion` and `help` subcommands. Typer has neither,
+	// and an extra command is as much a surface difference as an extra flag —
+	// `boxyard help` would work here and fail there.
+	root.CompletionOptions.DisableDefaultCmd = true
+	root.SetHelpCommand(&cobra.Command{Use: "no-help", Hidden: true})
+
 	// Commands are registered as they are ported. A command is added only when
 	// it is complete — a half-implemented command would silently diverge from
 	// the Python for the flags it does not yet handle, which is exactly what
