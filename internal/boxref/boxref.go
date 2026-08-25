@@ -75,6 +75,16 @@ type Options struct {
 	// Label names the thing being selected in the no-args error ("box",
 	// "parent").
 	Label string
+
+	// CurrentBoxIndexName is the box the user is standing in, or "" when the
+	// working directory is not inside one. With NO selector at all it wins
+	// outright — `boxyard sync` typed inside a box means that box.
+	//
+	// Python carried this as an unreachable fallback AFTER the picker branch,
+	// so a bare command opened an fzf picker over the whole yard instead, while
+	// still carrying an error message describing the behaviour it did not have.
+	// Fixed in v0.5.7; this is the same rule.
+	CurrentBoxIndexName string
 }
 
 // Resolve returns the index name of the box the options select.
@@ -111,6 +121,18 @@ func Resolve(metas []*models.BoxMeta, p Picker, opts Options) (string, error) {
 
 	if opts.BoxIndexName != "" {
 		return opts.BoxIndexName, nil
+	}
+
+	// No selector at all: the box the user is standing in wins — but only if it
+	// is a CANDIDATE. Several commands pass a filtered set (`include` offers
+	// only excluded boxes, `exclude` only eligible ones), and a cwd box outside
+	// that set is not a valid answer, so it falls through to the picker.
+	if given == 0 && opts.CurrentBoxIndexName != "" {
+		for _, bm := range metas {
+			if bm.IndexName() == opts.CurrentBoxIndexName {
+				return opts.CurrentBoxIndexName, nil
+			}
+		}
 	}
 
 	if opts.BoxID != "" {

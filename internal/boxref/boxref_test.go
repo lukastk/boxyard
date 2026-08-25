@@ -234,3 +234,69 @@ func TestRejectAmbiguousDisplayTerms(t *testing.T) {
 		t.Fatal("mismatched lengths were accepted")
 	}
 }
+
+// With no selector at all, the box the user is standing in wins. Python
+// carried this as an UNREACHABLE fallback after the picker branch, so a bare
+// command opened a picker over the whole yard instead (fixed in v0.5.7).
+func TestResolveUsesTheCurrentBox(t *testing.T) {
+	p := &recordingPicker{choose: 0}
+	got, err := Resolve(yard(), p, Options{
+		AllowNoArgs:         true,
+		CurrentBoxIndexName: "20240104_ccccc__Sesh",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "20240104_ccccc__Sesh" {
+		t.Fatalf("got %q, want the box the user is standing in", got)
+	}
+	if p.callCount != 0 {
+		t.Fatal("a picker was opened even though the cwd resolved a box")
+	}
+}
+
+// A cwd box outside the candidate set is not a valid answer for the command,
+// so it must fall through rather than be returned.
+func TestResolveIgnoresACurrentBoxOutsideTheCandidates(t *testing.T) {
+	p := &recordingPicker{choose: 0}
+	subset := []*models.BoxMeta{bx("20240105", "ddddd", "myrig")}
+	got, err := Resolve(subset, p, Options{
+		AllowNoArgs:         true,
+		CurrentBoxIndexName: "20240104_ccccc__Sesh",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "20240105_ddddd__myrig" {
+		t.Fatalf("got %q, want the only candidate", got)
+	}
+}
+
+// An explicit selector always beats the cwd.
+func TestResolveExplicitSelectorBeatsTheCurrentBox(t *testing.T) {
+	got, err := Resolve(yard(), nil, Options{
+		BoxName:             "myrig",
+		CurrentBoxIndexName: "20240104_ccccc__Sesh",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "20240105_ddddd__myrig" {
+		t.Fatalf("got %q, want the explicitly named box", got)
+	}
+}
+
+// Outside any box, a bare invocation still reaches the picker.
+func TestResolveOutsideABoxStillPicks(t *testing.T) {
+	p := &recordingPicker{choose: 2}
+	got, err := Resolve(yard(), p, Options{AllowNoArgs: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.callCount != 1 {
+		t.Fatalf("the picker ran %d times, want once", p.callCount)
+	}
+	if got != "20240104_ccccc__Sesh" {
+		t.Fatalf("got %q", got)
+	}
+}

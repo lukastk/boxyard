@@ -636,3 +636,16 @@ func readHex4(b []byte) (rune, error) {
 	}
 	return r, nil
 }
+
+// Adapter satisfies syncengine.Perms over the package functions, so the sync
+// engine can be driven without the manifest and tested without touching file
+// modes.
+type Adapter struct{}
+
+// Generate writes the exec-bit manifest at the root of a box's DATA, reporting
+// whether anything was written.
+func (Adapter) Generate(root string) (bool, error) { return GenerateManifest(root) }
+
+// Apply restores the exec bit from the manifest, returning the paths it
+// changed.
+func (Adapter) Apply(root string) ([]string, error) { return ApplyManifest(root) }

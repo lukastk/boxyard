@@ -76,6 +76,7 @@ func NewRootCommand() *cobra.Command {
 		newListCommand(),
 		newListGroupsCommand(),
 		newNewCommand(),
+		newBoxStatusCommand(),
 	)
 	return root
 }

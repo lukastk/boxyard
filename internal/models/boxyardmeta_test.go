@@ -20,18 +20,33 @@ func mk(ts, subid, name string, parents ...string) *BoxMeta {
 	}
 }
 
-// A registry written by pydantic. Field order and the absence of spaces are
-// part of the contract — boxyard_meta.json is read by mysystem's TypeScript
-// BoxyardService and by myrig's picker as well as by both implementations.
-const goldenMeta = `{"box_metas":[{"creation_timestamp_utc":"20260601","box_subid":"rh9q4r","name":"scuttlebug-ui","storage_location":"hetzner-box","creator_hostname":"Lukas’s MacBook Pro","groups":["ctx/macbook","worktrees"],"parents":[]}]}`
+// Two records copied VERBATIM out of the live 586-box boxyard_meta.json written
+// by Python v0.5.5 — an owned box and an unowned one. Field order and the
+// absence of spaces are part of the contract: this file is read by mysystem's
+// TypeScript BoxyardService and by myrig's picker as well as by both
+// implementations.
+//
+// The previous fixture was a PRE-v0.5.0 sample, so it carried neither
+// write_owner nor unknown_keys — and the test passed happily while every Go
+// command failed on the real file with `unknown field "unknown_keys"`. A frozen
+// fixture only ever proves parity with the day it was taken; both shapes are
+// pinned here now, and the UNOWNED one matters most, because `write_owner:
+// null` covers 318 of the 586 boxes on this fleet.
+const goldenMeta = `{"box_metas":[{"creation_timestamp_utc":"20260601","box_subid":"rh9q4r","name":"scuttlebug-ui__stream-10-codex-auth","storage_location":"hetzner-box","creator_hostname":"Lukas’s MacBook Pro","groups":["ctx/macbook","worktrees","archived"],"parents":[],"write_owner":"macbook","unknown_keys":{}},{"creation_timestamp_utc":"20250622_000000","box_subid":"aTrMF","name":"install-magpy-test","storage_location":"hetzner-box","creator_hostname":"Lukas’s MacBook Pro","groups":["null","archived","ctx/macbook"],"parents":[],"write_owner":null,"unknown_keys":{}}]}`
 
 func TestMetaRoundTripsPythonBytes(t *testing.T) {
 	var m BoxyardMeta
 	if err := unmarshalMeta([]byte(goldenMeta), &m); err != nil {
 		t.Fatalf("could not parse a Python-written registry: %v", err)
 	}
-	if len(m.BoxMetas) != 1 || m.BoxMetas[0].Name != "scuttlebug-ui" {
-		t.Fatalf("parsed wrong: %+v", m.BoxMetas)
+	if len(m.BoxMetas) != 2 {
+		t.Fatalf("parsed %d boxes, want 2", len(m.BoxMetas))
+	}
+	if m.BoxMetas[0].WriteOwner != "macbook" {
+		t.Errorf("owned box: write_owner = %q", m.BoxMetas[0].WriteOwner)
+	}
+	if m.BoxMetas[1].WriteOwner != "" {
+		t.Errorf("unowned box: write_owner = %q, want empty", m.BoxMetas[1].WriteOwner)
 	}
 	out, err := m.Marshal()
 	if err != nil {
@@ -53,8 +68,12 @@ func TestNilSlicesMarshalAsEmptyArrays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(out), "null") {
-		t.Errorf("nil slice marshalled as null: %s", out)
+	// `"write_owner":null` is legitimate — pydantic emits it for an unowned
+	// box — so only the slice fields are checked for null.
+	for _, bad := range []string{`"groups":null`, `"parents":null`, `"unknown_keys":null`} {
+		if strings.Contains(string(out), bad) {
+			t.Errorf("marshalled %s: %s", bad, out)
+		}
 	}
 	if !strings.Contains(string(out), `"groups":[]`) || !strings.Contains(string(out), `"parents":[]`) {
 		t.Errorf("expected empty arrays, got: %s", out)

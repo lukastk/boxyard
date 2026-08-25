@@ -5,6 +5,8 @@
 package models
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -545,4 +547,87 @@ func SortByCreation(metas []*BoxMeta) {
 		}
 		return ti.Before(tj)
 	})
+}
+
+// boxMetaJSON is the boxyard_meta.json representation, which differs from
+// boxmeta.toml's in two ways that matter:
+//
+//   - write_owner is ALWAYS present, and null when the box is unowned. The TOML
+//     file omits the key entirely instead, which is what keeps every pre-0.5
+//     boxmeta.toml byte-identical — but pydantic dumps every model field, so
+//     the JSON carries an explicit null. 318 of the 586 boxes on this fleet are
+//     unowned, so getting this wrong rewrites more than half the registry.
+//   - unknown_keys is ALWAYS present, and {} when there are none. Python has
+//     emitted it since v0.5.0.
+//
+// Both were missing from the Go struct's JSON, which made EVERY Go command that
+// reads the registry fail on the real yard with `unknown field "unknown_keys"`.
+// The round-trip test did not catch it because its golden fixture predates
+// v0.5.0 — exactly the frozen-fixture trap the status doc warns about.
+type boxMetaJSON struct {
+	CreationTimestampUTC string         `json:"creation_timestamp_utc"`
+	BoxSubid             string         `json:"box_subid"`
+	Name                 string         `json:"name"`
+	StorageLocation      string         `json:"storage_location"`
+	CreatorHostname      string         `json:"creator_hostname"`
+	Groups               []string       `json:"groups"`
+	Parents              []string       `json:"parents"`
+	WriteOwner           *string        `json:"write_owner"`
+	UnknownKeys          map[string]any `json:"unknown_keys"`
+}
+
+// MarshalJSON renders the box the way pydantic's model_dump_json does.
+func (b *BoxMeta) MarshalJSON() ([]byte, error) {
+	out := boxMetaJSON{
+		CreationTimestampUTC: b.CreationTimestampUTC,
+		BoxSubid:             b.BoxSubid,
+		Name:                 b.Name,
+		StorageLocation:      b.StorageLocation,
+		CreatorHostname:      b.CreatorHostname,
+		Groups:               b.Groups,
+		Parents:              b.Parents,
+		UnknownKeys:          b.UnknownKeys,
+	}
+	if out.Groups == nil {
+		out.Groups = []string{}
+	}
+	if out.Parents == nil {
+		out.Parents = []string{}
+	}
+	if out.UnknownKeys == nil {
+		// A nil map marshals as null; pydantic emits {}.
+		out.UnknownKeys = map[string]any{}
+	}
+	if b.WriteOwner != "" {
+		owner := b.WriteOwner
+		out.WriteOwner = &owner
+	}
+	return json.Marshal(out)
+}
+
+// UnmarshalJSON parses a registry entry written by either implementation.
+//
+// Unknown fields are still rejected: a key nobody knows in boxyard_meta.json is
+// a REGENERATABLE cache, not shared state, so a loud failure is the right
+// answer — unlike boxmeta.toml, where rejecting would make a box disappear.
+func (b *BoxMeta) UnmarshalJSON(data []byte) error {
+	var in boxMetaJSON
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		return err
+	}
+	b.CreationTimestampUTC = in.CreationTimestampUTC
+	b.BoxSubid = in.BoxSubid
+	b.Name = in.Name
+	b.StorageLocation = in.StorageLocation
+	b.CreatorHostname = in.CreatorHostname
+	b.Groups = in.Groups
+	b.Parents = in.Parents
+	b.UnknownKeys = in.UnknownKeys
+	b.WriteOwner = ""
+	if in.WriteOwner != nil {
+		b.WriteOwner = *in.WriteOwner
+	}
+	return nil
 }
