@@ -1561,3 +1561,107 @@ func TestIntegrationLsjsonOptions(t *testing.T) {
 		t.Fatalf("files = %+v", files)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// check
+// ---------------------------------------------------------------------------
+
+// The exact argv Python's `_rclone_cmd_helper("check", ...) + ["--combined",
+// "-"]` produces for the same inputs, captured by running it:
+//
+//	['/usr/bin/rclone', 'check', '--config', '/tmp/rclone.conf', '--links',
+//	 '/local', 'hetzner:boxes/x/data', '--fast-list', '--include-from', '/inc',
+//	 '--exclude-from', '/exc', '--filters-file', '/flt', '--combined', '-']
+func TestCheckArgsMatchesPython(t *testing.T) {
+	argv := newTestClient().CheckArgs(Local("/local"), Remote("hetzner", "boxes/x/data"),
+		TransferOptions{IncludeFile: "/inc", ExcludeFile: "/exc", FiltersFile: "/flt"})
+
+	want := []string{
+		"/usr/bin/rclone", "check", "--config", testConfig, "--links",
+		"/local", "hetzner:boxes/x/data", "--fast-list",
+		"--include-from", "/inc", "--exclude-from", "/exc",
+		"--filters-file", "/flt", "--combined", "-",
+	}
+	if !slices.Equal(argv, want) {
+		t.Fatalf("argv mismatch\n got: %q\nwant: %q", argv, want)
+	}
+}
+
+// A read-only comparison has no dry run and no progress bar. Emitting either
+// would diverge from the Python, which hardcodes False for both.
+func TestCheckArgsIgnoresDryRunAndProgress(t *testing.T) {
+	argv := newTestClient().CheckArgs(Local("/a"), Local("/b"),
+		TransferOptions{DryRun: true, Progress: true})
+	for _, unwanted := range []string{"--dry-run", "--progress"} {
+		if slices.Contains(argv, unwanted) {
+			t.Errorf("check must not pass %s: %q", unwanted, argv)
+		}
+	}
+}
+
+func TestCheckParsesCombinedOutput(t *testing.T) {
+	cases := []struct {
+		name         string
+		exitCode     int
+		stdout       string
+		wantAnswered bool
+		wantDiffer   []string
+	}{
+		{
+			name:         "everything identical",
+			exitCode:     0,
+			stdout:       "= a.txt\n= b/c.txt\n",
+			wantAnswered: true,
+		},
+		{
+			// Both sides empty produces no lines at all, and exit 0 says the
+			// comparison DID run.
+			name:         "both sides empty",
+			exitCode:     0,
+			stdout:       "",
+			wantAnswered: true,
+		},
+		{
+			name:         "differences found",
+			exitCode:     1,
+			stdout:       "= same.txt\n+ only-local.txt\n* differs.txt\n- only-remote.txt\n",
+			wantAnswered: true,
+			wantDiffer:   []string{"only-local.txt", "differs.txt", "only-remote.txt"},
+		},
+		{
+			// rclone reports "found differences" and "could not look" with the
+			// SAME exit code. Only the absence of any line separates them, and
+			// reading this as "no differences" is the one thing the probe must
+			// never do.
+			name:         "could not look",
+			exitCode:     1,
+			stdout:       "",
+			wantAnswered: false,
+		},
+		{
+			name:         "blank lines are ignored",
+			exitCode:     0,
+			stdout:       "\n= a.txt\n\n",
+			wantAnswered: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls [][]string
+			c := newTestClient()
+			c.Exec = fakeRun(runner.Result{ExitCode: tc.exitCode, Stdout: tc.stdout}, &calls)
+
+			answered, differing, err := c.Check(context.Background(), Local("/a"), Local("/b"), TransferOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if answered != tc.wantAnswered {
+				t.Fatalf("answered = %v, want %v", answered, tc.wantAnswered)
+			}
+			if !slices.Equal(differing, tc.wantDiffer) {
+				t.Fatalf("differing = %q, want %q", differing, tc.wantDiffer)
+			}
+		})
+	}
+}

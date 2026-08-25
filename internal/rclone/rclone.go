@@ -491,10 +491,9 @@ func (c *Client) BisyncArgs(src, dst Location, o BisyncOptions) []string {
 // CopytoArgs builds `rclone copyto`, which copies one object to one exact
 // destination name.
 //
-// NOTE: the Python's rclone_copyto accepts a dry_run parameter and then never
-// emits --dry-run, so a caller asking for a dry run would silently WRITE. No
-// current call site passes True, so nothing is broken today, but the parameter
-// is a loaded gun. It is implemented properly here.
+// NOTE: the Python's rclone_copyto used to accept a dry_run parameter and then
+// never emit --dry-run, so a caller asking for a dry run silently WROTE. That
+// was fixed in Python while porting this; both sides now emit the flag.
 func (c *Client) CopytoArgs(src, dst Location, o CopytoOptions) []string {
 	argv := []string{c.Binary, "copyto", "--config", c.ConfigPath, src.Spec(), dst.Spec()}
 	if o.DryRun {
@@ -504,6 +503,27 @@ func (c *Client) CopytoArgs(src, dst Location, o CopytoOptions) []string {
 		argv = append(argv, "--progress")
 	}
 	return argv
+}
+
+// CheckArgs builds `rclone check --combined -`.
+//
+// `--combined` emits one line per path with a documented single-character
+// prefix (`=` identical, `+` source only, `-` dest only, `*` differing, `!`
+// error) — a stable machine-readable answer, unlike the text of
+// `sync --dry-run`.
+//
+// That distinction is load-bearing. With identical content but a different
+// mtime, `sync --dry-run` prints "Skipped update modification time as --dry-run
+// is set", so any "did the dry run mention this file?" test calls an unchanged
+// box changed — precisely the false positive this exists to eliminate.
+// `check --combined` reports `= f.txt` for the same pair.
+//
+// No --dry-run flag: the comparison is read-only, so the concept is meaningless
+// here, and no --progress for the same reason the Python passes False.
+func (c *Client) CheckArgs(src, dst Location, o TransferOptions) []string {
+	o.DryRun = false
+	o.Progress = false
+	return append(c.transferArgs("check", src, dst, o), "--combined", "-")
 }
 
 // MkdirArgs builds `rclone mkdir`.
@@ -585,6 +605,49 @@ func StripANSI(text string) string { return ansiEscape.ReplaceAllString(text, ""
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
+
+// Check compares src against dst under the given filters.
+//
+// `answered` is false when the comparison could not be performed at all — an
+// unreachable remote, a bad config. The caller must NOT read that as "no
+// differences": rclone exits non-zero both for "found differences" and for
+// "could not look", and the only thing separating them is whether any
+// --combined lines came out at all.
+//
+// One honest limitation: `check` compares by hash where both sides offer one
+// and falls back to size otherwise, so on a backend with no hash support two
+// same-size files with different content compare equal.
+func (c *Client) Check(ctx context.Context, src, dst Location, o TransferOptions) (answered bool, differing []string, err error) {
+	res, err := c.exec(ctx, c.CheckArgs(src, dst, o), 0)
+	if err != nil {
+		return false, nil, err
+	}
+	var lines []string
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	// Exit 0 means the comparison ran and found everything identical —
+	// including the both-sides-empty case, which produces no lines at all.
+	if !res.OK() && len(lines) == 0 {
+		return false, nil, nil
+	}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "= ") {
+			continue
+		}
+		// The prefix is one character plus a space; anything shorter is not a
+		// --combined line and is passed through rather than sliced apart.
+		if len(line) > 2 {
+			differing = append(differing, line[2:])
+		} else {
+			differing = append(differing, line)
+		}
+	}
+	return true, differing, nil
+}
 
 // Copy copies source into dest, adding and updating but never deleting.
 //
