@@ -26,11 +26,19 @@ const maxIDAttempts = 100
 // Randomness comes from crypto/rand rather than math/rand: this is an
 // identifier that must not collide, and a seeded PRNG shared across a process
 // that creates several boxes in a loop is exactly how you get one.
-func GenerateUniqueBoxID(cfg *config.Config, existingIDs map[string]bool) (timestamp, subid string, err error) {
+// A non-empty fixedTimestamp is used verbatim in place of "now". The caller
+// that passes one (`new_box`, for --creation-timestamp-utc) needs the collision
+// check to run against the id it will ACTUALLY write: Python used to let this
+// function pick a timestamp, check `<generated>_<subid>`, and then substitute
+// its own timestamp afterwards — so the id written was never the id checked.
+func GenerateUniqueBoxID(cfg *config.Config, existingIDs map[string]bool, fixedTimestamp string) (timestamp, subid string, err error) {
 	for i := 0; i < maxIDAttempts; i++ {
-		ts, err := FormatCreationTimestamp(cfg, time.Now().UTC())
-		if err != nil {
-			return "", "", err
+		ts := fixedTimestamp
+		if ts == "" {
+			ts, err = FormatCreationTimestamp(cfg, time.Now().UTC())
+			if err != nil {
+				return "", "", err
+			}
 		}
 		sub, err := createBoxSubid(cfg.BoxSubidCharacterSet, cfg.BoxSubidLength)
 		if err != nil {

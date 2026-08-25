@@ -28,7 +28,7 @@ func TestGenerateUniqueBoxIDAvoidsCollisions(t *testing.T) {
 	}
 	taken := map[string]bool{ts + "_a": true}
 
-	if _, _, err := GenerateUniqueBoxID(cfg, taken); err == nil {
+	if _, _, err := GenerateUniqueBoxID(cfg, taken, ""); err == nil {
 		t.Fatal("generated an id that was already in use")
 	} else if !strings.Contains(err.Error(), "box_subid_length") {
 		t.Errorf("the error should name the setting to change, got: %v", err)
@@ -37,7 +37,7 @@ func TestGenerateUniqueBoxIDAvoidsCollisions(t *testing.T) {
 
 func TestGenerateUniqueBoxIDSucceedsWhenSpaceAllows(t *testing.T) {
 	cfg := idTestConfig("abcdefghijklmnopqrstuvwxyz0123456789", 6, config.TimestampDateOnly)
-	ts, subid, err := GenerateUniqueBoxID(cfg, map[string]bool{})
+	ts, subid, err := GenerateUniqueBoxID(cfg, map[string]bool{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestGenerateUniqueBoxIDIsNotDeterministic(t *testing.T) {
 	cfg := idTestConfig("abcdefghijklmnopqrstuvwxyz0123456789", 6, config.TimestampDateOnly)
 	seen := map[string]bool{}
 	for i := 0; i < 50; i++ {
-		_, subid, err := GenerateUniqueBoxID(cfg, map[string]bool{})
+		_, subid, err := GenerateUniqueBoxID(cfg, map[string]bool{}, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -103,5 +103,37 @@ func TestCreateBoxSubidHandlesMultiByteCharacters(t *testing.T) {
 		if !strings.ContainsRune("日本語ホスト", r) {
 			t.Errorf("character %q is not from the configured set", r)
 		}
+	}
+}
+
+// A caller-supplied timestamp must be the one the collision check uses.
+//
+// Python let the generator pick a timestamp, checked `<generated>_<subid>`, and
+// then overwrote the timestamp with the caller's — so `--creation-timestamp-utc`
+// could mint a box id that had never been checked against anything.
+func TestGenerateUniqueBoxIDHonoursFixedTimestamp(t *testing.T) {
+	cfg := idTestConfig("ab", 1, config.TimestampDateOnly)
+	// Two possible ids for a given timestamp, one of them taken. Repeated
+	// because the subid is random: a generator checking the WRONG timestamp
+	// still returns "b" half the time, and a single draw would pass by luck.
+	for i := 0; i < 20; i++ {
+		ts, subid, err := GenerateUniqueBoxID(cfg, map[string]bool{"20240102_a": true}, "20240102")
+		if err != nil {
+			t.Fatalf("GenerateUniqueBoxID: %v", err)
+		}
+		if ts != "20240102" {
+			t.Fatalf("timestamp = %q, want the one that was passed in", ts)
+		}
+		if subid != "b" {
+			t.Fatalf("subid = %q, want b (a is taken for this timestamp)", subid)
+		}
+	}
+}
+
+func TestGenerateUniqueBoxIDFixedTimestampExhausted(t *testing.T) {
+	cfg := idTestConfig("ab", 1, config.TimestampDateOnly)
+	taken := map[string]bool{"20240102_a": true, "20240102_b": true}
+	if _, _, err := GenerateUniqueBoxID(cfg, taken, "20240102"); err == nil {
+		t.Fatal("expected an error when every id for the fixed timestamp is taken")
 	}
 }
