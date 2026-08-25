@@ -1,3 +1,20 @@
+## [0.5.8] - 2026-08-25
+
+### 🐛 Bug Fixes
+
+- **`boxyard new --parent` now accepts all three forms it documents.** The
+  flag's help says *"Parent box (index name, id, or name)"*, and it only ever
+  honoured the **name**: the value was passed as `box_name`, which matches
+  against `box_meta.name`, and an index name is never a substring of the bare
+  name it ends with. `--parent 20260601_ab12cd__thing` reported "Parent box
+  not found."
+
+  The two exact forms are now tried first, then the name match. The order is
+  unambiguous because an index name, a box id and a name have distinct shapes,
+  and the first two are looked up by equality rather than by substring.
+
+  (`boxyard add-parent` was never affected — it takes three separate flags.)
+
 ## [0.5.7] - 2026-08-25
 
 ### 🐛 Bug Fixes
