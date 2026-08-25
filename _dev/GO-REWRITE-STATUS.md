@@ -38,7 +38,8 @@ Twelve bugs found so far this way, all released in v0.4.0–v0.4.3. Every one wa
 | `internal/runner` | `run_cmd_async` + suspend watchdog | separate wall/monotonic seams; mutation-checked |
 | `internal/rclone` | `_utils/rclone.py` | all 65 Python argv tests ported + real-rclone round trip |
 | `internal/cli` | `_cli/main.py` — **`which`, `list`, `list-groups`, `new`** | byte-identical to Python on the real yard |
-| `internal/cmds` | `cmds/` — **`init`, `new_box`** | isolated test yards; git-URL differential over 17 URLs |
+| `internal/ownership` | `_ownership.py` | refusals asserted to name the fix and BOTH ways out |
+| `internal/cmds` | `cmds/` — **`init`, `new_box`, `get_box_sync_status`, `sync_box`** | isolated test yards; git-URL differential; the four ownership/ordering properties mutation-checked |
 
 `boxyard which -i` on the real 583-box yard: **185 ms → 6.3 ms (29×)**.
 
@@ -80,6 +81,17 @@ green throughout. The frozen differential does not protect you here: it
 captures the behaviour of the day it was taken, and all its scenarios exercise
 the DATA meaning — which is exactly why they still passed after the CONF fix.
 
+`sync_box` is the one that ties the stack together, and it is an ORDERING
+problem rather than a transport one. Every step encodes a failure that has
+actually happened: the local-storage shortcut (v0.5.5), the batched tombstone
+probe (v0.5.1), resolving the remote by box id rather than by name, META and
+CONF both syncing whenever DATA does, the ownership decision sitting between
+META and DATA and re-reading the boxmeta from disk, and the `rclone check`
+probe that stops a `.DS_Store` from reading as a real change. The four
+properties that matter — a non-owner never pushes, META follows DATA, CONF
+follows DATA, and DATA uses the box's OWN exclude file — are each
+mutation-checked.
+
 ## What porting `new_box` turned up
 
 Nothing wrong on the Go side — but five faults in the Python, all found by
@@ -119,12 +131,19 @@ the bug fixed in v0.4.3.
 
 ## Not started
 
-- Remaining CLI commands (20 of 24; ~213 flags total), plus `list`'s tree and
-  grouped views and its hierarchy filters, and `new`'s `--group` / `--parent`
-  (both need `modify_boxmeta`)
-- `internal/cmds` — the remaining command implementations (sync, include,
-  exclude, delete, rename, copy, force-push, doctor, …). `new_box` refuses
-  loudly on `sync_before_new_box = true`, which needs `sync_missing_boxmetas`
+- Remaining CLI commands (20 of 24; ~213 flags total). The next blocker for
+  several of them is `_get_box_index_name` — resolve a box by path / index /
+  id / name with match modes — which ~15 commands share. `sync` and
+  `box-status` are implemented at the `cmds` layer but not registered, because
+  root.go's rule is that a command is added only when it is complete
+- `internal/cmds` — the remaining implementations (include, exclude, delete,
+  rename, copy, force-push, doctor, modify_boxmeta, sync_missing_boxmetas, …).
+  `new_box` refuses loudly on `sync_before_new_box = true`, and `new`'s
+  `--group`/`--parent` refuse loudly, all three pending `modify_boxmeta` /
+  `sync_missing_boxmetas`
+- The ownership COMMANDS (claim, release, steal, discard-local). The read side
+  is ported — a Go `sync` that ignored `write_owner` would push from a
+  non-owner, which is a data-safety divergence rather than a missing feature
 - The two render surfaces: `path`'s Textual TUI and `multi-sync`'s live table.
   **Open question:** `path`'s TUI may be dead weight — the picker actually in
   daily use is `boxyard-pick` (fzf + `boxyard-groups.py` over
