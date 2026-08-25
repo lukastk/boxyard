@@ -441,6 +441,29 @@ func decodeInto(data []byte, cfg *Config) error {
 	if len(unknown) > 0 {
 		cfg.UnknownKeys = unknown
 	}
+
+	// An EMPTY table decodes to a nil map, which is indistinguishable from an
+	// absent one — but Validate must tell them apart, because Python does: a
+	// missing `box_groups` is a validation error while `[box_groups]` with no
+	// entries is the normal state of a fresh boxyard. `boxyard init` writes
+	// exactly that, so without this the Go loader REJECTS the very config
+	// Python's init produces.
+	//
+	// The raw decode still knows which keys were present, so normalise
+	// present-but-empty to an allocated empty map here and leave Validate's
+	// nil check meaning purely "absent".
+	if _, ok := raw["storage_locations"]; ok && cfg.StorageLocations == nil {
+		cfg.StorageLocations = map[string]*StorageConfig{}
+	}
+	if _, ok := raw["box_groups"]; ok && cfg.BoxGroups == nil {
+		cfg.BoxGroups = map[string]*BoxGroupConfig{}
+	}
+	if _, ok := raw["virtual_box_groups"]; ok && cfg.VirtualBoxGroups == nil {
+		cfg.VirtualBoxGroups = map[string]*VirtualBoxGroupConfig{}
+	}
+	if _, ok := raw["default_box_groups"]; ok && cfg.DefaultBoxGroups == nil {
+		cfg.DefaultBoxGroups = []string{}
+	}
 	return nil
 }
 
