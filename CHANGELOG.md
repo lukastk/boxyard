@@ -1,7 +1,8 @@
 ## [0.5.5] - 2026-08-25
 
-Seven faults, all found by reading the code line by line while porting it to
-Go — five in `new_box`, and two in how a `local` storage location is handled. Every one of them was invisible: nothing
+Eight faults, all found by reading the code line by line while porting it to
+Go — five in `new_box`, two in how a `local` storage location is handled, and
+one in `sync_box`. Every one of them was invisible: nothing
 in the suite reached the branches, and the branches that were reached were
 unreachable in a different sense — dead code behind a `check=True`.
 
@@ -73,6 +74,21 @@ unreachable in a different sense — dead code behind a `check=True`.
   Both of these are latent rather than live: v0.5.4 is what made `local`
   storage locations usable at all, so the paths only became reachable then, and
   the fleet has no boxes in one yet.
+
+- **`sync -c data` did not sync the filters that decide what DATA syncs.**
+  `conf/.rclone_include|_exclude|_filters` are read off the local disk
+  immediately before DATA is synced, so a DATA-only sync on a machine that has
+  never pulled a box's `conf/` used the **global** filters — and a box whose
+  `.rclone_include` narrows what it syncs would sync **everything**. That is
+  the same harm v0.5.3 fixed, still reachable through `boxyard sync -c data`
+  and through `boxyard multi-sync -c data`, i.e. across the whole yard.
+
+  CONF is now synced whenever DATA is, exactly as META already was (META is
+  forced because the ownership decision reads `write_owner` out of it). In both
+  cases the result is only *recorded* when the part was actually requested, so
+  the returned dict still answers exactly what the caller asked about.
+
+  The fleet's own sync loop passes no `-c`, so it was never on this path.
 
 ### 🧹 Robustness
 

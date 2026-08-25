@@ -325,8 +325,19 @@ async def sync_box(
         if check_interrupted():
             raise SoftInterruption()
     
+        # CONF is synced whenever DATA is, even when the caller did not ask for it,
+        # for the same reason META is: `conf/.rclone_include|_exclude|_filters`
+        # decide WHAT DATA syncs, and they are read off the local disk immediately
+        # below. `boxyard sync -c data` on a machine that has never pulled this
+        # box's conf/ would otherwise sync DATA with the GLOBAL filters -- so a box
+        # whose `.rclone_include` narrows what it syncs would sync EVERYTHING.
+        # That is precisely the harm v0.5.3 fixed, still reachable through `-c
+        # data` (which `multi-sync` also accepts, i.e. across the whole yard).
+        #
+        # Its result is only RECORDED when CONF was actually requested, so the
+        # returned dict still answers exactly what the caller asked about.
         sync_part = BoxPart.CONF
-        if sync_part in sync_choices:
+        if sync_part in sync_choices or BoxPart.DATA in sync_choices:
             if verbose:
                 print("Syncing", sync_part.value)
             # CONF follows DATA: `conf/.rclone_include|_exclude|_filters` decide
@@ -336,7 +347,7 @@ async def sync_box(
             # META, by contrast, stays writable by every machine -- without that,
             # ownership could never be transferred and `groups`/`parents` could not
             # be edited from a non-owner.
-            sync_results[sync_part] = await _sync_part(
+            _conf_sync_result = await _sync_part(
                 rclone_config_path=config.rclone_config_path,
                 sync_direction=sync_direction,
                 sync_setting=sync_setting,
@@ -360,6 +371,8 @@ async def sync_box(
                 # the second machine.
                 local_absence_means_excluded=False,
             )
+            if sync_part in sync_choices:
+                sync_results[sync_part] = _conf_sync_result
     
         # Get the now locally synced conf files for the sync of the box data
         _rclone_include_path = (
