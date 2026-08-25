@@ -402,11 +402,26 @@ def cli_new(
 
         _config = _get_config(app_state["config_path"])
         _bm = get_boxyard_meta(_config)
-        parent_index = _get_box_index_name(
-            box_name=parent, box_id=None, box_index_name=None,
-            name_match_mode=None, name_match_case=False,
-        )
-        parent_meta = _bm.by_index_name.get(parent_index)
+        # `--parent` is documented as taking an "index name, id, or name", and
+        # it only ever honoured the NAME: the value went in as `box_name`, which
+        # matches against `box_meta.name`, and an index name is never a
+        # substring of the bare name it ends with. So `--parent
+        # 20260601_ab12cd__thing` reported "Box not found."
+        #
+        # Try the two EXACT forms first, then fall back to the name match. The
+        # order is unambiguous because an index name, a box id and a name have
+        # distinct shapes, and the first two are looked up by equality rather
+        # than by substring.
+        if parent in _bm.by_index_name:
+            parent_meta = _bm.by_index_name[parent]
+        elif parent in _bm.by_id:
+            parent_meta = _bm.by_id[parent]
+        else:
+            parent_index = _get_box_index_name(
+                box_name=parent, box_id=None, box_index_name=None,
+                name_match_mode=None, name_match_case=False,
+            )
+            parent_meta = _bm.by_index_name.get(parent_index)
         if parent_meta is None:
             typer.echo(f"Parent box '{parent}' not found.", err=True)
             raise typer.Exit(code=1)
