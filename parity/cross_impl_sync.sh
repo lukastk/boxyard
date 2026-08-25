@@ -106,6 +106,16 @@ test ! -e "$ROOT/A/boxes/$idx" && echo "DATA gone from A after exclude"
 cat "$ROOT/A/boxes/$idx/from-b.txt"
 test -x "$ROOT/A/boxes/$idx/run.sh" && echo "run.sh still executable after a Go include"
 
+echo "== Ownership: Go claims in A, Python sees it, Go releases"
+"$GOBIN" --config "$A" claim -r "$idx" 2>&1 | tail -1
+BOXYARD_CONFIG_PATH="$B" "$PYBIN" sync -r "$idx" --sync-choices meta >/dev/null 2>&1
+BOXYARD_CONFIG_PATH="$B" "$PYBIN" owner -r "$idx" -o json | python3 -c "
+import json,sys; print('   B sees write_owner =', json.load(sys.stdin)['write_owner'])"
+"$GOBIN" --config "$A" release -r "$idx" 2>&1 | tail -1
+BOXYARD_CONFIG_PATH="$B" "$PYBIN" sync -r "$idx" --sync-choices meta >/dev/null 2>&1
+BOXYARD_CONFIG_PATH="$B" "$PYBIN" owner -r "$idx" -o json | python3 -c "
+import json,sys; print('   B sees write_owner =', json.load(sys.stdin)['write_owner'])"
+
 echo "== Go box-status agrees with Python box-status"
 "$GOBIN" --config "$A" box-status -r "$idx" -o json > "$ROOT/go-status.json"
 BOXYARD_CONFIG_PATH="$A" "$PYBIN" box-status -r "$idx" -o json > "$ROOT/py-status.json"

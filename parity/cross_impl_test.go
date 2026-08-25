@@ -59,6 +59,11 @@ func TestCrossImplementationSync(t *testing.T) {
 		// as well as a cross-implementation one.
 		"DATA gone from A after exclude",
 		"run.sh still executable after a Go include",
+		// A claim made by Go must be visible to Python on the OTHER machine,
+		// and a release must clear it there too. Ownership only means anything
+		// if the fleet agrees about it.
+		"B sees write_owner = A",
+		"B sees write_owner = None",
 		"box-status IDENTICAL across implementations",
 		"OK",
 	} {

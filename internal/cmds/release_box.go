@@ -4,16 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"path"
 
-	"github.com/pelletier/go-toml/v2"
-
-	"github.com/lukastk/boxyard/internal/boxconst"
 	"github.com/lukastk/boxyard/internal/config"
 	"github.com/lukastk/boxyard/internal/enums"
 	"github.com/lukastk/boxyard/internal/models"
 	"github.com/lukastk/boxyard/internal/ownership"
-	"github.com/lukastk/boxyard/internal/remoteindex"
 	"github.com/lukastk/boxyard/internal/syncengine"
 )
 
@@ -149,34 +144,12 @@ func ReleaseBox(ctx context.Context, cfg *config.Config, s SyncStore, p syncengi
 // did not land would otherwise leave the fleet and this machine disagreeing
 // about who may write.
 func remoteOwnerIsCleared(ctx context.Context, cfg *config.Config, s SyncStore, boxMeta *models.BoxMeta, boxIndexName string) (bool, error) {
-	remoteIndexName, err := remoteindex.Find(ctx, s.ForRemoteIndex(), cfg, boxMeta.StorageLocation, boxMeta.BoxID())
-	if err != nil {
-		return false, err
-	}
-	if remoteIndexName == "" {
-		remoteIndexName = boxIndexName
-	}
-	slConfig, ok := cfg.StorageLocations[boxMeta.StorageLocation]
-	if !ok {
-		return false, fmt.Errorf("storage location '%s' not found", boxMeta.StorageLocation)
-	}
-	remotePath := path.Join(slConfig.StorePath, boxconst.RemoteBoxesRelPath,
-		remoteIndexName, boxconst.BoxMetafileRelPath)
-
-	exists, raw, err := s.Cat(ctx, boxMeta.StorageLocation, remotePath)
+	owner, exists, err := remoteWriteOwner(ctx, cfg, s, boxMeta, boxIndexName)
 	if err != nil {
 		return false, err
 	}
 	if !exists {
 		return false, nil
 	}
-	// Decoded loosely on purpose: this only asks one question, and a boxmeta
-	// carrying a key this build does not know must not make the answer an
-	// error.
-	var fields map[string]any
-	if err := toml.Unmarshal([]byte(raw), &fields); err != nil {
-		return false, fmt.Errorf("remote boxmeta for '%s' is not valid TOML: %w", boxIndexName, err)
-	}
-	owner, present := fields["write_owner"]
-	return !present || owner == nil, nil
+	return owner == "", nil
 }

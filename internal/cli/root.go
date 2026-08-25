@@ -104,6 +104,10 @@ func NewRootCommand() *cobra.Command {
 		newIncludeCommand(),
 		newExcludeCommand(),
 		newSyncMissingMetaCommand(),
+		newClaimCommand(),
+		newReleaseCommand(),
+		newOwnerCommand(),
+		newDiscardLocalCommand(),
 	)
 	return root
 }

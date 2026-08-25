@@ -36,6 +36,9 @@ type fakeStore struct {
 	syncCalls  []syncengine.SyncOptions
 	catCalls   []string
 	checkCalls int
+	// purged records Purge calls. `discard-local` must make NONE: what it
+	// throws away has to stay recoverable.
+	purged []string
 
 	// checkAnswered/checkDiffering drive the ownership push probe.
 	checkAnswered  bool
@@ -87,7 +90,10 @@ func (f *fakeStore) Sync(_ context.Context, o syncengine.SyncOptions) (bool, str
 	return true, "", "", nil
 }
 
-func (f *fakeStore) Purge(context.Context, string, string) error { return nil }
+func (f *fakeStore) Purge(_ context.Context, remote, p string) error {
+	f.purged = append(f.purged, remote+"\x00"+p)
+	return nil
+}
 
 func (f *fakeStore) WriteSyncRecord(_ context.Context, remote, p string, rec models.SyncRecord) error {
 	data, err := rec.Marshal()
