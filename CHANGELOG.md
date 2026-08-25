@@ -1,3 +1,34 @@
+## [0.5.9] - 2026-08-25
+
+### 🐛 Bug Fixes
+
+- **`boxyard tree` has never shown a box's groups.** The label was built as a
+  rich *markup* string:
+
+  ```python
+  groups_str = f" [groups: {', '.join(bm.groups)}]" if bm.groups else ""
+  return f"{status}{bm.name} ({bm.box_id}){groups_str}"
+  ```
+
+  rich parses `[...]` as a style tag, so the whole suffix was swallowed — the
+  only trace left was a stray trailing space where the groups should have been.
+  Both `boxyard tree` and `boxyard list --view tree` did it. Both now build the
+  label as a `rich.text.Text`, which is data rather than markup.
+
+  `list --view groups` escaped its own bracketed suffix by hand (`\[`), which
+  is what makes the other two an oversight rather than a choice — but it did
+  not escape the box or group NAMES, and `[` is perfectly legal in a name
+  (`validate_box_name` forbids only path separators and the like). A box called
+  `weird[name]` was mangled in every view. Those are escaped now.
+
+  The `[unknown parent]` header above the orphan branch was a markup string
+  too, so it vanished the same way — leaving a bare `└── ` with nothing to
+  explain what was underneath it.
+
+  Found while porting `tree` to Go: the Go version would have had to reproduce
+  "prints nothing" to be faithful. The orphan header came out of diffing the
+  two implementations' output afterwards.
+
 ## [0.5.8] - 2026-08-25
 
 ### 🐛 Bug Fixes
