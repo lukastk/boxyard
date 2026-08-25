@@ -277,3 +277,9 @@ var _ interface {
 	tombstones.Store
 	ForRemoteIndex() remoteindex.Store
 } = (*Adapter)(nil)
+
+// Moveto renames a remote path to an exact destination name — how a box's
+// directory and its sync records are renamed on the remote.
+func (a *Adapter) Moveto(ctx context.Context, src, dst rclone.Location) (rclone.Output, error) {
+	return a.Client.Moveto(ctx, src, dst)
+}
