@@ -44,24 +44,31 @@ Twelve bugs found so far this way, all released in v0.4.0–v0.4.3. Every one wa
 
 `boxyard which -i` on the real 583-box yard: **185 ms → 6.3 ms (29×)**.
 
-**15 of 29 CLI commands** are registered: `init`, `which`, `list`,
-`list-groups`, `new`, `sync`, `box-status`, `path`, `include`, `exclude`,
-`add-to-group`, `remove-from-group`, `add-parent`, `remove-parent`,
-`create-user-symlinks`. Still to come: `claim`, `release`, `owner`,
-`discard-local`, `delete`, `rename`, `sync-name`, `copy`, `force-push`,
-`doctor`, `multi-sync`, `tree`, `yard-status`, `sync-missing-meta`.
+**All 29 CLI commands are registered**, and `boxyard --help`'s command list is
+identical to the Python's. So is every command's flag surface, checked BOTH
+ways — no Go flag absent from the Python, no Python flag absent from Go.
 
-Flags not yet ported (`--interactive` and its companions, `--view tree|groups`,
-the hierarchy filters) **fail loudly with exit 1** rather than being ignored.
+Usage errors exit **2**, as click's do; runtime failures exit 1.
+
 Cobra's volunteered `completion` and `help` subcommands are disabled: an extra
 command is as much a surface difference as an extra flag.
 
 ### Verified against the real yard, not just against tests
 
-Byte-for-byte identical to the Python on the live 586-box yard: `list` (588
-lines), `which -j`, `list-groups`, `box-status` in both output formats, and
-`path` in every variant tried. Exit codes match too, including 2 for usage
-errors.
+Byte-for-byte identical to the Python on the live 586-box yard:
+
+- `list` (588 lines) and every filter it takes — `--roots`, `--leaves`,
+  `--owner`, `--show-owner`, and all four hierarchy filters;
+- `which -j`, `list-groups`, `path` in every variant;
+- `box-status` and `tree` in both output formats;
+- **`doctor` in both formats, INCLUDING the remote checks** — which currently
+  report two genuinely wedged boxes, so the comparison covers real findings and
+  not just "all checks passed";
+- `multi-sync`'s per-box line, dot padding included.
+
+Two of doctor's differences were things only a real-yard diff could show: the
+field order inside a finding, and non-ASCII escaping — this fleet has a machine
+called `Lukas's MacBook Pro`, so that apostrophe shows up in actual findings.
 
 `parity/cross_impl_sync.sh` goes further, in two throwaway yards sharing an
 rclone remote: Go pushes and Python pulls, Python pushes and Go pulls, Go
@@ -170,24 +177,26 @@ the bug fixed in v0.4.3.
 
 ## Not started
 
-- Remaining CLI commands (20 of 24; ~213 flags total). The next blocker for
-  several of them is `_get_box_index_name` — resolve a box by path / index /
-  id / name with match modes — which ~15 commands share. `sync` and
-  `box-status` are implemented at the `cmds` layer but not registered, because
-  root.go's rule is that a command is added only when it is complete
-- `internal/cmds` — the remaining implementations (include, exclude, delete,
-  rename, copy, force-push, doctor, modify_boxmeta, sync_missing_boxmetas, …).
-  `new_box` refuses loudly on `sync_before_new_box = true`, and `new`'s
-  `--group`/`--parent` refuse loudly, all three pending `modify_boxmeta` /
-  `sync_missing_boxmetas`
-- The ownership COMMANDS (claim, release, steal, discard-local). The read side
-  is ported — a Go `sync` that ignored `write_owner` would push from a
-  non-owner, which is a data-safety divergence rather than a missing feature
-- The two render surfaces: `path`'s Textual TUI and `multi-sync`'s live table.
-  **Open question:** `path`'s TUI may be dead weight — the picker actually in
-  daily use is `boxyard-pick` (fzf + `boxyard-groups.py` over
-  `boxyard list -o json`), not `boxyard path`'s interactive mode.
-- Distribution: GoReleaser, and the myrig install switch.
+- **Distribution.** GoReleaser, and the myrig install switch. Note one thing
+  the switch has to answer: `boxyard --version` is a ROLLOUT GATE — checking
+  `ssh-target <machine> boxyard --version` is how a fleet-wide change is
+  verified — and the Go binary reports whatever `-ldflags` stamped, defaulting
+  to `dev`. Whatever ships has to stamp a real version, or that check silently
+  stops meaning anything.
+- **The interactive surfaces**, all refusing loudly today: `path`'s Textual TUI
+  and the fzf multi-select flows in `include`/`exclude`. **Open question:**
+  `path`'s TUI may be dead weight — the picker actually in daily use is
+  `boxyard-pick` (fzf + `boxyard-groups.py` over `boxyard list -o json`), not
+  `boxyard path --interactive`.
+- **`sync_before_new_box`**, which refuses loudly. It needs a boxmeta sync
+  before minting an id; the pieces exist, but the setting is off everywhere and
+  turning it on is a decision, not a port.
+- **multi-sync's live board.** The per-box lines and the summary match; the
+  in-place redraw does not exist. The deployed supervisor log contains only the
+  durable lines, so nothing is lost there — but an interactive run looks
+  different.
+- **rich's styling** in `list --view groups|tree`. The content matches line for
+  line; the bold/dim escapes do not. Nothing scripts those views.
 
 ## How to verify what is here
 
