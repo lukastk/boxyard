@@ -105,7 +105,7 @@ func BuildTo(cfg *config.Config, meta *models.BoxyardMeta, w io.Writer) error {
 	if err := createSymlinks(root, plan); err != nil {
 		return err
 	}
-	return pruneEmptyNonGroupDirs(root, groups)
+	return pruneEmptyDirs(root)
 }
 
 // --- groups ---------------------------------------------------------------
@@ -512,25 +512,24 @@ func resolveLenient(p string) string {
 
 // --- pruning --------------------------------------------------------------
 
-// pruneEmptyNonGroupDirs removes directories that have been emptied out —
-// groups a box has left, and the intermediate directories of a nested
-// symlink_name that no longer holds anything.
+// pruneEmptyDirs removes every directory that has been emptied out — a group
+// a box has left, and the intermediate directories of a nested symlink_name
+// that no longer holds anything. Deepest first, so a parent is judged after
+// its children have been.
 //
-// A directory whose path relative to the tree root IS a group name is kept even
-// when empty.
+// This used to reproduce a Python quirk: an exemption for directories whose
+// path matched a group NAME, which never fired because directories are named
+// after each group's symlink_name (`all/physics`, not `physics`). The port
+// copied it and flagged it as a suspected bug. It was one, but not the one
+// reported here — the exemption was not merely dead, it was live on any config
+// WITHOUT symlink_names, so the same code pruned or kept an emptied group's
+// directory depending on a field with nothing to do with pruning. Python
+// v0.5.13 removed it and kept the pruning; this follows.
 //
-// NOTE (suspected Python bug, reproduced here deliberately): the comparison is
-// against group NAMES, but the directories are named after each group's
-// symlink_name. For a group whose symlink_name differs from its name — which is
-// almost every group in the real config, e.g. group "physics" living at
-// "all/physics" — the two never match, so its directory is pruned as soon as it
-// empties. Reproducing this keeps the user's ~/g free of ~30 empty directories;
-// "fixing" it would leave them behind. Reported rather than changed.
-func pruneEmptyNonGroupDirs(root string, groups []groupSpec) error {
-	names := make(map[string]bool, len(groups))
-	for _, g := range groups {
-		names[g.name] = true
-	}
+// What this does NOT govern: a directory is only ever created as the parent of
+// a symlink, so a group that has never had a box on this machine has no
+// directory either way. Only a group whose LAST box goes away is affected.
+func pruneEmptyDirs(root string) error {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -542,14 +541,14 @@ func pruneEmptyNonGroupDirs(root string, groups []groupSpec) error {
 		if strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		if err := pruneDir(root, filepath.Join(root, e.Name()), names); err != nil {
+		if err := pruneDir(root, filepath.Join(root, e.Name())); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func pruneDir(root, dir string, groupNames map[string]bool) error {
+func pruneDir(root, dir string) error {
 	fi, err := os.Lstat(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -573,18 +572,10 @@ func pruneDir(root, dir string, groupNames map[string]bool) error {
 		if isDir(p) {
 			// pruneDir returns immediately for a symlink, so a symlink to a
 			// directory is a no-op rather than a descent into a box.
-			if err := pruneDir(root, p, groupNames); err != nil {
+			if err := pruneDir(root, p); err != nil {
 				return err
 			}
 		}
-	}
-
-	rel, err := filepath.Rel(root, dir)
-	if err != nil {
-		return fmt.Errorf("cannot relativise '%s' against '%s': %w", dir, root, err)
-	}
-	if groupNames[filepath.ToSlash(rel)] {
-		return nil
 	}
 
 	// Re-read: the recursion above may have emptied this directory.

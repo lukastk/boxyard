@@ -6,7 +6,8 @@
   "dev_scripts/run-tests",
   "parity/cross_impl_sync.sh",
   "parity/group_parent_cmds.sh",
-  "parity/new_box_flags.sh"
+  "parity/new_box_flags.sh",
+  "scripts/install-go-boxyard.sh"
  ],
  "version": 1
 }

@@ -48,8 +48,8 @@ func newMultiSyncCommand() *cobra.Command {
 		noRefreshSymlinks       bool
 		showProgress            bool
 		noShowProgress          bool
+		printSkipped            bool
 		noPrintSkipped          bool
-		noNoPrintSkipped        bool
 		softInterruption        bool
 		noSoftInterruption      bool
 	)
@@ -64,8 +64,8 @@ func newMultiSyncCommand() *cobra.Command {
 			if noShowProgress {
 				showProgress = false
 			}
-			if noNoPrintSkipped {
-				noPrintSkipped = false
+			if noPrintSkipped {
+				printSkipped = false
 			}
 			if noRecentlyModifiedFirst {
 				recentlyModifiedFirst = false
@@ -187,7 +187,7 @@ func newMultiSyncCommand() *cobra.Command {
 					// scrolls away above it instead of landing inside it.
 					board.Above(func() {
 						if showProgress {
-							printBoxResult(stat, bm, len(boxes), reportParts, noPrintSkipped)
+							printBoxResult(stat, bm, len(boxes), reportParts, printSkipped)
 						}
 					})
 					return struct{}{}, nil
@@ -218,15 +218,14 @@ func newMultiSyncCommand() *cobra.Command {
 	f.BoolVar(&noRefreshSymlinks, "no-refresh-user-symlinks", false, "Do not refresh the user symlinks.")
 	f.BoolVar(&showProgress, "show-progress", true, "Show the progress of the sync.")
 	f.BoolVar(&noShowProgress, "no-show-progress", false, "Do not show the progress of the sync.")
-	f.BoolVar(&noPrintSkipped, "no-print-skipped", true, "Do not print boxes for which no syncs happened.")
-	// The double negative is not a typo. typer derives the off-switch for a
-	// bool option by prefixing "--no-", so a Python parameter already called
-	// `no_print_skipped` yields `--no-no-print-skipped` — and that spelling,
-	// ugly as it is, is what the CLI contract says. A friendlier
-	// `--print-skipped` was here instead, which the Python rejects with exit
-	// 2, so a script written against the Go would have broken on any machine
-	// still running the Python.
-	f.BoolVar(&noNoPrintSkipped, "no-no-print-skipped", false, "Print boxes for which no syncs happened.")
+	// `--print-skipped` / `--no-print-skipped`, matching Python v0.5.13. The
+	// port originally had `--print-skipped` alone, which the Python then
+	// rejected with exit 2 — its parameter was called `no_print_skipped`, so
+	// typer derived `--no-no-print-skipped` for the positive. The Python was
+	// renamed rather than the port bent to the double negative, and
+	// `--no-print-skipped` kept its spelling and meaning through that.
+	f.BoolVar(&printSkipped, "print-skipped", false, "Print boxes for which no syncs happened.")
+	f.BoolVar(&noPrintSkipped, "no-print-skipped", false, "Do not print boxes for which no syncs happened.")
 	f.BoolVar(&softInterruption, "soft-interruption-enabled", true, "Enable soft interruption.")
 	f.BoolVar(&noSoftInterruption, "no-soft-interruption-enabled", false, "Disable soft interruption.")
 	return cmd
@@ -444,7 +443,7 @@ func renderBoxResult(markup []string) []string {
 }
 
 func printBoxResult(stat syncStat, bm *models.BoxMeta, total int,
-	parts []enums.BoxPart, noPrintSkipped bool) {
+	parts []enums.BoxPart, printSkipped bool) {
 
 	anySynced := false
 	for _, part := range parts {
@@ -452,7 +451,7 @@ func printBoxResult(stat syncStat, bm *models.BoxMeta, total int,
 			anySynced = true
 		}
 	}
-	if noPrintSkipped && (stat.Status == "Success" || stat.Status == "Local") && !anySynced {
+	if !printSkipped && (stat.Status == "Success" || stat.Status == "Local") && !anySynced {
 		return
 	}
 	for _, line := range renderBoxResult(boxResultMarkup(stat, bm.IndexName(), total, parts)) {

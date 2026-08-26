@@ -117,16 +117,21 @@ BOXYARD_CONFIG_PATH="$B" "$PYBIN" owner -r "$idx" -o json | python3 -c "
 import json,sys; print('   B sees write_owner =', json.load(sys.stdin)['write_owner'])"
 
 echo "== multi-sync: the finished line is byte-identical across implementations"
-# Both sides take the SAME flag. They did not: the Go had invented a
-# friendlier `--print-skipped` for what typer spells `--no-no-print-skipped`,
-# and this script quietly passed each implementation its own spelling — so the
-# one comparison that would have caught the divergence was the thing hiding it.
-# ONE pipeline, applied to both. It used to strip ANSI escapes from the Python
-# and not from the Go, because the Go emitted none — so the moment the Go
-# started colouring its output the comparison broke, and had it broken the
-# other way it would have compared a coloured line against a plain one and
-# called them different for the wrong reason. Whenever a differential needs
-# different treatment per implementation, that difference IS the finding.
+# ONE pipeline and ONE flag, applied to both sides. This comparison has now
+# hidden a divergence TWICE by treating them differently:
+#
+#   * it passed the Go `--print-skipped` and the Python
+#     `--no-no-print-skipped`. The port had invented the friendlier spelling
+#     for what typer derived from a parameter named `no_print_skipped`, and
+#     passing each side its own meant the one comparison that would have caught
+#     it was the thing hiding it. (Python v0.5.13 renamed the parameter, so
+#     both now take `--print-skipped`.)
+#   * it stripped ANSI escapes from the Python and not from the Go, because the
+#     Go emitted none — so the moment the Go started colouring its output the
+#     comparison broke.
+#
+# Whenever a differential needs different treatment per implementation, that
+# difference IS the finding.
 #
 # The LAST non-"Syncing" match is the result: rich redraws the line in place
 # while the sync runs, so the earlier frames are transient.
@@ -134,8 +139,8 @@ finished_line() {
   sed 's/\x1b\[[0-9;]*m//g' | tr '\r' '\n' \
     | grep -oE '\(1/1\) [^ ]+ \.+ [A-Za-z-]+' | grep -v 'Syncing' | tail -1
 }
-GO_LINE=$(COLUMNS=80 "$GOBIN" --config "$A" multi-sync --no-refresh-user-symlinks --no-no-print-skipped 2>&1 | finished_line)
-PY_LINE=$(COLUMNS=80 BOXYARD_CONFIG_PATH="$A" "$PYBIN" multi-sync --no-refresh-user-symlinks --no-no-print-skipped 2>&1 | finished_line)
+GO_LINE=$(COLUMNS=80 "$GOBIN" --config "$A" multi-sync --no-refresh-user-symlinks --print-skipped 2>&1 | finished_line)
+PY_LINE=$(COLUMNS=80 BOXYARD_CONFIG_PATH="$A" "$PYBIN" multi-sync --no-refresh-user-symlinks --print-skipped 2>&1 | finished_line)
 echo "   go: $GO_LINE"
 echo "   py: $PY_LINE"
 [ -n "$GO_LINE" ] && [ "$GO_LINE" = "$PY_LINE" ] && echo "multi-sync finished line IDENTICAL"
@@ -146,9 +151,9 @@ echo "== multi-sync: the WHOLE block is byte-identical, escapes included"
 # compared rather than one grepped line. FORCE_COLOR=1 is compared separately
 # below, because there rich animates and the frames are not durable output.
 touch "$ROOT/A/boxes/$idx/touch-for-a-real-sync.txt"
-FORCE_COLOR= COLUMNS=80 "$GOBIN" --config "$A" multi-sync --no-refresh-user-symlinks --no-no-print-skipped > "$ROOT/go-ms.txt" 2>&1
+FORCE_COLOR= COLUMNS=80 "$GOBIN" --config "$A" multi-sync --no-refresh-user-symlinks --print-skipped > "$ROOT/go-ms.txt" 2>&1
 touch "$ROOT/A/boxes/$idx/touch-for-a-real-sync.txt"
-FORCE_COLOR= COLUMNS=80 BOXYARD_CONFIG_PATH="$A" "$PYBIN" multi-sync --no-refresh-user-symlinks --no-no-print-skipped > "$ROOT/py-ms.txt" 2>&1
+FORCE_COLOR= COLUMNS=80 BOXYARD_CONFIG_PATH="$A" "$PYBIN" multi-sync --no-refresh-user-symlinks --print-skipped > "$ROOT/py-ms.txt" 2>&1
 diff "$ROOT/go-ms.txt" "$ROOT/py-ms.txt" && echo "multi-sync plain output IDENTICAL"
 
 echo "== multi-sync: a non-owner reports Read-only, with the same explanation"
@@ -159,9 +164,9 @@ echo "== multi-sync: a non-owner reports Read-only, with the same explanation"
 "$GOBIN" --config "$A" claim -r "$idx" >/dev/null 2>&1
 BOXYARD_CONFIG_PATH="$B" "$PYBIN" sync -r "$idx" --sync-choices meta >/dev/null 2>&1
 printf 'a local change B may not push\n' > "$ROOT/B/boxes/$idx/from-b.txt"
-FORCE_COLOR= COLUMNS=80 "$GOBIN" --config "$B" multi-sync --no-refresh-user-symlinks --no-no-print-skipped > "$ROOT/go-ro.txt" 2>&1
+FORCE_COLOR= COLUMNS=80 "$GOBIN" --config "$B" multi-sync --no-refresh-user-symlinks --print-skipped > "$ROOT/go-ro.txt" 2>&1
 printf 'a local change B may not push\n' > "$ROOT/B/boxes/$idx/from-b.txt"
-FORCE_COLOR= COLUMNS=80 BOXYARD_CONFIG_PATH="$B" "$PYBIN" multi-sync --no-refresh-user-symlinks --no-no-print-skipped > "$ROOT/py-ro.txt" 2>&1
+FORCE_COLOR= COLUMNS=80 BOXYARD_CONFIG_PATH="$B" "$PYBIN" multi-sync --no-refresh-user-symlinks --print-skipped > "$ROOT/py-ro.txt" 2>&1
 grep -q 'Read-only' "$ROOT/py-ro.txt" || { echo "the Python did not report Read-only -- the comparison would be vacuous"; cat "$ROOT/py-ro.txt"; exit 1; }
 grep -q 'names both ways out' "$ROOT/py-ro.txt" || { echo "no owner explanation in the Python output -- the comparison would be vacuous"; exit 1; }
 diff "$ROOT/go-ro.txt" "$ROOT/py-ro.txt" && echo "multi-sync Read-only output IDENTICAL"

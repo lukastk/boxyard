@@ -1076,28 +1076,28 @@ func TestEmptiedGroupDirectoryWithOnlyHiddenFilesFailsLoudly(t *testing.T) {
 	}
 }
 
-// TestGroupNamedDirectoriesSurviveWhenEmpty pins the Python's `is_group_folder`
-// rule: an empty directory is kept only when its path RELATIVE TO THE TREE ROOT
-// is a group NAME. Note the asymmetry with symlink_name, documented on
-// pruneEmptyNonGroupDirs — "kept" here works only because this group's
-// symlink_name is unset and so equals its name.
-func TestGroupNamedDirectoriesSurviveWhenEmpty(t *testing.T) {
+// TestGroupNamedDirectoryIsPrunedWhenEmpty pins the behaviour BOTH shapes now
+// have. It used to assert the opposite: an `is_group_folder` exemption kept a
+// directory whose path matched a group NAME, which only ever applied to a
+// group with no symlink_name. Same code, opposite outcome, decided by a field
+// with nothing to do with pruning — Python v0.5.13 removed it (see
+// pruneEmptyDirs) and this follows.
+func TestGroupNamedDirectoryIsPrunedWhenEmpty(t *testing.T) {
 	y := newYard(t, "[box_groups.keeper]\n", "")
 	bm := y.addBox("20260101", "aaa111", "box", "keeper")
 	y.build()
 	y.exclude(bm)
 	y.build()
 
-	if !exists(filepath.Join(y.groupsRoot(), "keeper")) {
-		t.Error("an empty directory named after a configured group was pruned")
+	if exists(filepath.Join(y.groupsRoot(), "keeper")) {
+		t.Error("an emptied group directory survived")
 	}
-	y.assertTree("keeper/")
+	y.assertTree()
 }
 
-// TestEmptyDirectoryOfGroupWithSymlinkNameIsPruned pins the OTHER half of that
-// rule — the suspected Python bug reproduced deliberately. Group "keeper" lives
-// at "all/keeper", which is not a group NAME, so the directory is pruned once
-// it empties even though the group is still configured.
+// TestEmptyDirectoryOfGroupWithSymlinkNameIsPruned is the same rule for the
+// nested shape: group "keeper" lives at "all/keeper", and both levels go once
+// it empties.
 func TestEmptyDirectoryOfGroupWithSymlinkNameIsPruned(t *testing.T) {
 	y := newYard(t, "[box_groups.keeper]\nsymlink_name = \"all/keeper\"\n", "")
 	bm := y.addBox("20260101", "aaa111", "box", "keeper")
@@ -1494,7 +1494,7 @@ func TestParityWithPython(t *testing.T) {
 			},
 		},
 		{
-			name:       "prune-group-named-vs-symlink-named-empty-dirs",
+			name:       "prune-every-empty-dir-whatever-its-shape",
 			realGroups: "[box_groups.keeper]\n[box_groups.renamed]\nsymlink_name = \"all/renamed\"\n",
 			boxes:      []parityBox{{ts: "20260101", subid: "aaa111", name: "box", groups: []string{"other"}}},
 			pre: []preEntry{
@@ -1502,10 +1502,13 @@ func TestParityWithPython(t *testing.T) {
 				{path: "all/renamed", kind: "dir"},
 				{path: "stale/nested", kind: "dir"},
 			},
-			// "keeper" survives because its relative path IS a group name;
-			// "all/renamed" does not, because the prune compares against group
-			// names and this directory is named after a symlink_name.
-			want: []string{"keeper/", "other/", "other/20260101_aaa111__box -> dev/20260101_aaa111__box"},
+			// All three go. "keeper" used to survive, because an
+			// `is_group_folder` exemption kept a directory whose relative path
+			// IS a group name — which only ever applied to a group with no
+			// symlink_name, so the same code pruned or kept an emptied group's
+			// directory depending on a field with nothing to do with pruning.
+			// Python v0.5.13 removed it.
+			want: []string{"other/", "other/20260101_aaa111__box -> dev/20260101_aaa111__box"},
 		},
 		{
 			name:  "stale-symlinks-removed-and-dirs-pruned",
