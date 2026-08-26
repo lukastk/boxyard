@@ -221,6 +221,25 @@ func SyncBox(ctx context.Context, cfg *config.Config, s SyncStore, p syncengine.
 		if wanted[enums.PartMeta] {
 			results[enums.PartMeta] = PartResult{Status: status, Synced: synced}
 		}
+
+		// Record the merge base, but ONLY where local and remote are known to
+		// match: the status said SYNCED (nothing to do), or a transfer
+		// completed and was verified. A base that never corresponded to a
+		// shared state would make a later merge confidently wrong, which is
+		// worse than the refusal a missing base falls back to.
+		//
+		// What this condition is worth TODAY: every non-agreeing META outcome
+		// currently returns an ERROR from syncengine.Run, so control does not
+		// reach here at all. It stays as defence in depth — WriteDenied is the
+		// precedent for a refusal being turned into a returned status rather
+		// than an error, to stop the supervisor logging the same thing 72
+		// times a day — and if META ever gains such a status, this is what
+		// keeps the base from moving under it.
+		if status.Condition == syncengine.Synced || synced {
+			if err := models.RecordMetaBase(cfg, bm); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// --- Write ownership ----------------------------------------------

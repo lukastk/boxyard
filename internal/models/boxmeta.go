@@ -463,7 +463,30 @@ func LoadBoxMeta(cfg *config.Config, storageLocationName, boxIndexName string) (
 	if _, err := os.Stat(metaPath); err != nil {
 		return nil, fmt.Errorf("box meta file %s does not exist", metaPath)
 	}
+	return LoadBoxMetaFromPath(metaPath, BoxIdentity{
+		CreationTimestampUTC: timestamp,
+		BoxSubid:             subid,
+		Name:                 name,
+		StorageLocation:      storageLocationName,
+	})
+}
 
+// BoxIdentity is the part of a BoxMeta that is NOT in its boxmeta.toml.
+//
+// LoadBoxMeta derives these four from the box's index name and the directory
+// the file sits in. A caller reading a COPY of a boxmeta from somewhere else —
+// the META merge base — supplies the same values as the box the copy belongs
+// to, rather than trying to recover them from a path that no longer encodes
+// them.
+type BoxIdentity struct {
+	CreationTimestampUTC string
+	BoxSubid             string
+	Name                 string
+	StorageLocation      string
+}
+
+// LoadBoxMetaFromPath parses a boxmeta.toml at an arbitrary path.
+func LoadBoxMetaFromPath(metaPath string, id BoxIdentity) (*BoxMeta, error) {
 	// NOT a strict decode. `strict.ReadTOMLFile` rejects unknown keys, which
 	// for THIS file is the failure described on BoxMeta.UnknownKeys: the box
 	// disappears instead of syncing. Decode permissively, then split the keys
@@ -480,12 +503,12 @@ func LoadBoxMeta(cfg *config.Config, storageLocationName, boxIndexName string) (
 	}
 
 	bm := &BoxMeta{
-		CreationTimestampUTC: timestamp,
-		BoxSubid:             subid,
-		Name:                 name,
+		CreationTimestampUTC: id.CreationTimestampUTC,
+		BoxSubid:             id.BoxSubid,
+		Name:                 id.Name,
 		// The directory the file sits in is authoritative for the storage
 		// location, overriding whatever the file says.
-		StorageLocation: storageLocationName,
+		StorageLocation: id.StorageLocation,
 		CreatorHostname: file.CreatorHostname,
 		Groups:          file.Groups,
 		Parents:         file.Parents,

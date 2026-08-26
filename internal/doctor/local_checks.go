@@ -386,3 +386,65 @@ func checkTreeOrphans(report *Report, sc *scan) {
 		}
 	}
 }
+
+// checkUnpushedMetaEdits reports a boxmeta that differs from the merge base —
+// the copy this machine last agreed with the remote about — with no push since.
+//
+// On its own that is an ordinary pending edit, not a fault: `add-to-group`,
+// `set-parent` and friends do not push unless asked (`--sync-after`). The
+// point is the TIMING. While the edit sits unpushed it is one push by any
+// other machine away from a two-sided divergence, and a two-sided divergence
+// is a dead end — sync refuses, and nothing but a human picking a winner per
+// box resolves it.
+//
+// That is not hypothetical. On 2026-08-25, forty-four boxes on macbook were
+// given an `archived` or `dormant` group locally; over the same afternoon the
+// other machines ran the ownership claim sweep, which writes `write_owner`
+// into boxmeta.toml and pushes. Every one of the forty-four became a conflict,
+// they stopped propagating their groups entirely, and every machine except
+// macbook reported "all checks passed" throughout.
+//
+// Purely local and free — it compares two files already on disk — and it says
+// nothing about a box with no base yet. That is an absence, not a fault: a box
+// whose META has not synced since the base was introduced has nothing to be
+// compared against, and reporting it would flag every box on every machine on
+// the day of the upgrade.
+func checkUnpushedMetaEdits(cfg *config.Config, report *Report, sc *scan) error {
+	for _, bm := range sc.boxMetas {
+		base, err := models.ReadMetaBase(cfg, bm)
+		if err != nil {
+			return err
+		}
+		if base == nil {
+			continue
+		}
+
+		// Compare the FIELDS, not the file bytes. A boxmeta rewritten with the
+		// same content — reordered keys, a trailing newline — is not an edit,
+		// and reporting it would train the reader to ignore this check.
+		var changed []string
+		if !equalStrings(bm.Groups, base.Groups) {
+			changed = append(changed, "groups")
+		}
+		if !equalStrings(bm.Parents, base.Parents) {
+			changed = append(changed, "parents")
+		}
+		if bm.WriteOwner != base.WriteOwner {
+			changed = append(changed, "write_owner")
+		}
+		if len(changed) == 0 {
+			continue
+		}
+
+		report.add("unpushed-meta-edit",
+			fmt.Sprintf("Box '%s' has local metadata changes (%s) that have not been pushed",
+				bm.IndexName(), strings.Join(changed, ", ")),
+			fmt.Sprintf("Harmless until another machine pushes this box's META, at which point "+
+				"it becomes a divergence that sync refuses. Push it with `boxyard sync -r '%s' "+
+				"--sync-choices meta`.", bm.IndexName()),
+			Field{"index_name", bm.IndexName()},
+			Field{"changed_fields", changed},
+			Field{"storage_location", bm.StorageLocation})
+	}
+	return nil
+}

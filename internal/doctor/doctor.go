@@ -50,6 +50,7 @@ var CheckNames = []string{
 	"unknown-config-keys",
 	"write-denied",
 	"stale-owner",
+	"unpushed-meta-edit",
 }
 
 // Finding is one problem, with a hint that names the fix.
@@ -135,6 +136,9 @@ func Run(ctx context.Context, cfg *config.Config, s RemoteStore, opts Options) (
 		return nil, err
 	}
 	checkWriteDenied(ctx, cfg, s, report, sc, opts.CheckRemote)
+	if err := checkUnpushedMetaEdits(cfg, report, sc); err != nil {
+		return nil, err
+	}
 
 	for _, c := range report.Checks {
 		report.NumFindings += len(c.Findings)
