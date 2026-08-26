@@ -214,8 +214,20 @@ the bug fixed in v0.4.3.
   in-place redraw does not exist. The deployed supervisor log contains only the
   durable lines, so nothing is lost there — but an interactive run looks
   different.
-- **rich's styling** in `list --view groups|tree`. The content matches line for
-  line; the bold/dim escapes do not. Nothing scripts those views.
+- ~~**rich's styling** in `list --view groups|tree`.~~ Done, and it was NOT
+  only styling. The three tree views are rich Trees, and rich wraps every
+  label to the console width and then CROPS the line to it. So the two
+  implementations disagreed about how many LINES the view had — a content
+  difference, visible in a pipe, on any yard with long box names. That is why
+  "the content matches line for line" was wrong when it was written: the
+  comparison behind it had been run at a width where nothing wrapped.
+
+  `internal/richstyle` now holds rich's markup renderer, its cell-width table
+  (generated from rich, with a test that fails when a dependency bump changes
+  it), its `divide_line`, and its Tree. Each is differentialled against rich
+  itself, and `list --view groups`, `list --view tree` and `tree` are
+  byte-identical against the installed Python on the real yard at widths 200,
+  120, 80, 60, 40, 25 and 12.
 
 ## How to verify what is here
 

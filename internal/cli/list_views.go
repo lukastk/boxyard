@@ -7,6 +7,7 @@ import (
 
 	"github.com/lukastk/boxyard/internal/config"
 	"github.com/lukastk/boxyard/internal/models"
+	"github.com/lukastk/boxyard/internal/richstyle"
 )
 
 // resolveListRef accepts a box id, an index name, or a name substring — the
@@ -82,47 +83,68 @@ func printGroupsView(cfg *config.Config, metas []*models.BoxMeta, hideGroups []s
 		}
 	}
 
-	fmt.Println("boxyard")
 	names := make([]string, 0, len(byGroup))
 	for g := range byGroup {
 		names = append(names, g)
 	}
 	sort.Strings(names)
 
-	type branch struct {
-		label string
-		boxes []*models.BoxMeta
-		group string
-	}
-	branches := make([]branch, 0, len(names)+1)
+	// This view is a rich Tree in the Python: the group name is bold, the
+	// trailing "[other, groups]" is dim, and every label is WRAPPED to the
+	// console width with the guides carried down the continuation lines. All
+	// three are part of the output — the wrapping in a pipe as much as on a
+	// terminal, which is why the port printing one long line per box was a
+	// content difference and not only a styling one.
+	root := &richstyle.TreeNode{Label: "boxyard"}
 	for _, g := range names {
-		branches = append(branches, branch{label: g, boxes: byGroup[g], group: g})
+		node := root.Add("[bold]" + richstyle.Escape(g) + "[/bold]")
+		addGroupBoxes(node, cfg, byGroup[g], g, showStatus)
 	}
 	if len(ungrouped) > 0 {
-		branches = append(branches, branch{label: "(ungrouped)", boxes: ungrouped})
+		node := root.Add("[dim](ungrouped)[/dim]")
+		addGroupBoxes(node, cfg, ungrouped, "", showStatus)
 	}
+	printTree(root)
+}
 
-	for i, br := range branches {
-		last := i == len(branches)-1
-		fmt.Println(treeBranch(last) + br.label)
-		boxes := append([]*models.BoxMeta{}, br.boxes...)
-		sort.Slice(boxes, func(a, b int) bool { return boxes[a].Name < boxes[b].Name })
-		for j, bm := range boxes {
-			var others []string
-			for _, g := range bm.Groups {
-				if br.group == "" || g != br.group {
-					others = append(others, g)
-				}
+// addGroupBoxes hangs one group's boxes off its node, name-sorted, each with
+// the groups it belongs to OTHER than this one.
+func addGroupBoxes(node *richstyle.TreeNode, cfg *config.Config,
+	metas []*models.BoxMeta, group string, showStatus bool) {
+
+	boxes := append([]*models.BoxMeta{}, metas...)
+	sort.SliceStable(boxes, func(a, b int) bool { return boxes[a].Name < boxes[b].Name })
+	for _, bm := range boxes {
+		var others []string
+		for _, g := range bm.Groups {
+			if group == "" || g != group {
+				others = append(others, g)
 			}
-			sort.Strings(others)
-			suffix := ""
-			if len(others) > 0 {
-				suffix = " [" + strings.Join(others, ", ") + "]"
-			}
-			fmt.Printf("%s%s%s%s (%s)%s\n",
-				treeIndent(last), treeBranch(j == len(boxes)-1),
-				statusMarker(cfg, bm, showStatus), bm.Name, bm.BoxID(), suffix)
 		}
+		sort.Strings(others)
+		suffix := ""
+		if len(others) > 0 {
+			// The Python escapes this bracket by hand (`\\[`) so rich prints
+			// it instead of reading it as a style tag.
+			suffix = ` [dim]\[` + strings.Join(others, ", ") + "][/dim]"
+		}
+		node.Add(fmt.Sprintf("%s%s (%s)%s",
+			statusMarker(cfg, bm, showStatus), richstyle.Escape(bm.Name), bm.BoxID(), suffix))
+	}
+}
+
+// printTree renders a rich Tree to stdout exactly as a default rich Console
+// would: its width, its terminal detection, its wrapping.
+func printTree(root *richstyle.TreeNode) {
+	lines, err := richstyle.RenderTree(root, richstyle.ConsoleWidth(),
+		richstyle.Enabled(), richstyle.NoColor())
+	if err != nil {
+		// Unreachable for markup this file builds; a panic here would be a bug
+		// in the builder, and swallowing it would print a silently wrong tree.
+		panic(err)
+	}
+	for _, line := range lines {
+		fmt.Println(line)
 	}
 }
 
@@ -153,32 +175,29 @@ func printListTreeView(cfg *config.Config, metas []*models.BoxMeta, showStatus b
 	}
 	sort.Slice(roots, func(i, j int) bool { return roots[i].IndexName() < roots[j].IndexName() })
 
+	// A rich Tree in the Python too, so it wraps to the console width just as
+	// the groups view does. Its labels are plain rich Text rather than markup
+	// — the `[groups: ...]` suffix was being eaten as a style tag until
+	// v0.5.9 — so they are escaped here and carry no styling.
 	shown := map[string]bool{}
-	var draw func(bm *models.BoxMeta, prefix string, last bool)
-	draw = func(bm *models.BoxMeta, prefix string, last bool) {
-		fmt.Println(prefix + treeBranch(last) + listTreeLabel(cfg, bm, showStatus))
+	var add func(node *richstyle.TreeNode, bm *models.BoxMeta)
+	add = func(node *richstyle.TreeNode, bm *models.BoxMeta) {
+		child := node.Add(richstyle.Escape(listTreeLabel(cfg, bm, showStatus)))
 		shown[bm.BoxID()] = true
 		children := filtered.ChildrenOf(bm.BoxID())
 		sort.Slice(children, func(i, j int) bool { return children[i].IndexName() < children[j].IndexName() })
-		var pending []*models.BoxMeta
 		for _, c := range children {
 			if !shown[c.BoxID()] {
-				pending = append(pending, c)
+				add(child, c)
 			}
-		}
-		next := prefix + "│   "
-		if last {
-			next = prefix + "    "
-		}
-		for i, c := range pending {
-			draw(c, next, i == len(pending)-1)
 		}
 	}
 
-	fmt.Println("boxyard")
-	for i, r := range roots {
-		draw(r, "", i == len(roots)-1)
+	root := &richstyle.TreeNode{Label: "boxyard"}
+	for _, r := range roots {
+		add(root, r)
 	}
+	printTree(root)
 }
 
 func listTreeLabel(cfg *config.Config, bm *models.BoxMeta, showStatus bool) string {

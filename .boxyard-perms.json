@@ -1,5 +1,6 @@
 {
  "executable": [
+  "_dev/resolve-macbook-meta-conflicts.sh",
   "dev_scripts/clean-project",
   "dev_scripts/publish-new",
   "dev_scripts/run-tests",

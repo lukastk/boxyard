@@ -8,6 +8,7 @@ import (
 
 	"github.com/lukastk/boxyard/internal/config"
 	"github.com/lukastk/boxyard/internal/models"
+	"github.com/lukastk/boxyard/internal/richstyle"
 	"github.com/lukastk/boxyard/internal/strict"
 	"github.com/spf13/cobra"
 )
@@ -219,41 +220,34 @@ func renderTreeText(cfg *config.Config, meta *models.BoxyardMeta, boxes []*model
 		return fmt.Sprintf("%s%s (%s)%s", status, bm.Name, bm.BoxID(), groups)
 	}
 
+	// A rich Tree in the Python, so it wraps to the console width. Its labels
+	// are plain rich Text — the `[groups: ...]` suffix was swallowed as markup
+	// until v0.5.9 — so they are escaped and carry no styling.
 	shown := map[string]bool{}
-	var draw func(bm *models.BoxMeta, prefix string, last bool)
-	draw = func(bm *models.BoxMeta, prefix string, last bool) {
-		branch := "├── "
-		nextPrefix := prefix + "│   "
-		if last {
-			branch = "└── "
-			nextPrefix = prefix + "    "
-		}
-		fmt.Println(prefix + branch + label(bm))
+	var add func(node *richstyle.TreeNode, bm *models.BoxMeta)
+	add = func(node *richstyle.TreeNode, bm *models.BoxMeta) {
+		child := node.Add(richstyle.Escape(label(bm)))
 		shown[bm.BoxID()] = true
-
 		children := meta.ChildrenOf(bm.BoxID())
 		sort.Slice(children, func(i, j int) bool { return children[i].IndexName() < children[j].IndexName() })
-		for i, child := range children {
-			draw(child, nextPrefix, i == len(children)-1)
+		for _, c := range children {
+			add(child, c)
 		}
 	}
 
-	fmt.Println("boxyard")
-	for i, root := range roots {
-		last := i == len(roots)-1
-		// Orphans get their own branch below, so the last root is only "last"
-		// when there are none.
-		draw(root, "", last && !hasOrphans(meta, boxes, roots))
+	root := &richstyle.TreeNode{Label: "boxyard"}
+	for _, r := range roots {
+		add(root, r)
 	}
 	// A box whose parent is outside the filtered set would otherwise vanish
 	// from the tree entirely.
-	orphans := collectOrphans(meta, boxes, roots)
-	if len(orphans) > 0 {
-		fmt.Println("└── [unknown parent]")
-		for i, orphan := range orphans {
-			draw(orphan, "    ", i == len(orphans)-1)
+	if orphans := collectOrphans(meta, boxes, roots); len(orphans) > 0 {
+		node := root.Add(richstyle.Escape("[unknown parent]"))
+		for _, orphan := range orphans {
+			add(node, orphan)
 		}
 	}
+	printTree(root)
 }
 
 func hasOrphans(meta *models.BoxyardMeta, boxes, roots []*models.BoxMeta) bool {
