@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lukastk/boxyard/internal/cmds"
 	"github.com/lukastk/boxyard/internal/config"
@@ -16,6 +17,7 @@ import (
 	"github.com/lukastk/boxyard/internal/models"
 	"github.com/lukastk/boxyard/internal/perms"
 	"github.com/lukastk/boxyard/internal/rclone"
+	"github.com/lukastk/boxyard/internal/richstyle"
 	"github.com/lukastk/boxyard/internal/runner"
 	"github.com/lukastk/boxyard/internal/storage"
 	"github.com/lukastk/boxyard/internal/syncengine"
@@ -138,11 +140,30 @@ func newMultiSyncCommand() *cobra.Command {
 			}
 
 			stats := make([]syncStat, len(boxes))
+			names := make([]string, len(boxes))
+			for i, bm := range boxes {
+				names[i] = bm.IndexName()
+			}
+			// started is the order boxes ENTERED the board, which is the order
+			// the Python's dict yields them in.
+			var started []int
 			var mu sync.Mutex
+
+			board := newLiveBoard(os.Stdout, showProgress && richstyle.Enabled(), &mu, func() []string {
+				return inFlightBoard(started, stats, names, reportParts)
+			})
+			board.Start()
+			defer board.Finish()
+
 			tasks := make([]func(context.Context) (struct{}, error), len(boxes))
 			for i := range boxes {
 				num, bm := i, boxes[i]
 				tasks[i] = func(ctx context.Context) (struct{}, error) {
+					mu.Lock()
+					stats[num] = syncStat{Num: num, Status: "Syncing..."}
+					started = append(started, num)
+					mu.Unlock()
+
 					results, err := cmds.SyncBox(ctx, cfg, store, perms.Adapter{}, cmds.SyncBoxOptions{
 						BoxIndexName:     bm.IndexName(),
 						Direction:        direction,
@@ -161,16 +182,21 @@ func newMultiSyncCommand() *cobra.Command {
 					}
 					mu.Lock()
 					stats[num] = stat
-					if showProgress {
-						printBoxResult(stats[num], bm, len(boxes), reportParts, noPrintSkipped)
-					}
 					mu.Unlock()
+					// Printed with the live region erased, so a finished box
+					// scrolls away above it instead of landing inside it.
+					board.Above(func() {
+						if showProgress {
+							printBoxResult(stat, bm, len(boxes), reportParts, noPrintSkipped)
+						}
+					})
 					return struct{}{}, nil
 				}
 			}
 			if _, err := runner.Throttle(ctx, maxConcurrent, 0, tasks); err != nil {
 				return err
 			}
+			board.Finish()
 
 			fmt.Println("Finished. Final results:")
 			fmt.Println()
@@ -301,6 +327,122 @@ func classifySync(results map[enums.BoxPart]cmds.PartResult) string {
 	return "Success"
 }
 
+// statusColour is the colour of the STATUS word. "Syncing..." is in here and
+// "Success" is coloured differently from the box name's own colour, so the two
+// maps are separate rather than one.
+var statusColour = map[string]string{
+	"Syncing...":  "yellow",
+	"Success":     "green",
+	"Read-only":   "yellow",
+	"Local":       "blue",
+	"Interrupted": "magenta",
+	"Error":       "red",
+}
+
+// nameColour is the colour of the BOX NAME. It deliberately has no entry for
+// "Syncing...": a box's name stays plain until it has an outcome, which is
+// what makes the missing colour on an in-flight line a design choice here and
+// a typo in the status map (fixed in Python v0.5.12).
+var nameColour = map[string]string{
+	"Success":     "green",
+	"Read-only":   "yellow",
+	"Local":       "blue",
+	"Interrupted": "magenta",
+	"Error":       "red",
+}
+
+// boxResultMarkup is the Python's `get_status_lines`: the rich markup for one
+// box's block, which is one "(n/m) name .... Status" line plus a detail line.
+//
+// The markup is built rather than the final bytes, so the same strings serve
+// the scrolling output and the live board, and so richstyle decides once
+// whether any of it is emitted.
+func boxResultMarkup(stat syncStat, indexName string, total int, parts []enums.BoxPart) []string {
+	name := nameColour[stat.Status]
+	left := fmt.Sprintf("(%d/%d) [bold %s]%s[/bold %s]", stat.Num+1, total, name, richstyle.Escape(indexName), name)
+	status := statusColour[stat.Status]
+	right := fmt.Sprintf("[bold %s]%s[/bold %s]", status, stat.Status, status)
+
+	// The padding is measured on the PLAIN text and in CODEPOINTS -- Python
+	// uses len() on the un-marked-up string, not a cell count -- and against
+	// shutil's terminal width, which is not the width rich wraps to.
+	dots := terminalWidth() - runeLen(plainOf(left)) - runeLen(plainOf(right)) - 1 - 2
+	if dots < 1 {
+		dots = 1
+	}
+	lines := []string{left + " " + strings.Repeat(".", dots) + " " + right}
+
+	const indent = "    "
+	switch {
+	case stat.Err != nil:
+		lines = append(lines, indent+"[red]"+richstyle.Escape(stat.Err.Error())+"[/red]")
+	case stat.Status == "Success" || stat.Status == "Read-only" || stat.Status == "Local":
+		cells := make([]string, 0, len(parts))
+		for _, part := range parts {
+			cell := "[blue]Skipped[/blue]"
+			if r, ok := stat.Results[part]; ok {
+				switch {
+				case r.Status.Condition == syncengine.WriteDenied:
+					cell = "[yellow]Write denied[/yellow]"
+				case r.Synced:
+					cell = "[green]Synced[/green]"
+				}
+			}
+			cells = append(cells, fmt.Sprintf("[bold]%s:[/bold] %s", part, cell))
+		}
+		lines = append(lines, indent+strings.Join(cells, ","+indent))
+		if stat.Status == "Read-only" {
+			// A box this machine may not push says so once, with the owner
+			// named and a pointer to the command that resolves it. Without
+			// these two lines the "Read-only" status is a dead end.
+			if owner := writeDeniedMessage(stat.Results, parts); owner != "" {
+				lines = append(lines, indent+"[yellow]"+richstyle.Escape(owner)+"[/yellow]")
+				lines = append(lines, indent+"[dim]`boxyard doctor` names both ways out.[/dim]")
+			}
+		}
+	default:
+		lines = append(lines, indent+"[yellow]Results pending...[/yellow]")
+	}
+	return lines
+}
+
+// writeDeniedMessage is the explanation the sync engine attached to the first
+// part this machine was not allowed to push.
+func writeDeniedMessage(results map[enums.BoxPart]cmds.PartResult, parts []enums.BoxPart) string {
+	for _, part := range parts {
+		if r, ok := results[part]; ok && r.Status.Condition == syncengine.WriteDenied {
+			if r.Status.ErrorMessage != "" {
+				return r.Status.ErrorMessage
+			}
+		}
+	}
+	return ""
+}
+
+func plainOf(markup string) string {
+	return richstyle.MustRender(markup, false, false)
+}
+
+func runeLen(s string) int { return utf8.RuneCountInString(s) }
+
+// renderBoxResult turns a box's markup block into the lines to print, wrapped
+// and styled the way a rich Console would.
+func renderBoxResult(markup []string) []string {
+	enable, noColour := richstyle.Enabled(), richstyle.NoColor()
+	width := richstyle.ConsoleWidth()
+	var out []string
+	for _, m := range markup {
+		lines, err := richstyle.RenderLine(m, width, enable, noColour)
+		if err != nil {
+			// Unreachable for markup this file builds; printing a silently
+			// wrong line would be worse than failing loudly.
+			panic(err)
+		}
+		out = append(out, lines...)
+	}
+	return out
+}
+
 func printBoxResult(stat syncStat, bm *models.BoxMeta, total int,
 	parts []enums.BoxPart, noPrintSkipped bool) {
 
@@ -313,32 +455,9 @@ func printBoxResult(stat syncStat, bm *models.BoxMeta, total int,
 	if noPrintSkipped && (stat.Status == "Success" || stat.Status == "Local") && !anySynced {
 		return
 	}
-
-	left := fmt.Sprintf("(%d/%d) %s", stat.Num+1, total, bm.IndexName())
-	dots := terminalWidth() - len(left) - len(stat.Status) - 1 - 2
-	if dots < 1 {
-		dots = 1
+	for _, line := range renderBoxResult(boxResultMarkup(stat, bm.IndexName(), total, parts)) {
+		fmt.Println(line)
 	}
-	fmt.Printf("%s %s %s\n", left, strings.Repeat(".", dots), stat.Status)
-
-	if stat.Err != nil {
-		fmt.Printf("    %s\n", stat.Err)
-		return
-	}
-	cells := make([]string, 0, len(parts))
-	for _, part := range parts {
-		cell := "Skipped"
-		if r, ok := stat.Results[part]; ok {
-			switch {
-			case r.Status.Condition == syncengine.WriteDenied:
-				cell = "Write denied"
-			case r.Synced:
-				cell = "Synced"
-			}
-		}
-		cells = append(cells, fmt.Sprintf("%s: %s", part, cell))
-	}
-	fmt.Printf("    %s\n", strings.Join(cells, ",    "))
 }
 
 // terminalWidth matches Python's shutil.get_terminal_size((80, 20)).columns,

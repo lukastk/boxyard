@@ -68,6 +68,11 @@ func TestCrossImplementationSync(t *testing.T) {
 		// its dot padding is computed from the terminal width — an off-by-one
 		// there would change every line of every pass.
 		"multi-sync finished line IDENTICAL",
+		"multi-sync plain output IDENTICAL",
+		// The port printed the "Read-only" status word and stopped: the two
+		// lines naming the owner and pointing at `boxyard doctor` were missing
+		// entirely, so the status was a dead end.
+		"multi-sync Read-only output IDENTICAL",
 		"box-status IDENTICAL across implementations",
 		"OK",
 	} {

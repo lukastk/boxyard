@@ -210,10 +210,23 @@ the bug fixed in v0.4.3.
   Python shipped this branch broken for months (an import of a function that
   had been renamed, plus an `asyncio.get_event_loop()` that raises on 3.14)
   and nothing noticed, because nothing ever ran it.
-- **multi-sync's live board.** The per-box lines and the summary match; the
-  in-place redraw does not exist. The deployed supervisor log contains only the
-  durable lines, so nothing is lost there — but an interactive run looks
-  different.
+- ~~**multi-sync's live board.**~~ Done, and it turned up two content gaps
+  that "the per-box lines match" had missed:
+
+  * the per-box block was never COLOURED, because the port printed raw strings
+    where the Python builds rich markup;
+  * a **Read-only** box printed the status word and stopped. The two lines
+    naming the owner and pointing at `boxyard doctor` were missing entirely,
+    so the status was a dead end — the one place a non-owner is told what to
+    do about it.
+
+  `internal/cli/live_board.go` is the in-place region, repainting rich's four
+  frames a second with finished boxes scrolling above it. It runs only on a
+  terminal, which is not a shortcut: rich's `Live` refreshes nothing off a
+  terminal and prints its final render once, so the supervisor's log holds the
+  durable lines and no frames. That log is what every automated comparison
+  sees, and `parity/cross_impl_sync.sh` now compares the WHOLE of it — plain
+  and Read-only — rather than one grepped line.
 - ~~**rich's styling** in `list --view groups|tree`.~~ Done, and it was NOT
   only styling. The three tree views are rich Trees, and rich wraps every
   label to the console width and then CROPS the line to it. So the two

@@ -189,3 +189,9 @@ func sliceSegments(segs []segment, breaks []int) [][]segment {
 	out = append(out, cur)
 	return out
 }
+
+// RenderLine renders one markup line the way `rich.Console.print` does: wrapped
+// to width, each wrapped line cropped to it.
+func RenderLine(markup string, width int, enable, noColour bool) ([]string, error) {
+	return renderLabel(markup, width, enable, noColour)
+}
