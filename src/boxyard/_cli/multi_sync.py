@@ -176,7 +176,13 @@ def cli_multi_sync(
         console_width = shutil.get_terminal_size((80, 20)).columns
     
         status_color = {
-            "Syncing": "yellow",
+            # "Syncing...", with the dots. The key was "Syncing", which is not a
+            # status any box ever has -- `_task` sets "Syncing..." -- so the live
+            # board's in-flight lines rendered `[bold ]`: bold, and uncoloured.
+            # rich accepts an empty style word without complaint, so nothing ever
+            # surfaced it. `name_color` has no in-flight entry ON PURPOSE (the box
+            # name stays plain until it has an outcome); this one is a typo.
+            "Syncing...": "yellow",
             "Success": "green",
             "Read-only": "yellow",
             "Local": "blue",
