@@ -1,6 +1,7 @@
 package cmds
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -47,7 +48,12 @@ type NewBoxOptions struct {
 // NewBox creates a box and returns its index name.
 //
 // Ported from pts/mod/cmds/01_new_box.pct.py.
-func NewBox(cfg *config.Config, opts NewBoxOptions) (string, error) {
+//
+// s is only used when `sync_before_new_box` is on, to fetch every remote
+// boxmeta before an id is minted; callers that never enable the setting may
+// pass nil, and NewBox refuses loudly rather than silently minting an id
+// without the check.
+func NewBox(ctx context.Context, cfg *config.Config, s MetaSyncStore, opts NewBoxOptions) (string, error) {
 	storageLocation := opts.StorageLocation
 	if storageLocation == "" {
 		storageLocation = cfg.DefaultStorageLocation
@@ -112,10 +118,22 @@ func NewBox(cfg *config.Config, opts NewBoxOptions) (string, error) {
 
 	// `sync_before_new_box` syncs every boxmeta first, so that a box id already
 	// taken on the remote is seen before this machine mints a colliding one.
-	// It needs `sync_missing_boxmetas`, which is not ported yet — and silently
-	// skipping it would remove the guarantee the setting exists to provide.
+	// Skipping it silently would remove the very guarantee the setting exists
+	// to provide, so a caller that turned it on without wiring a store is a
+	// programming error, not a fallback.
 	if cfg.SyncBeforeNewBox {
-		return "", notPorted("`sync_before_new_box = true`")
+		if s == nil {
+			return "", fmt.Errorf("`sync_before_new_box` is enabled but this call site passed no store, so the pre-flight boxmeta sync cannot run")
+		}
+		if opts.Verbose && opts.Out != nil {
+			fmt.Fprintln(opts.Out, "Syncing boxmetas before creating new box...")
+		}
+		if err := SyncMissingBoxMetas(ctx, cfg, s, SyncMissingBoxMetasOptions{
+			Verbose: opts.Verbose,
+			Out:     opts.Out,
+		}); err != nil {
+			return "", err
+		}
 	}
 
 	printf := func(format string, a ...any) {

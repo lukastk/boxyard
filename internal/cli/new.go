@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -72,7 +73,14 @@ func newNewCommand() *cobra.Command {
 				timestamp = &parsed
 			}
 
-			indexName, err := cmds.NewBox(cfg, cmds.NewBoxOptions{
+			// A store is only needed when `sync_before_new_box` is on, but
+			// building it is cheap and unconditional here keeps the failure
+			// (a bad rclone config) reported before anything is created.
+			store, err := newStore(cfg)
+			if err != nil {
+				return err
+			}
+			indexName, err := cmds.NewBox(context.Background(), cfg, store, cmds.NewBoxOptions{
 				StorageLocation:      storageLocation,
 				BoxName:              boxName,
 				FromPath:             fromPath,

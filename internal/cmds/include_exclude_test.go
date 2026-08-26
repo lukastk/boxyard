@@ -91,7 +91,7 @@ func TestIncludeBoxReportsOwnership(t *testing.T) {
 
 func TestExcludeBoxRefusesALocalStorageBox(t *testing.T) {
 	cfg := newTestYard(t)
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "local-only", InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "local-only", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}

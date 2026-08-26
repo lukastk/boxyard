@@ -1,6 +1,7 @@
 package cmds
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,7 +74,7 @@ func yardContents(t *testing.T, cfg *config.Config) []string {
 func TestNewBoxCreatesEverything(t *testing.T) {
 	cfg := newTestYard(t)
 
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "a-box"})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "a-box"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,7 @@ func TestNewBoxHonoursFixedTimestamp(t *testing.T) {
 	cfg := newTestYard(t)
 	ts := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "dated", CreationTimestampUTC: &ts})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "dated", CreationTimestampUTC: &ts})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +145,7 @@ func TestNewBoxRejectsBadArguments(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewBox(cfg, tc.opts)
+			_, err := NewBox(context.Background(), cfg, nil, tc.opts)
 			if err == nil {
 				t.Fatal("expected an error")
 			}
@@ -167,7 +168,7 @@ func TestNewBoxRollsBackFailedClone(t *testing.T) {
 	before := yardContents(t, cfg)
 
 	missing := filepath.Join(t.TempDir(), "definitely-not-a-repo.git")
-	if _, err := NewBox(cfg, NewBoxOptions{GitCloneURL: missing, BoxName: "doomed"}); err == nil {
+	if _, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{GitCloneURL: missing, BoxName: "doomed"}); err == nil {
 		t.Fatal("expected the clone to fail")
 	}
 
@@ -227,7 +228,7 @@ func TestNewBoxFromPathMoves(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	indexName, err := NewBox(cfg, NewBoxOptions{FromPath: src, InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{FromPath: src, InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +261,7 @@ func TestNewBoxFromPathCopies(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	indexName, err := NewBox(cfg, NewBoxOptions{FromPath: src, CopyFromPath: true, InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{FromPath: src, CopyFromPath: true, InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +286,7 @@ func TestNewBoxFromPathCopies(t *testing.T) {
 func TestNewBoxRefusesToSwallowAnExistingBox(t *testing.T) {
 	cfg := newTestYard(t)
 
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "original", InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "original", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,31 +294,20 @@ func TestNewBoxRefusesToSwallowAnExistingBox(t *testing.T) {
 
 	// Moving a box's own DATA into a new box would deregister the old box by
 	// taking its directory away.
-	if _, err := NewBox(cfg, NewBoxOptions{FromPath: existing, InitialiseGit: false}); err == nil {
+	if _, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{FromPath: existing, InitialiseGit: false}); err == nil {
 		t.Fatal("expected a refusal")
 	} else if !strings.Contains(err.Error(), "already a boxyard box") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// ...but copying it is explicitly allowed.
-	if _, err := NewBox(cfg, NewBoxOptions{FromPath: existing, BoxName: "clone-of", CopyFromPath: true, InitialiseGit: false}); err != nil {
+	if _, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{FromPath: existing, BoxName: "clone-of", CopyFromPath: true, InitialiseGit: false}); err != nil {
 		t.Fatalf("copying an existing box should be allowed: %v", err)
 	}
 }
 
 // `sync_before_new_box` guards against a box id already taken on the remote.
 // Skipping it silently would remove that guarantee without anyone noticing.
-func TestNewBoxRefusesUnportedSyncFirst(t *testing.T) {
-	cfg := newTestYard(t)
-	cfg.SyncBeforeNewBox = true
-
-	if _, err := NewBox(cfg, NewBoxOptions{BoxName: "x"}); err == nil {
-		t.Fatal("expected a refusal")
-	} else if !strings.Contains(err.Error(), "sync_before_new_box") {
-		t.Fatalf("the refusal must name the setting, got: %v", err)
-	}
-}
-
 // A failing `git init` warns; the box survives. Python's `check=True` raised
 // before its own warning branch could run, so a machine without git got a
 // rolled-back box instead of a working one.
@@ -331,7 +321,7 @@ func TestNewBoxSurvivesFailingGitInit(t *testing.T) {
 	}
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "no-git-here", InitialiseGit: true})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "no-git-here", InitialiseGit: true})
 	if err != nil {
 		t.Fatalf("a failing `git init` must not fail the creation: %v", err)
 	}

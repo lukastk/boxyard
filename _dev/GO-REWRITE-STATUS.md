@@ -198,9 +198,18 @@ the bug fixed in v0.4.3.
   repo found no caller outside boxyard's own docs; the picker actually in daily
   use is `boxyard-pick` (fzf + `boxyard-groups.py` over `boxyard list -o
   json`).
-- **`sync_before_new_box`**, which refuses loudly. It needs a boxmeta sync
-  before minting an id; the pieces exist, but the setting is off everywhere and
-  turning it on is a decision, not a port.
+- ~~**`sync_before_new_box`**~~ Done. The refusal's stated reason — "it needs
+  `sync_missing_boxmetas`, which is not ported" — had gone stale: that command
+  was ported later and nothing came back to this. `NewBox` now takes
+  `(ctx, cfg, store, opts)` like every other command in `internal/cmds`, and
+  runs the pre-flight sync when the setting is on. A caller that turns the
+  setting on without passing a store is refused loudly rather than quietly
+  minting an id without the collision check.
+
+  The setting is still off everywhere, which is exactly why it is tested: the
+  Python shipped this branch broken for months (an import of a function that
+  had been renamed, plus an `asyncio.get_event_loop()` that raises on 3.14)
+  and nothing noticed, because nothing ever ran it.
 - **multi-sync's live board.** The per-box lines and the summary match; the
   in-place redraw does not exist. The deployed supervisor log contains only the
   durable lines, so nothing is lost there — but an interactive run looks

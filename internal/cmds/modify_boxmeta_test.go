@@ -1,6 +1,7 @@
 package cmds
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -16,7 +17,7 @@ func strs(xs ...string) *[]string { return &xs }
 
 func TestModifyBoxMetaSetsGroups(t *testing.T) {
 	cfg := newTestYard(t)
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "grouped", InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "grouped", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +48,7 @@ func TestModifyBoxMetaSetsGroups(t *testing.T) {
 // would be silently overwritten with the older values.
 func TestModifyBoxMetaReReadsFromDisk(t *testing.T) {
 	cfg := newTestYard(t)
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "raced", InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "raced", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +84,7 @@ func TestModifyBoxMetaRejectsAVirtualGroup(t *testing.T) {
 	cfg.VirtualBoxGroups["everything"] = &config.VirtualBoxGroupConfig{
 		SymlinkName: "everything", FilterExpr: "NOT null",
 	}
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "virtual", InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "virtual", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,14 +101,14 @@ func TestModifyBoxMetaEnforcesUniqueNames(t *testing.T) {
 	cfg := newTestYard(t)
 	cfg.BoxGroups["solo"] = &config.BoxGroupConfig{SymlinkName: "solo", UniqueBoxNames: true}
 
-	first, err := NewBox(cfg, NewBoxOptions{BoxName: "twin", InitialiseGit: false})
+	first, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "twin", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ModifyBoxMeta(cfg, first, BoxMetaModifications{Groups: strs("solo")}); err != nil {
 		t.Fatal(err)
 	}
-	second, err := NewBox(cfg, NewBoxOptions{BoxName: "twin", InitialiseGit: false})
+	second, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "twin", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,11 +127,11 @@ func TestModifyBoxMetaEnforcesUniqueNames(t *testing.T) {
 
 func TestModifyBoxMetaRejectsAParentCycle(t *testing.T) {
 	cfg := newTestYard(t)
-	parent, err := NewBox(cfg, NewBoxOptions{BoxName: "parent", InitialiseGit: false})
+	parent, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "parent", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, err := NewBox(cfg, NewBoxOptions{BoxName: "child", InitialiseGit: false})
+	child, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "child", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +155,7 @@ func TestModifyBoxMetaRejectsAParentCycle(t *testing.T) {
 func TestModifyBoxMetaEnforcesSingleParent(t *testing.T) {
 	cfg := newTestYard(t)
 	cfg.SingleParent = true
-	child, err := NewBox(cfg, NewBoxOptions{BoxName: "child", InitialiseGit: false})
+	child, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "child", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +172,7 @@ func TestModifyBoxMetaEnforcesSingleParent(t *testing.T) {
 // and blocking it would make the order of operations matter.
 func TestModifyBoxMetaWarnsAboutADanglingParent(t *testing.T) {
 	cfg := newTestYard(t)
-	child, err := NewBox(cfg, NewBoxOptions{BoxName: "child", InitialiseGit: false})
+	child, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "child", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +201,7 @@ func TestModifyBoxMetaUnknownBox(t *testing.T) {
 // build: Save refuses, because the alternative is silently discarding it.
 func TestModifyBoxMetaRefusesToStripANewerKey(t *testing.T) {
 	cfg := newTestYard(t)
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "from-the-future", InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "from-the-future", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}

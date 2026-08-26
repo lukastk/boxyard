@@ -159,7 +159,7 @@ func remoteYard(t *testing.T) *config.Config {
 
 func TestSyncBoxLocalStorageNeedsNoRemote(t *testing.T) {
 	cfg := newTestYard(t)
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "local-sync", InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "local-sync", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestSyncBoxUnknownBox(t *testing.T) {
 
 func TestSyncBoxTombstonedIsSkippedWithoutAProbe(t *testing.T) {
 	cfg := remoteYard(t)
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "gone", StorageLocation: "remote", InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "gone", StorageLocation: "remote", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func setUpNeedsPush(t *testing.T, cfg *config.Config, s *fakeStore, bm *models.B
 
 func ownedBox(t *testing.T, cfg *config.Config, name, owner string) *models.BoxMeta {
 	t.Helper()
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: name, StorageLocation: "remote", InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: name, StorageLocation: "remote", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}

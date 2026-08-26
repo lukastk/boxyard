@@ -39,7 +39,7 @@ func (p refusingProber) LocalLastModified(string, map[string]bool) (time.Time, b
 
 func TestBoxSyncStatusLocalStorage(t *testing.T) {
 	cfg := newTestYard(t)
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "local-status", InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "local-status", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestBoxSyncStatusUnknownBox(t *testing.T) {
 // does sync — hiding a genuine change.
 func TestEffectiveExcludePath(t *testing.T) {
 	cfg := newTestYard(t)
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "excludes", InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "excludes", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestBoxSyncStatusProbesEveryPart(t *testing.T) {
 		StorageType: config.StorageRclone,
 		StorePath:   "boxyard",
 	}
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "probed", StorageLocation: "remote", InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "probed", StorageLocation: "remote", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}

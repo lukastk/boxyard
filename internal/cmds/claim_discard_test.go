@@ -49,7 +49,7 @@ func TestClaimBoxRefusesABoxNotIncludedHere(t *testing.T) {
 func TestClaimBoxRefusesALocalStorageBox(t *testing.T) {
 	cfg := newTestYard(t)
 	cfg.MachineName = "macbook"
-	indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "local-only", InitialiseGit: false})
+	indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "local-only", InitialiseGit: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestClaimBoxAlreadyOursIsANoOp(t *testing.T) {
 func TestDiscardLocalRefusals(t *testing.T) {
 	t.Run("local storage location", func(t *testing.T) {
 		cfg := newTestYard(t)
-		indexName, err := NewBox(cfg, NewBoxOptions{BoxName: "local-only", InitialiseGit: false})
+		indexName, err := NewBox(context.Background(), cfg, nil, NewBoxOptions{BoxName: "local-only", InitialiseGit: false})
 		if err != nil {
 			t.Fatal(err)
 		}
