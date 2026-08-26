@@ -107,7 +107,7 @@ result;
 
 - **`src/boxyard/_models.py`** - Data models: `BoxMeta`, `BoxyardMeta`, `SyncRecord`, `SyncStatus`
 - **`src/boxyard/config.py`** - Configuration: `StorageConfig`, `Config`
-- **`src/boxyard/_cli/`** - CLI (typer-based): `app.py` (the `boxyard` entry point / Typer app per `pyproject.toml`), `main.py` (most commands), `multi_sync.py` (registers `multi-sync`), `path_tui.py` (the interactive `path` TUI)
+- **`src/boxyard/_cli/`** - CLI (typer-based): `app.py` (the `boxyard` entry point / Typer app per `pyproject.toml`), `main.py` (most commands), `multi_sync.py` (registers `multi-sync`)
 - **`src/boxyard/_fast.py`** - `BoxyardFast`: dependency-free query interface over `boxyard_meta.json` (parent/child lookups, groups, DAG traversal)
 - **`src/boxyard/_enums.py`** - Shared CLI enums: `BoxPart`, `SyncSetting`, `SyncDirection`, `RenameScope`, `SyncNameDirection`
 - **`src/boxyard/cmds/`** - Command implementations (init, new_box, sync_box, etc.)

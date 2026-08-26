@@ -2382,24 +2382,6 @@ def cli_path(
         "-f",
         help="The filter to apply to the groups. The filter is a boolean expression over the groups of the boxes. Allowed operators are `AND`, `OR`, `NOT`, and parentheses for grouping..",
     ),
-    interactive: bool = Option(
-        False, "--interactive", "-I", help="Launch interactive TUI for box selection.",
-    ),
-    browse_mode: Literal["groups", "tree"] = Option(
-        "groups", "--browse-mode", help="Browse mode for the interactive TUI: 'groups' or 'tree'.",
-    ),
-    collapsed: bool = Option(
-        False, "--collapsed", help="Start the interactive TUI with all groups collapsed.",
-    ),
-    expanded: bool = Option(
-        False, "--expanded", help="Start the interactive TUI with all groups expanded.",
-    ),
-    hide_status: bool = Option(
-        False, "--hide-status", help="Hide the included/excluded status icon in the interactive TUI.",
-    ),
-    hide_groups: bool = Option(
-        False, "--hide-groups", help="Hide group tags in the interactive TUI.",
-    ),
 ):
     """
     Get the path of a box.
@@ -2418,28 +2400,6 @@ def cli_path(
 
     if not all_boxes:
         box_metas = [rm for rm in box_metas if rm.check_included(config)]
-
-    if interactive:
-        from boxyard._cli.path_tui import BoxPathSelector
-
-        if collapsed and expanded:
-            typer.echo("Cannot use both --collapsed and --expanded.")
-            raise typer.Exit(code=1)
-        tui_expanded = expanded and not collapsed
-
-        tui_app = BoxPathSelector(
-            box_metas=box_metas,
-            config=config,
-            mode=browse_mode,
-            path_option=path_option,
-            expanded=tui_expanded,
-            show_status=not hide_status,
-            show_groups=not hide_groups,
-        )
-        result = tui_app.run()
-        if result:
-            typer.echo(result)
-        return
 
     box_index_name = _get_box_index_name(
         box_name=box_name,

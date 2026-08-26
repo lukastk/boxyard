@@ -202,7 +202,7 @@ async def run_doctor(
                 _add_finding(
                     "malformed-name",
                     f"Directory name '{entry.name}' does not parse as an index name '<timestamp>_<subid>__<name>'",
-                    "Boxes must be created via `boxyard new`, which generates the index name; rename/move the folder or register it with `boxyard new --from`.",
+                    "Boxes must be created via `boxyard new`, which generates the index name; rename/move the folder or register it with `boxyard new --from <path>`.",
                     path=entry,
                 )
     _metas_by_id: dict[str, list[BoxMeta]] = {}
@@ -661,7 +661,7 @@ async def run_doctor(
                             f"Syncing here will refuse until it is resolved. Check whether "
                             f"'{_remote_rec.syncer_hostname}' still has the box, then re-run "
                             f"the push from whichever machine holds the good copy: `boxyard "
-                            f"sync -r '{_bm.index_name}' --sync-direction to_remote "
+                            f"sync -r '{_bm.index_name}' --sync-direction push "
                             f"--sync-setting force`.",
                             index_name=_bm.index_name,
                             box_part=_part.value,
