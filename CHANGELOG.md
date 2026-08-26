@@ -1,3 +1,25 @@
+## [0.5.12] - 2026-08-26
+
+### 🐛 Bug Fixes
+
+- **`multi-sync`'s live board lost the colour on every in-flight line.**
+  `get_status_lines` looks a box's status up in two colour maps; the status
+  map's key was `"Syncing"`, and `_task` sets `"Syncing..."` — with the dots.
+  The lookup missed, the f-string produced `[bold ]`, and rich renders an empty
+  style word without complaint, so each in-flight line came out bold and
+  uncoloured and nothing ever said so.
+
+  `name_color` having no in-flight entry is deliberate — a box's name stays
+  plain until it has an outcome — which is what makes this one a typo rather
+  than a choice.
+
+  A new test (`src/tests/unit/_cli/test_multi_sync_status_colours.py`) walks
+  the module with `ast`, collects every status string assigned into
+  `sync_stats`, and fails on any colour-map key that is not one of them. It has
+  to look for the dict INSIDE the assigned expression, because the map is the
+  receiver of a `.get()` — which is the whole reason a missing key degrades
+  silently instead of raising.
+
 ## [0.5.11] - 2026-08-26
 
 ### 🐛 Bug Fixes
