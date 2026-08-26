@@ -1,3 +1,47 @@
+## [0.5.13] - 2026-08-26
+
+### 💥 CLI Changes
+
+- **`multi-sync --no-no-print-skipped` is now `--print-skipped`.** The double
+  negative was not a choice — typer derives a bool option's off-switch by
+  prefixing `--no-`, and the parameter was called `no_print_skipped`, so the
+  way to say "actually do print them" came out as `--no-no-print-skipped`.
+
+  `--no-print-skipped` still exists and still means exactly what it always did,
+  so only the unguessable spelling is gone. Nothing outside this repo passed
+  either flag.
+
+  It was also a live parity problem: the Go port had quietly invented
+  `--print-skipped` for itself, which the Python rejected with exit 2 — and
+  `parity/cross_impl_sync.sh` passed each implementation its own spelling, so
+  the one comparison that would have caught the divergence was the thing
+  hiding it.
+
+### 🐛 Bug Fixes
+
+- **`~/g`'s empty-directory pruning was decided by an unrelated config field.**
+  `create_user_box_group_symlinks` prunes what is left empty after the rebuild,
+  and it carried an `is_group_folder` guard exempting directories whose path
+  matched a GROUP NAME. But a group's directory is named after its
+  `symlink_name` when it has one, and those are nested paths (`all/proj`,
+  `active/all`) — so the guard never matched on a config that sets them, and
+  matched on every group in a config that does not. The same code pruned or
+  kept a group's emptied-out directory depending on whether that group had a
+  `symlink_name`.
+
+  Pruning is the better behaviour and the one this fleet already had (every
+  group in its config sets a `symlink_name`), so the guard is gone and the
+  behaviour is now stated rather than arrived at.
+
+  The pruning only governs a group whose LAST box goes away: a directory is
+  created only as the parent of a symlink, so a group that has never had a box
+  on a machine has no directory there either way.
+
+  The integration test asserted "empty OR removed", which is not an assertion —
+  both outcomes passed. It now asserts removal, and a new unit test
+  (`test_group_folder_pruning.py`) covers both directory shapes, deepest-first
+  ordering, stale debris and top-level dotfiles.
+
 ## [0.5.12] - 2026-08-26
 
 ### 🐛 Bug Fixes

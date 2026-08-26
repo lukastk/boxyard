@@ -157,11 +157,10 @@ create_user_box_group_symlinks(config)
 backend_symlinks = list((config.user_box_groups_path / "backend").iterdir())
 assert len(backend_symlinks) == 1
 
-# Worker group should be empty or removed
-worker_path = config.user_box_groups_path / "worker"
-if worker_path.exists():
-    worker_symlinks = list(worker_path.iterdir())
-    assert len(worker_symlinks) == 0
+# A group that has emptied out loses its directory. This used to be asserted as
+# "empty OR removed", which is not an assertion -- both outcomes passed, and
+# which one you got depended on whether the group had a `symlink_name`.
+assert not (config.user_box_groups_path / "worker").exists()
 
 # %% [markdown]
 # ## Test symlink cleanup when box is deleted
@@ -175,11 +174,8 @@ await delete_box(config_path=config_path, box_index_name=box3)
 config = get_config(config_path)
 create_user_box_group_symlinks(config)
 
-# Frontend group should be empty or removed
-frontend_path = config.user_box_groups_path / "frontend"
-if frontend_path.exists():
-    frontend_symlinks = list(frontend_path.iterdir())
-    assert len(frontend_symlinks) == 0
+# Same for a group emptied by DELETING its last box rather than regrouping it.
+assert not (config.user_box_groups_path / "frontend").exists()
 
 # %% [markdown]
 # ## Cleanup
