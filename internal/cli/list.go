@@ -13,16 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// notPorted reports a flag that the Go implementation does not yet handle.
-//
-// Failing loudly is deliberate. A command that silently ignores a flag it does
-// not understand diverges from the Python without anyone noticing, which is
-// precisely what the parity suite exists to catch — so the unported paths
-// refuse rather than approximate.
-func notPorted(what string) error {
-	return fmt.Errorf("%s is not yet ported to the Go implementation; use the Python boxyard for it", what)
-}
-
 // filterByGroups applies --include-group, --exclude-group and --group-filter,
 // in that order, matching _get_filtered_box_metas.
 func filterByGroups(metas []*models.BoxMeta, include, exclude []string, filterExpr string) ([]*models.BoxMeta, error) {

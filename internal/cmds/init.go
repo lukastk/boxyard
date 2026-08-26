@@ -136,14 +136,3 @@ func Init(opts InitOptions) (*config.Config, error) {
 		configPath, cfg.BoxyardDataPath)
 	return cfg, nil
 }
-
-// notPorted is the loud refusal used wherever the Go implementation does not
-// yet cover a Python behaviour.
-//
-// Failing loudly is deliberate. A command that silently skips a step it does
-// not understand diverges from the Python without anyone noticing, which is
-// precisely what the parity suite exists to catch — so the unported paths
-// refuse rather than approximate.
-func notPorted(what string) error {
-	return fmt.Errorf("%s is not yet supported by the Go implementation; use the Python boxyard for it", what)
-}

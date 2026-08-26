@@ -177,6 +177,13 @@ the bug fixed in v0.4.3.
 
 ## Not started
 
+**Nothing.** As of 2026-08-26 every item in this section is struck through and
+there is no `notPorted` refusal left anywhere in the Go — the helper itself is
+gone, because the port has no "we do not do that yet" path to point it at.
+What remains is not a gap in the port but a decision about the cutover: see
+the open questions at the end.
+
+
 - ~~**Distribution.**~~ Built, not switched on.
 
   `.github/workflows/go-release.yml` fires on **`go/vX.Y.Z`** and builds
@@ -316,14 +323,25 @@ Python, and cannot perturb the live supervisor.
 ## Open questions for Lukas
 
 1. ~~Roll the Python fixes out to the fleet now, or wait?~~ Answered: rolled
-   out, v0.5.10, 2026-08-26 (pocket4 pending, it was offline).
+   out through v0.5.12, 2026-08-26, on all five machines.
 2. ~~Does `boxyard path`'s Textual TUI need porting at all?~~ Answered: no —
    deleted from both implementations.
-3. Replace `lukastk/boxyard` in place at v1.0.0, or a new repo for the Go one?
-   Still open. The constraint that decides it: the Go port and the Python
-   package live in the SAME repo today, so a `v0.6.0` tag would release both —
-   and that tag is also what `boxyard --version` has to report on a Go machine,
-   which is the roll-out gate.
+3. ~~Replace `lukastk/boxyard` in place, or a new repo for the Go one?~~
+   Answered: ONE repo, and not a fork. The differentials are the port's whole
+   value and they run against the installed Python — two repos would make the
+   reference an external dependency of the test suite. A GitHub fork of your
+   own repo is the worst of the options anyway (marked "forked from", issues
+   off by default, PRs aimed upstream); a fresh repo pushed with the branch
+   history would be cleaner if separation is ever wanted.
+
+   What DID need separating was the release channel, and that is done: the Go
+   binary ships from `go/vX.Y.Z`, which cannot fire the PyPI workflow.
+
+   The remaining half of the question is the CUTOVER, and it is one event, not
+   two: myrig installs boxyard from this repo's DEFAULT BRANCH
+   (`uv tool install --upgrade git+https://github.com/lukastk/boxyard.git`), so
+   the moment `main` becomes the Go tree that line breaks. Switching myrig and
+   merging have to happen together, per machine.
 4. `_remove_empty_non_group_folders` compares group NAMES against directories
    named after `symlink_name`, so group directories with a `symlink_name` are
    pruned when empty while others are kept. Fixing it would leave ~30
