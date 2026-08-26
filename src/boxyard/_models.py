@@ -807,25 +807,42 @@ def create_user_box_group_symlinks(
                 )
         symlink_path.symlink_to(dest_path, target_is_directory=True)
 
-    # Remove all empty group folders that are not existing groups
-    def _remove_empty_non_group_folders(path: Path) -> None:
+    # Remove every empty directory, deepest first.
+    #
+    # This used to carry an `is_group_folder` guard that exempted directories
+    # whose path matched a GROUP NAME. It was accidental, not a policy: a
+    # group's directory is named after `symlink_name` when it has one, and
+    # those are nested paths (`all/proj`, `active/all`), so the guard never
+    # matched on a config that sets them -- every group in this fleet's config
+    # does -- and matched on every group in a config that does not. The same
+    # code pruned empty group directories or kept them depending on a field
+    # that has nothing to do with pruning.
+    #
+    # Pruning is the behaviour worth keeping, so it is now the behaviour the
+    # code states. A group that has emptied out is not information: `~/g` is a
+    # navigation surface, it is rebuilt from scratch on every run, and the
+    # directory reappears the moment a box joins the group again.
+    #
+    # Note what this does NOT decide. A directory is only ever created as the
+    # parent of a symlink, so a group that has never had a box on this machine
+    # has no directory either way -- mymain has 28 of the 38 groups' directories
+    # and none of them are empty. The pruning only governs a group whose LAST
+    # box goes away.
+    def _remove_empty_folders(path: Path) -> None:
         if path.is_symlink() or not path.is_dir():
             return
         for p in path.iterdir():
             if p.name.startswith("."):
                 continue
             if p.is_dir():
-                _remove_empty_non_group_folders(p)
-        is_group_folder = (
-            path.relative_to(config.user_box_groups_path).as_posix() in groups
-        )
-        if not is_group_folder and len([p for p in path.iterdir() if not p.name.startswith(".")]) == 0:
+                _remove_empty_folders(p)
+        if len([p for p in path.iterdir() if not p.name.startswith(".")]) == 0:
             path.rmdir()
 
     for path in config.user_box_groups_path.glob("*"):
         if path.name.startswith("."):
             continue
-        _remove_empty_non_group_folders(path)
+        _remove_empty_folders(path)
 
 # %% pts/mod/_models.pct.py 22
 class SyncRecord(const.StrictModel):

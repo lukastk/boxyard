@@ -70,8 +70,17 @@ def cli_multi_sync(
     ),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
     show_progress: bool = Option(True, help="Show the progress of the sync."),
-    no_print_skipped: bool = Option(
-        True, help="Do not print boxes for which no syncs happened."
+    # `print_skipped`, not `no_print_skipped`. typer derives a bool option's
+    # off-switch by prefixing "--no-", so the old name produced
+    # `--no-no-print-skipped` for "actually do print them" -- a spelling nobody
+    # would guess and the Go port quietly refused to reproduce, inventing
+    # `--print-skipped` instead and diverging from this CLI without saying so.
+    #
+    # The rename keeps the spelling that reads properly: `--no-print-skipped`
+    # still exists and still means what it always did. Only the double negative
+    # is gone, replaced by `--print-skipped`.
+    print_skipped: bool = Option(
+        False, help="Print boxes for which no syncs happened."
     ),
     soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
@@ -112,7 +121,7 @@ sync_choices = None
 sync_recently_modified_first = True
 refresh_user_symlinks = True
 show_progress = True
-no_print_skipped = True
+print_skipped = False
 soft_interruption_enabled = True
 
 # %% [markdown]
@@ -380,7 +389,7 @@ def print_finished(box_index_name: str):
         for box_part in sync_choices
     ]
     if (
-        no_print_skipped
+        not print_skipped
         and sync_stat in ("Success", "Local")
         and not any(syncs_happened)
     ):
