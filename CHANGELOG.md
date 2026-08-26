@@ -1,3 +1,52 @@
+## [0.5.15] - 2026-08-26
+
+### ✨ Features
+
+- **A boxmeta both sides have edited can now be merged instead of refused**,
+  against the base recorded in 0.5.14. `groups` and `parents` merge as sets;
+  `write_owner`, `creator_hostname` and any key from a newer boxyard merge as
+  scalars.
+
+  Each side's intent is read as a DELTA against the base — what it added and
+  what it removed — rather than as a value to choose between. So macbook's
+  `archived` and mymain's `write_owner` both survive, which is exactly what
+  last-writer-wins throws away. A removal beats an addition: deleting a group
+  the other side still has is the newer intent about that entry, and the
+  opposite rule would make a group impossible to remove while any machine was
+  behind.
+
+  Two sides changing the same SCALAR to different values is still a refusal,
+  named by field. For `write_owner` that means two machines each believe they
+  own the box, and guessing would hand it to one that does not think it has it.
+
+  **Off by default** (`merge_diverged_boxmetas` in `config.toml`). Resolving a
+  merge means force-pushing the result over the remote boxmeta — safe, because
+  the merge CONTAINS what the remote had, but still a write today's code would
+  refuse to make. That is a decision to take per fleet, not one that should
+  arrive with an upgrade.
+
+  It declines, leaving the divergence exactly as it was, when: the setting is
+  off, the status is not a conflict, there is no merge base, the remote copy
+  cannot be read, or the merge conflicts. None of those is a fallback that
+  papers over a failure — each leaves today's refusal in place.
+
+### 🐛 Bug Fixes
+
+- **The merge ordered its additions local-first, which did not converge.**
+  Two machines merging the same divergence produced the same SET of groups in a
+  different ORDER — 80 of the 512 possible three-group merges — so each read the
+  other's push as a change and pushed back. Two machines would have traded the
+  same boxmeta every 20 minutes, forever.
+
+  Surviving base entries now keep their base order and the additions follow in
+  sorted order, which both machines compute identically. Verified over all
+  4,096 combinations of a four-group universe: no order mismatches, no
+  non-fixed-points.
+
+  The test that was supposed to catch this compared the results with
+  `sorted()`, which hid the very thing it existed to check. It now compares
+  lists.
+
 ## [0.5.14] - 2026-08-26
 
 ### ✨ Features
