@@ -1048,7 +1048,7 @@ else:
                         f"'{_remote_rec.syncer_hostname}' still has the box, then re-run "
                         f"the push from whichever machine holds the good copy: `boxyard "
                         f"sync -r '{_bm.index_name}' --sync-direction push "
-                        f"--sync-setting force`.",
+                        f"--sync-setting force --sync-choices {_part.value}`.",
                         index_name=_bm.index_name,
                         box_part=_part.value,
                         storage_location=_sl_name,

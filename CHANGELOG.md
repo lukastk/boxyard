@@ -1,3 +1,32 @@
+## [0.5.11] - 2026-08-26
+
+### 🐛 Bug Fixes
+
+- **`doctor`'s `diverged-box` hint told you to force-push the whole box when
+  only one part had diverged.** The finding is per-part — it carries a
+  `box_part` field and the message names the part — but the command it handed
+  you did not, so following it on a box whose META was wedged would also
+  force-push every byte of its DATA over the remote's.
+
+  The hint now scopes to the part it is reporting:
+
+  ```
+  boxyard sync -r '<box>' --sync-direction push --sync-setting force --sync-choices meta
+  ```
+
+  Found by running the previous version of the hint for real, on the two boxes
+  on macbook that had failed every sync pass since 2026-06-29 (~4,000 passes).
+  Both had `data` and `conf` already `synced` and only `meta`
+  `sync_to_remote_incomplete`, so the whole-box force push was two large
+  needless transfers. The META-scoped push cleared both, and all four
+  reachable machines now report `synced` for all three parts.
+
+- The hint lint added in 0.5.10 now treats an f-string hole as the operator's
+  value rather than the hint's claim, so a hint may interpolate into a choice
+  option (`--sync-choices {part}`). A LITERAL that is not a valid choice still
+  fails — that is the `--sync-direction to_remote` bug the lint exists for, and
+  click's message names the literal, not the placeholder.
+
 ## [0.5.10] - 2026-08-26
 
 ### 🐛 Bug Fixes
