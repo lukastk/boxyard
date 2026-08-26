@@ -134,4 +134,11 @@ def test_suggested_command_parses(command):
     except click.exceptions.Exit:
         pass
     except click.UsageError as e:
+        # A hint may interpolate a value into a CHOICE option
+        # (`--sync-choices {part}`). The value is the operator's, not the
+        # hint's, so a placeholder failing the choice check says nothing --
+        # but a LITERAL failing it is exactly the bug this test exists for
+        # (`--sync-direction to_remote`), and that message names the literal.
+        if f"'{_PLACEHOLDER}'" in str(e):
+            return
         pytest.fail(f"`{command}` does not parse: {e}")
