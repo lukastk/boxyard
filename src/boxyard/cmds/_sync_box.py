@@ -4,7 +4,7 @@ from pathlib import Path
 import asyncio
 
 from .._utils.sync_helper import sync_helper, SyncSetting, SyncDirection
-from .._models import SyncStatus, BoxPart, BoxMeta, SyncCondition, get_sync_status
+from .._models import SyncStatus, BoxPart, BoxMeta, SyncCondition, get_sync_status, record_meta_base
 from .._ownership import may_push, push_would_transfer, write_denied_message
 from ..config import get_config, StorageType
 from .._utils import (
@@ -224,6 +224,31 @@ async def sync_box(
             )
             if sync_part in sync_choices:
                 sync_results[BoxPart.META] = _meta_sync_result
+    
+            # Record the merge base, but ONLY where local and remote are known to
+            # match: the status said SYNCED (nothing to do), or a transfer
+            # completed and was verified. A base that never corresponded to a
+            # shared state would make a later merge confidently wrong, which is
+            # worse than the refusal a missing base falls back to.
+            #
+            # Being precise about what this condition is worth TODAY: every
+            # non-agreeing META outcome currently RAISES out of `sync_helper`
+            # (conflict, incomplete push, unsafe direction), so control does not
+            # reach here at all, and the one refusal that returns normally --
+            # EXCLUDED -- has no local boxmeta, which `record_meta_base` handles by
+            # dropping the base. So this is defence in depth rather than the only
+            # thing holding the line, and a mutation test will not catch its
+            # removal.
+            #
+            # It stays because that is a property of today's error handling, not a
+            # guarantee. `SyncCondition.WRITE_DENIED` is the precedent: a refusal
+            # that was deliberately turned into a RETURNED STATUS rather than an
+            # exception, to stop the supervisor logging the same error 72 times a
+            # day. If META ever gains such a status, this condition is what keeps
+            # the base from moving under it.
+            _meta_status, _meta_synced = _meta_sync_result
+            if _meta_status.sync_condition == SyncCondition.SYNCED or _meta_synced:
+                record_meta_base(config, box_meta, verbose=verbose)
     
         # ---- Write ownership -------------------------------------------------
         #

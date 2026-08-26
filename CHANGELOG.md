@@ -1,3 +1,51 @@
+## [0.5.14] - 2026-08-26
+
+### ✨ Features
+
+- **A META merge base.** Every successful META sync now snapshots the
+  `boxmeta.toml` that local and remote just agreed on, beside the local sync
+  record (`sync_records/<index_name>/meta.base.toml`). It never leaves the
+  machine and costs no network.
+
+  This is groundwork. A boxmeta both sides have edited is currently a dead end
+  — sync sees two records that disagree, cannot tell which fields moved on
+  which side, and refuses. That is how 44 boxes on macbook stopped propagating
+  their groups for a day on 2026-08-25 while every other machine reported "all
+  checks passed". With a base, a three-way merge can resolve the common cases
+  (`groups` and `parents` are sets, `write_owner` is a scalar) instead.
+
+  It is recorded ONLY where the two sides are known to match: the status said
+  SYNCED, or a transfer completed and was verified. A stale base is worse than
+  no base — a merge diffs against it, so one that never corresponded to a
+  shared state produces a confidently wrong answer, where a missing one only
+  makes the merge decline. On any failure the base is REMOVED rather than left
+  describing a state that has passed.
+
+  A base that has gone unparseable is removed and read as absent. Absent is a
+  legitimate state, not an error: a box that has not synced its META since this
+  release simply has none.
+
+- **`doctor` reports `unpushed-meta-edit`** — a `boxmeta.toml` that differs
+  from the base, with no push since.
+
+  On its own that is an ordinary pending edit; `add-to-group`, `set-parent` and
+  friends do not push unless asked. The point is the timing. While it sits
+  unpushed it is one push by any other machine away from a two-sided
+  divergence that nothing but a human resolves, per box. This surfaces it on
+  the machine that caused it, before something lands on top.
+
+  Purely local and free — it compares two files already on disk — and it
+  compares FIELDS rather than file bytes, so a boxmeta rewritten with the same
+  content is not reported. It says nothing about a box with no base yet.
+
+### 🔧 Internal
+
+- `BoxMeta.load` is split, with the parsing moved to a new
+  `BoxMeta.load_from_path`. The four identity fields (`creation_timestamp_utc`,
+  `box_subid`, `name`, `storage_location`) are not in the file — `load` derives
+  them from the index name and storage location — so a caller reading a copy of
+  a boxmeta from elsewhere passes the same values in.
+
 ## [0.5.13] - 2026-08-26
 
 ### 💥 CLI Changes
