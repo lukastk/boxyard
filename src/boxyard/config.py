@@ -5,6 +5,7 @@ __all__ = ['BoxGroupConfig', 'BoxGroupTitleMode', 'BoxTimestampFormat', 'Config'
 # %% pts/mod/config.pct.py 3
 from pydantic import model_validator
 from pathlib import Path
+from typing import Any, get_args, get_origin
 import tomllib
 import os
 from enum import Enum
@@ -102,11 +103,63 @@ class Config(const.StrictModel):
     # via the BOXYARD_RCLONE env var, PATH, then known install dirs (see _utils.rclone).
     rclone_path: Path | None = None
 
+    # This machine's stable name within the yard -- the value that will be
+    # written as a box's `write_owner`. Configured, never derived: hostnames
+    # are not an identity (one machine in this fleet has reported both
+    # `lukas-pocket4` and `pocket4`, and macOS reports editable pretty names
+    # like `Lukas’s MacBook Pro`), so guessing one would hand a box to a
+    # machine that can no longer prove it is the same machine.
+    #
+    # Optional, because making it required would break every machine's config
+    # on upgrade until myrig renders it. A machine without a name simply can
+    # never be an owner, which is the safe direction; `doctor` reports it as
+    # `machine-name-unset`. Overridable by BOXYARD_MACHINE_NAME, which is what
+    # tests and one-offs use -- note that the supervisor that runs the syncs
+    # does not source an interactive shell's environment, so the env var
+    # cannot be the delivery mechanism for the real value.
+    machine_name: str | None = None
+
     # Parent-child settings
     single_parent: bool = False  # If True, each box can have at most one parent
 
     # New box creation settings
     sync_before_new_box: bool = False  # If True, sync boxmetas before creating new box to check for ID collisions on remote
+
+    # Forward-compat passthrough: keys found in config.toml that this version
+    # of boxyard does not know. `get_config` collects them here instead of
+    # letting `extra="forbid"` reject the file.
+    #
+    # Keyed by DOTTED PATH, so it covers the whole file and not just its top
+    # level: a key inside `[storage_locations.X]`, `[box_groups.X]` or
+    # `[virtual_box_groups.X]` arrives here as
+    # `storage_locations.X.some_key`. Those entries are StrictModels too, so
+    # tolerating only the top level would have left the same trap one level
+    # down -- and a nested addition is not hypothetical: `symlink_name` was
+    # added to both group models in `8d9e074`. `get_config` derives the tables
+    # to walk from the annotations, so a config model added later is covered
+    # without anyone remembering to update a list.
+    #
+    # `config.toml` is the same trap `boxmeta.toml` was, for the same reason
+    # and with a wider blast radius: it is a StrictModel too, so a key added
+    # for a newer boxyard makes EVERY command fail on any machine that does not
+    # know it -- and on this fleet the file is one myrig-rendered artefact
+    # shared by every machine, so one addition breaks them all at once.
+    #
+    # Read the limit of this carefully: it does NOT rescue a machine already
+    # running a version without it. Tolerance has to be deployed BEFORE the key
+    # it tolerates, so the rollout order still stands -- boxyard everywhere
+    # first, then the config change. Its value is forward-looking: from v0.5.0
+    # on, a config addition costs an older machine a doctor finding instead of
+    # a machine that cannot run boxyard at all.
+    #
+    # Unlike `BoxMeta.unknown_keys` this is not written back, because boxyard
+    # never rewrites config.toml -- `init` creates it, and nothing else touches
+    # it. The container exists so the keys can be reported rather than vanish
+    # silently: `extra="forbid"` is what catches a TYPO'd key today, and
+    # tolerating unknown keys without reporting them would trade a loud typo
+    # for a silent one. `doctor`'s `unknown-config-keys` is that report, and it
+    # names the dotted path so the finding says WHERE the key is.
+    unknown_keys: dict[str, Any] = {}
 
     @property
     def local_store_path(self) -> Path:
@@ -145,6 +198,27 @@ class Config(const.StrictModel):
 
         import re
 
+        # A machine_name that could never be written as a `write_owner` is a
+        # configuration error, not something to discover later at claim time
+        # on one machine only. Fail here, where the message names the file.
+        if self.machine_name is not None and not re.fullmatch(
+            const.MACHINE_NAME_REGEX, self.machine_name
+        ):
+            raise ValueError(
+                f"Invalid machine_name {self.machine_name!r} in '{self.config_path}'. "
+                f"It must match {const.MACHINE_NAME_REGEX} (alphanumeric, '_', '-'; "
+                "1-64 characters). Use the machine's canonical short name, e.g. "
+                "'macbook' or 'mymain'."
+            )
+
+        # The passthrough must stay disjoint from the fields this version owns,
+        # or a report of "keys boxyard does not know" would name one it does.
+        _shadowed = set(self.unknown_keys) & set(type(self).model_fields)
+        if _shadowed:
+            raise ValueError(
+                f"unknown_keys must not contain keys boxyard knows: {sorted(_shadowed)}"
+            )
+
         for name in self.storage_locations.keys():
             if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
                 raise ValueError(
@@ -171,13 +245,127 @@ class Config(const.StrictModel):
 
         return self
 
-# %% pts/mod/config.pct.py 6
+# %% pts/mod/config.pct.py 7
+def _split_known_keys(
+    parsed: dict, model: type, path_prefix: str
+) -> tuple[dict, dict]:
+    """
+    Split `parsed` into (keys `model` declares, keys it does not).
+
+    Unknown keys come back keyed by `path_prefix + key`, so the caller can
+    merge every level's leftovers into one flat mapping without losing track
+    of where each key came from.
+    """
+    known, unknown = {}, {}
+    for key, value in parsed.items():
+        if key in model.model_fields:
+            known[key] = value
+        else:
+            unknown[f"{path_prefix}{key}"] = value
+    return known, unknown
+
+
+def _nested_model_tables() -> dict[str, type]:
+    """
+    The `Config` fields shaped `dict[str, <some StrictModel>]` — i.e. the TOML
+    tables whose entries need the same tolerance as the top level.
+
+    Derived from the annotations rather than hardcoded, so a config model added
+    later is covered without anyone having to remember this function exists.
+    Forgetting it would reintroduce exactly the gap this closes, in a place no
+    test would obviously cover.
+    """
+    tables = {}
+    for name, field in Config.model_fields.items():
+        if get_origin(field.annotation) is not dict:
+            continue
+        args = get_args(field.annotation)
+        if (
+            len(args) == 2
+            and isinstance(args[1], type)
+            and issubclass(args[1], const.StrictModel)
+        ):
+            tables[name] = args[1]
+    return tables
+
+# %% pts/mod/config.pct.py 8
 def get_config(path: Path | None = None) -> Config:
     if path is None:
         path = const.DEFAULT_CONFIG_PATH
     path = Path(path).expanduser()
     with open(path, "rb") as _f:
-        config_dict = {"config_path": path, **tomllib.load(_f)}
+        parsed = tomllib.load(_f)
+
+    # Split the file into keys this version knows and keys it does not, so a
+    # config written for a newer boxyard does not make every command on this
+    # machine fail. See `Config.unknown_keys` for why this does not retroactively
+    # help a machine running an older version.
+    #
+    # `unknown_keys` is the container itself, never a key of the file; a config
+    # that carries it is corrupt rather than newer, so say so.
+    if "unknown_keys" in parsed:
+        raise ValueError(
+            f"Config file '{path}' contains the reserved key 'unknown_keys', which "
+            "boxyard uses internally to carry keys written by a newer version. "
+            "Remove it from the file."
+        )
+
+    known, unknown_keys = _split_known_keys(parsed, Config, "")
+
+    # The nested tables need the same tolerance, and for the same reason: the
+    # entries of `[storage_locations.X]`, `[box_groups.X]` and
+    # `[virtual_box_groups.X]` are StrictModels too, so a key added to one of
+    # them by a newer boxyard would break every older machine exactly as a
+    # top-level key would. That is not hypothetical -- `symlink_name` was added
+    # to both group models in `8d9e074`.
+    for table_name, entry_model in _nested_model_tables().items():
+        entries = known.get(table_name)
+        if not isinstance(entries, dict):
+            continue  # absent, or the wrong shape -- let the model raise on it
+        cleaned = {}
+        for entry_name, entry in entries.items():
+            if not isinstance(entry, dict):
+                # An ENTRY that is not a table is deliberately NOT tolerated,
+                # and this is the boundary of the forward compatibility above.
+                # These tables map a name to a group or a storage location, so
+                # a scalar in that position is not a newer boxyard adding an
+                # option: that would be a new field inside an entry (handled
+                # just below) or a new top-level key (handled already).
+                #
+                # It is reached by writing a key directly under the CONTAINER
+                # rather than under one of its entries, which takes one of two
+                # forms -- measured, not assumed:
+                #
+                #   virtual_box_groups.future = "x"     # dotted key, and only
+                #                                       # BEFORE any [table]
+                #                                       # header; a dotted key
+                #                                       # is relative to the
+                #                                       # table it sits under
+                #   [virtual_box_groups]                # a bare container
+                #   future = "x"                        # header, then a scalar
+                #
+                # Note what does NOT reach it: appending a line to the end of a
+                # real config.toml. TOML lands that inside whatever table came
+                # last, and in a populated config that is a SUB-table
+                # (`[virtual_box_groups.archived-uncategorized]`), so the line
+                # becomes an unknown key inside an entry and is TOLERATED. Only
+                # a config whose last table is a bare container behaves the
+                # other way.
+                #
+                # Either way the value is a line the author believed they were
+                # adding somewhere else, so it raises: pydantic names the exact
+                # path and says a table was expected, which beats silently
+                # discarding the edit.
+                cleaned[entry_name] = entry
+                continue
+            entry_known, entry_unknown = _split_known_keys(
+                entry, entry_model, f"{table_name}.{entry_name}."
+            )
+            cleaned[entry_name] = entry_known
+            unknown_keys.update(entry_unknown)
+        known[table_name] = cleaned
+
+    config_dict = {"config_path": path, **known, "unknown_keys": unknown_keys}
 
     # Additively merge default_box_groups from env var (TOML list string, e.g. '["ctx/mac", "ctx/linux"]')
     env_groups = os.environ.get(const.ENV_VAR_DEFAULT_BOX_GROUPS)
@@ -186,9 +374,17 @@ def get_config(path: Path | None = None) -> Config:
         existing = config_dict.get("default_box_groups", [])
         config_dict["default_box_groups"] = list(dict.fromkeys(existing + extra))
 
+    # BOXYARD_MACHINE_NAME overrides the config key, following the
+    # BOXYARD_CONFIG_PATH / BOXYARD_RCLONE precedent (and the DEFAULT_BOX_GROUPS
+    # handling just above, whose empty-means-unset rule this matches: an empty
+    # value leaves the config key in force rather than blanking it).
+    env_machine_name = os.environ.get(const.ENV_VAR_BOXYARD_MACHINE_NAME)
+    if env_machine_name:
+        config_dict["machine_name"] = env_machine_name
+
     return Config(**config_dict)
 
-# %% pts/mod/config.pct.py 7
+# %% pts/mod/config.pct.py 9
 def _get_default_config_dict(config_path=None, data_path=None) -> Config:
     if config_path is None:
         config_path = const.DEFAULT_CONFIG_PATH
@@ -221,6 +417,6 @@ def _get_default_config_dict(config_path=None, data_path=None) -> Config:
     )
     return config_dict
 
-# %% pts/mod/config.pct.py 9
+# %% pts/mod/config.pct.py 11
 _default_rclone_config = """
 """

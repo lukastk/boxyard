@@ -64,6 +64,24 @@ def _call_with_lock_handling(func, *args, **kwargs):
 # %% [markdown]
 # ## Main command
 
+# %% [markdown]
+# `--version` exists to be a rollout gate: rolling a change across the fleet
+# means checking `ssh-target <machine> boxyard --version` on each, and until
+# this existed the only way to ask was `pip show boxyard`, which does not work
+# for a uv tool install. It reports the installed distribution's version, so it
+# answers "what is actually installed here?" rather than "what does this source
+# tree say?".
+
+# %%
+#|exporti
+def _version_callback(value: bool) -> None:
+    if not value:
+        return
+    import importlib.metadata
+
+    typer.echo(importlib.metadata.version("boxyard"))
+    raise typer.Exit()
+
 # %%
 #|export
 @app.callback()
@@ -73,6 +91,13 @@ def entrypoint(
         None,
         "--config",
         help="The path to the config file. Will be '~/.config/boxyard/config.toml' if not provided.",
+    ),
+    version: bool = Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Print the installed boxyard version and exit.",
     ),
 ):
     import os
@@ -182,6 +207,30 @@ def _get_box_index_name(
         box_metas = get_boxyard_meta(config).box_metas
     boxyard_meta = BoxyardMeta(box_metas=box_metas)
 
+    if search_mode:
+        # No selector at all: use the box the user is standing in.
+        #
+        # This USED to sit at the very end of the function, after the picker
+        # branch below -- where it could never run, because search_mode always
+        # entered that branch first. So `boxyard sync` typed inside a box
+        # opened an fzf picker over the whole yard instead of syncing that box,
+        # while the function still carried an error message ("could not be
+        # inferred from current working directory") describing behaviour it did
+        # not have.
+        #
+        # The candidate check is load-bearing: several callers pass a FILTERED
+        # `box_metas` (`include` passes only excluded boxes, `exclude` only
+        # eligible ones, `path` a group-filtered set). A cwd box outside that
+        # set is not a valid answer for the command, so fall through to the
+        # picker rather than returning something the command will reject.
+        from boxyard._utils import get_box_index_name_from_sub_path
+
+        _cwd_index_name = get_box_index_name_from_sub_path(
+            config=config, sub_path=Path.cwd()
+        )
+        if _cwd_index_name is not None and _cwd_index_name in boxyard_meta.by_index_name:
+            return _cwd_index_name
+
     if (box_id is not None or box_name is not None) or search_mode:
         if box_id is not None:
             if box_id not in boxyard_meta.by_id:
@@ -237,18 +286,6 @@ def _get_box_index_name(
                     )
                     if box_index_name is None:
                         raise typer.Exit(code=0)
-
-    if box_index_name is None:
-        from boxyard._utils import get_box_index_name_from_sub_path
-
-        box_index_name = get_box_index_name_from_sub_path(
-            config=config,
-            sub_path=Path.cwd(),
-        )
-        if box_index_name is None:
-            raise typer.Exit(
-                "Box not specified and could not be inferred from current working directory."
-            )
 
     return box_index_name
 
@@ -419,11 +456,26 @@ def cli_new(
 
         _config = _get_config(app_state["config_path"])
         _bm = get_boxyard_meta(_config)
-        parent_index = _get_box_index_name(
-            box_name=parent, box_id=None, box_index_name=None,
-            name_match_mode=None, name_match_case=False,
-        )
-        parent_meta = _bm.by_index_name.get(parent_index)
+        # `--parent` is documented as taking an "index name, id, or name", and
+        # it only ever honoured the NAME: the value went in as `box_name`, which
+        # matches against `box_meta.name`, and an index name is never a
+        # substring of the bare name it ends with. So `--parent
+        # 20260601_ab12cd__thing` reported "Box not found."
+        #
+        # Try the two EXACT forms first, then fall back to the name match. The
+        # order is unambiguous because an index name, a box id and a name have
+        # distinct shapes, and the first two are looked up by equality rather
+        # than by substring.
+        if parent in _bm.by_index_name:
+            parent_meta = _bm.by_index_name[parent]
+        elif parent in _bm.by_id:
+            parent_meta = _bm.by_id[parent]
+        else:
+            parent_index = _get_box_index_name(
+                box_name=parent, box_id=None, box_index_name=None,
+                name_match_mode=None, name_match_case=False,
+            )
+            parent_meta = _bm.by_index_name.get(parent_index)
         if parent_meta is None:
             typer.echo(f"Parent box '{parent}' not found.", err=True)
             raise typer.Exit(code=1)
@@ -435,9 +487,13 @@ def cli_new(
             modifications={"parents": [parent_meta.box_id]},
         )
 
-    from boxyard.cmds import create_user_symlinks
+    # `new` was the ONLY command that declared `--refresh-user-symlinks` and
+    # then ignored it -- every other command guards the call. So
+    # `--no-refresh-user-symlinks` rebuilt the symlink tree anyway, silently.
+    if refresh_user_symlinks:
+        from boxyard.cmds import create_user_symlinks
 
-    create_user_symlinks(config_path=app_state["config_path"])
+        create_user_symlinks(config_path=app_state["config_path"])
 
 # %% [markdown]
 # # `sync`
@@ -1171,11 +1227,18 @@ def cli_tree(
     # Text output using rich.tree
     from rich.tree import Tree as RichTree
     from rich.console import Console
+    from rich.text import Text as RichText
 
     def _label(bm):
+        # A `Text`, not a markup string. rich parses `[...]` as a style tag, so
+        # the `[groups: ...]` suffix below was SWALLOWED whole -- `boxyard tree`
+        # has never once shown a box's groups, and left a stray trailing space
+        # where they should have been. Box NAMES have the same problem: one
+        # containing `[` is valid (validate_box_name forbids only path
+        # separators and the like) and would be mangled the same way.
         status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
         groups_str = f" [groups: {', '.join(bm.groups)}]" if bm.groups else ""
-        return f"{status}{bm.name} ({bm.box_id}){groups_str}"
+        return RichText(f"{status}{bm.name} ({bm.box_id}){groups_str}")
 
     def _add_children(rich_node, parent_id):
         children = [bm for bm in box_metas if parent_id in bm.parents]
@@ -1223,7 +1286,10 @@ def cli_tree(
     # Show orphaned children (parent not in filtered set)
     orphans = [bm for bm in box_metas if bm.box_id not in shown_ids]
     if orphans:
-        unknown_node = tree.add("[unknown parent]")
+        # A `Text` for the same reason the labels are: as a markup string,
+        # "[unknown parent]" is parsed as a style tag and vanishes, leaving a
+        # bare "└── " above the orphans with nothing to explain them.
+        unknown_node = tree.add(RichText("[unknown parent]"))
         for orphan in sorted(orphans, key=lambda x: x.index_name):
             child_node = unknown_node.add(_label(orphan))
             _add_children(child_node, orphan.box_id)
@@ -1269,6 +1335,11 @@ def cli_include(
     ),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
     soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
+    read_only: bool = Option(
+        False,
+        "--read-only",
+        help="Include without the nudge to claim an unowned box — for a box you only want to read here.",
+    ),
 ):
     """
     Include a box in the local store.
@@ -1325,6 +1396,7 @@ def cli_include(
                         config_path=app_state["config_path"],
                         box_index_name=idx_name,
                         soft_interruption_enabled=soft_interruption_enabled,
+                        read_only=read_only,
                     )
                 )
             except (typer.Exit, SystemExit):
@@ -1372,6 +1444,7 @@ def cli_include(
             config_path=app_state["config_path"],
             box_index_name=box_index_name,
             soft_interruption_enabled=soft_interruption_enabled,
+            read_only=read_only,
         )
     )
 
@@ -1969,6 +2042,14 @@ def cli_list(
     show_status: bool = Option(
         False, "--show-status", help="Show included/excluded status icon (●/○) for each box.",
     ),
+    owner: str | None = Option(
+        None,
+        "--owner",
+        help="Only show boxes whose write owner is this machine name. Pass 'none' for boxes with no owner.",
+    ),
+    show_owner: bool = Option(
+        False, "--show-owner", help="Show each box's write owner.",
+    ),
 ):
     """
     List all boxes in the yard.
@@ -2042,6 +2123,14 @@ def cli_list(
         anc_ids = {a.box_id for a in all_boxyard_meta.ancestors_of(ref.box_id)}
         box_metas = [bm for bm in box_metas if bm.box_id in anc_ids]
 
+    # 'none' is the only way to ask for "unowned" on a command line, since an
+    # absent --owner already means "do not filter".
+    if owner is not None:
+        if owner.lower() == "none":
+            box_metas = [bm for bm in box_metas if bm.write_owner is None]
+        else:
+            box_metas = [bm for bm in box_metas if bm.write_owner == owner]
+
     if roots_only:
         box_metas = [bm for bm in box_metas if len(bm.parents) == 0]
 
@@ -2067,19 +2156,26 @@ def cli_list(
                 ungrouped.append(bm)
 
         tree = RichTree("boxyard")
+        # This view DOES want styling, so it stays a markup string -- but every
+        # interpolated value is escaped now. The suffix was already escaped by
+        # hand (`\\[`), which is what makes the two unescaped `[groups: ...]`
+        # sites an oversight rather than a choice; the NAMES were not escaped,
+        # and a box or group name may contain a bracket.
+        from rich.markup import escape as _rich_escape
+
         for group_name in sorted(groups_map.keys()):
-            group_node = tree.add(f"[bold]{group_name}[/bold]")
+            group_node = tree.add(f"[bold]{_rich_escape(group_name)}[/bold]")
             for bm in sorted(groups_map[group_name], key=lambda x: x.name):
                 other_groups = sorted(g for g in bm.groups if g != group_name)
                 suffix = f" [dim]\\[{', '.join(other_groups)}][/dim]" if other_groups else ""
                 status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
-                group_node.add(f"{status}{bm.name} ({bm.box_id}){suffix}")
+                group_node.add(f"{status}{_rich_escape(bm.name)} ({bm.box_id}){suffix}")
         if ungrouped:
             ug_node = tree.add("[dim](ungrouped)[/dim]")
             for bm in sorted(ungrouped, key=lambda x: x.name):
                 status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
                 suffix = f" [dim]\\[{', '.join(sorted(bm.groups))}][/dim]" if bm.groups else ""
-                ug_node.add(f"{status}{bm.name} ({bm.box_id}){suffix}")
+                ug_node.add(f"{status}{_rich_escape(bm.name)} ({bm.box_id}){suffix}")
 
         Console().print(tree)
         return
@@ -2087,14 +2183,17 @@ def cli_list(
     if view == "tree":
         from rich.tree import Tree as RichTree
         from rich.console import Console
+        from rich.text import Text as RichText
 
         filtered_meta = BoxyardMeta(box_metas=box_metas)
         filtered_ids = {bm.box_id for bm in box_metas}
 
         def _label(bm):
+            # See `boxyard tree`: a markup string here means rich eats the
+            # `[groups: ...]` suffix, and any box name containing `[` with it.
             status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
             groups_str = f" [groups: {', '.join(bm.groups)}]" if bm.groups else ""
-            return f"{status}{bm.name} ({bm.box_id}){groups_str}"
+            return RichText(f"{status}{bm.name} ({bm.box_id}){groups_str}")
 
         def _add_children(rich_node, parent_id, shown):
             children = [bm for bm in box_metas if parent_id in bm.parents]
@@ -2121,7 +2220,10 @@ def cli_list(
     else:
         for box_meta in box_metas:
             status = f"{'●' if box_meta.check_included(config) else '○'} " if show_status else ""
-            typer.echo(f"{status}{box_meta.index_name}")
+            owner_col = ""
+            if show_owner:
+                owner_col = f"  [{box_meta.write_owner or '-'}]"
+            typer.echo(f"{status}{box_meta.index_name}{owner_col}")
 
 # %% [markdown]
 # # `list-groups`
@@ -2280,24 +2382,6 @@ def cli_path(
         "-f",
         help="The filter to apply to the groups. The filter is a boolean expression over the groups of the boxes. Allowed operators are `AND`, `OR`, `NOT`, and parentheses for grouping..",
     ),
-    interactive: bool = Option(
-        False, "--interactive", "-I", help="Launch interactive TUI for box selection.",
-    ),
-    browse_mode: Literal["groups", "tree"] = Option(
-        "groups", "--browse-mode", help="Browse mode for the interactive TUI: 'groups' or 'tree'.",
-    ),
-    collapsed: bool = Option(
-        False, "--collapsed", help="Start the interactive TUI with all groups collapsed.",
-    ),
-    expanded: bool = Option(
-        False, "--expanded", help="Start the interactive TUI with all groups expanded.",
-    ),
-    hide_status: bool = Option(
-        False, "--hide-status", help="Hide the included/excluded status icon in the interactive TUI.",
-    ),
-    hide_groups: bool = Option(
-        False, "--hide-groups", help="Hide group tags in the interactive TUI.",
-    ),
 ):
     """
     Get the path of a box.
@@ -2316,28 +2400,6 @@ def cli_path(
 
     if not all_boxes:
         box_metas = [rm for rm in box_metas if rm.check_included(config)]
-
-    if interactive:
-        from boxyard._cli.path_tui import BoxPathSelector
-
-        if collapsed and expanded:
-            typer.echo("Cannot use both --collapsed and --expanded.")
-            raise typer.Exit(code=1)
-        tui_expanded = expanded and not collapsed
-
-        tui_app = BoxPathSelector(
-            box_metas=box_metas,
-            config=config,
-            mode=browse_mode,
-            path_option=path_option,
-            expanded=tui_expanded,
-            show_status=not hide_status,
-            show_groups=not hide_groups,
-        )
-        result = tui_app.run()
-        if result:
-            typer.echo(result)
-        return
 
     box_index_name = _get_box_index_name(
         box_name=box_name,
@@ -2817,6 +2879,340 @@ def cli_which(
         typer.echo(f"included: {info['included']}")
 
 # %% [markdown]
+# # Write ownership: `claim`, `release`, `discard-local`, `owner`
+#
+# A box may be included on any number of machines, but exactly one machine at a
+# time may PUSH its DATA. These four commands are how that owner is set, given
+# up, worked around, and inspected.
+#
+# Every refusal below names an exact command that is safe to run verbatim, and
+# `WRITE_DENIED` always names BOTH ways out — take the box over, or throw the
+# local changes away. A refusal with one escape is a refusal people work around.
+
+# %%
+#|exporti
+def _resolve_box(box_index_name, box_id, box_name, name_match_mode, name_match_case,
+                 eligible=None, label="box"):
+    """Shared box resolution for the ownership commands."""
+    from boxyard._models import get_boxyard_meta
+    from boxyard.config import get_config
+
+    config = get_config(app_state["config_path"])
+    boxyard_meta = get_boxyard_meta(config)
+    resolved = _get_box_index_name(
+        box_name=box_name,
+        box_id=box_id,
+        box_index_name=box_index_name,
+        name_match_mode=name_match_mode,
+        name_match_case=name_match_case,
+        box_metas=eligible if eligible is not None else boxyard_meta.box_metas,
+        label=label,
+    )
+    if resolved not in boxyard_meta.by_index_name:
+        typer.echo(f"Box with index name `{resolved}` not found.", err=True)
+        raise typer.Exit(code=1)
+    return config, boxyard_meta, resolved
+
+
+def _ownership_command(coro):
+    """
+    Run an ownership command, turning a refusal into a clean message + exit 1.
+
+    `OwnershipRefused` carries a complete, actionable explanation, so printing a
+    traceback on top of it would only bury the part the reader needs.
+    """
+    from boxyard._ownership import OwnershipRefused
+
+    try:
+        return _run_with_lock_handling(coro)
+    except OwnershipRefused as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1)
+
+# %%
+#|export
+@app.command(name="claim")
+def cli_claim(
+    box_index_name: str | None = Option(
+        None, "--box", "-r", help="The index name of the box, in the form '{ULID}__{BOX_NAME}'."
+    ),
+    box_id: str | None = Option(None, "--box-id", "-i", help="The id of the box."),
+    box_name: str | None = Option(None, "--box-name", "-n", help="The name of the box."),
+    name_match_mode: NameMatchMode | None = Option(
+        None, "--name-match-mode", "-m", help="The mode to use for matching the box name."
+    ),
+    name_match_case: bool = Option(
+        False, "--name-match-case", "-c", help="Whether to match the box name case-sensitively."
+    ),
+    steal: bool = Option(
+        False, "--steal", help="Take the box from the machine that currently owns it."
+    ),
+    all_included: bool = Option(
+        False, "--all-included", help="Claim every box included on this machine that has no owner."
+    ),
+    yes: bool = Option(False, "--yes", "-y", help="Skip the confirmation prompt for --steal."),
+):
+    """
+    Make this machine the write owner of a box.
+
+    Only the write owner may push a box's DATA. A box with no owner is
+    unrestricted, exactly as before this feature existed.
+    """
+    from boxyard.cmds import claim_box
+    from boxyard._models import get_boxyard_meta
+    from boxyard.config import get_config
+
+    if all_included:
+        if steal:
+            typer.echo(
+                "--all-included and --steal cannot be combined: a bulk pass must "
+                "never take boxes from other machines. Claim those one at a time, "
+                "so each decision is visible.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        from boxyard.config import StorageType
+
+        config = get_config(app_state["config_path"])
+        boxyard_meta = get_boxyard_meta(config)
+        # Boxes in a LOCAL storage location are skipped rather than attempted
+        # and refused: no other machine can reach them, so there is nothing to
+        # coordinate, and listing every one of them as "needs a decision" would
+        # bury the boxes that genuinely do.
+        _here = [
+            bm for bm in boxyard_meta.box_metas
+            if bm.check_included(config)
+            and config.storage_locations[bm.storage_location].storage_type
+            == StorageType.RCLONE
+        ]
+        candidates = [bm for bm in _here if bm.write_owner is None]
+        # Boxes included HERE but owned by ANOTHER machine are the whole reason
+        # to run this as a pass rather than box by box: they are the boxes that
+        # are genuinely on two machines at once, which nothing could enumerate
+        # before. They are not claimed -- that would be a silent mass steal --
+        # but they are listed, because a migration that quietly skipped them
+        # would leave exactly the risk it was run to find.
+        owned_elsewhere = [
+            bm for bm in _here
+            if bm.write_owner is not None and bm.write_owner != config.machine_name
+        ]
+
+        if not candidates and not owned_elsewhere:
+            typer.echo("No unowned included boxes to claim.")
+            raise typer.Exit(code=0)
+
+        typer.echo(f"Claiming {len(candidates)} unowned box(es) included here.")
+        failures = []
+        for i, bm in enumerate(sorted(candidates, key=lambda b: b.index_name), 1):
+            typer.echo(f"[{i}/{len(candidates)}] {bm.index_name}")
+            try:
+                _run_with_lock_handling(
+                    claim_box(
+                        config_path=app_state["config_path"],
+                        box_index_name=bm.index_name,
+                        verbose=False,
+                    )
+                )
+            except (typer.Exit, SystemExit):
+                raise
+            except Exception as e:
+                # A box included on two machines hits a META CONFLICT on the
+                # second one. That is the point of the bulk pass: it enumerates
+                # exactly the boxes that were at risk all along. Keep going and
+                # list them at the end rather than stopping at the first.
+                typer.echo(f"  Refused: {e}", err=True)
+                failures.append((bm.index_name, str(e)))
+        typer.echo("")
+        typer.echo(f"Claimed {len(candidates) - len(failures)} of {len(candidates)}.")
+
+        if owned_elsewhere:
+            typer.echo("")
+            typer.echo(
+                f"{len(owned_elsewhere)} box(es) are included here but owned by "
+                f"another machine — these are the boxes that were on two machines "
+                f"at once:",
+                err=True,
+            )
+            for bm in sorted(owned_elsewhere, key=lambda b: b.index_name):
+                typer.echo(f"  {bm.index_name}  (owned by {bm.write_owner})", err=True)
+            typer.echo(
+                "For each: take it over with `boxyard claim --steal -r <box>`, drop "
+                "this machine's copy with `boxyard discard-local -r <box>`, or stop "
+                "holding it here with `boxyard exclude -r <box>`.",
+                err=True,
+            )
+
+        if failures:
+            typer.echo("", err=True)
+            typer.echo(f"{len(failures)} box(es) could not be claimed:", err=True)
+            for index_name, err in failures:
+                typer.echo(f"  {index_name}: {err.splitlines()[0]}", err=True)
+
+        if failures or owned_elsewhere:
+            raise typer.Exit(code=1)
+        return
+
+    config, boxyard_meta, resolved = _resolve_box(
+        box_index_name, box_id, box_name, name_match_mode, name_match_case,
+        label="box to claim",
+    )
+
+    if steal and not yes:
+        current = boxyard_meta.by_index_name[resolved].write_owner
+        typer.echo(
+            f"'{resolved}' is currently owned by '{current}'.\n"
+            f"Taking it means any unpushed work for this box on '{current}' will "
+            f"be REFUSED there from now on, and has to be recovered with "
+            f"`boxyard discard-local` or by claiming it back."
+        )
+        if not typer.confirm(f"Take '{resolved}' from '{current}'?"):
+            raise typer.Exit(code=0)
+
+    _ownership_command(
+        claim_box(
+            config_path=app_state["config_path"],
+            box_index_name=resolved,
+            steal=steal,
+        )
+    )
+
+# %%
+#|export
+@app.command(name="release")
+def cli_release(
+    box_index_name: str | None = Option(
+        None, "--box", "-r", help="The index name of the box, in the form '{ULID}__{BOX_NAME}'."
+    ),
+    box_id: str | None = Option(None, "--box-id", "-i", help="The id of the box."),
+    box_name: str | None = Option(None, "--box-name", "-n", help="The name of the box."),
+    name_match_mode: NameMatchMode | None = Option(
+        None, "--name-match-mode", "-m", help="The mode to use for matching the box name."
+    ),
+    name_match_case: bool = Option(
+        False, "--name-match-case", "-c", help="Whether to match the box name case-sensitively."
+    ),
+):
+    """
+    Give up this machine's write ownership of a box.
+
+    The tidy handover is `release` here, then `claim` on the machine that wants
+    it — two online steps, no force and no race.
+    """
+    from boxyard.cmds import release_box
+
+    _, _, resolved = _resolve_box(
+        box_index_name, box_id, box_name, name_match_mode, name_match_case,
+        label="box to release",
+    )
+    _ownership_command(
+        release_box(config_path=app_state["config_path"], box_index_name=resolved)
+    )
+
+# %%
+#|export
+@app.command(name="discard-local")
+def cli_discard_local(
+    box_index_name: str | None = Option(
+        None, "--box", "-r", help="The index name of the box, in the form '{ULID}__{BOX_NAME}'."
+    ),
+    box_id: str | None = Option(None, "--box-id", "-i", help="The id of the box."),
+    box_name: str | None = Option(None, "--box-name", "-n", help="The name of the box."),
+    name_match_mode: NameMatchMode | None = Option(
+        None, "--name-match-mode", "-m", help="The mode to use for matching the box name."
+    ),
+    name_match_case: bool = Option(
+        False, "--name-match-case", "-c", help="Whether to match the box name case-sensitively."
+    ),
+    yes: bool = Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+    show_rclone_progress: bool = Option(False, "--progress", help="Show rclone progress."),
+):
+    """
+    Replace this machine's copy of a box with the remote's.
+
+    The other way out of a write-denied box, the first being
+    `boxyard claim --steal`. What is overwritten is kept under the sync backups
+    directory, and the path is printed.
+    """
+    from boxyard.cmds import discard_local
+
+    config, _, resolved = _resolve_box(
+        box_index_name, box_id, box_name, name_match_mode, name_match_case,
+        label="box to discard local changes for",
+    )
+
+    if not yes:
+        typer.echo(
+            f"This replaces this machine's copy of '{resolved}' with the remote's.\n"
+            f"What is overwritten is kept under '{config.local_sync_backups_path}', "
+            f"so it is recoverable — but it will no longer be in the box."
+        )
+        if not typer.confirm(f"Discard this machine's changes to '{resolved}'?"):
+            raise typer.Exit(code=0)
+
+    _ownership_command(
+        discard_local(
+            config_path=app_state["config_path"],
+            box_index_name=resolved,
+            show_rclone_progress=show_rclone_progress,
+        )
+    )
+
+# %%
+#|export
+@app.command(name="owner")
+def cli_owner(
+    box_index_name: str | None = Option(
+        None, "--box", "-r", help="The index name of the box, in the form '{ULID}__{BOX_NAME}'."
+    ),
+    box_id: str | None = Option(None, "--box-id", "-i", help="The id of the box."),
+    box_name: str | None = Option(None, "--box-name", "-n", help="The name of the box."),
+    name_match_mode: NameMatchMode | None = Option(
+        None, "--name-match-mode", "-m", help="The mode to use for matching the box name."
+    ),
+    name_match_case: bool = Option(
+        False, "--name-match-case", "-c", help="Whether to match the box name case-sensitively."
+    ),
+    output_format: Literal["text", "json"] = Option(
+        "text", "--output-format", "-o", help="The format of the output."
+    ),
+):
+    """
+    Show which machine may push a box's DATA.
+    """
+    import json
+
+    config, boxyard_meta, resolved = _resolve_box(
+        box_index_name, box_id, box_name, name_match_mode, name_match_case,
+    )
+    box_meta = boxyard_meta.by_index_name[resolved]
+    owner = box_meta.write_owner
+    info = {
+        "index_name": resolved,
+        "write_owner": owner,
+        "this_machine": config.machine_name,
+        "included_here": box_meta.check_included(config),
+        "writable_here": owner is None or owner == config.machine_name,
+    }
+
+    if output_format == "json":
+        typer.echo(json.dumps(info, indent=2))
+        return
+
+    if owner is None:
+        typer.echo(
+            f"'{resolved}' has no write owner, so any machine may push it "
+            f"(the behaviour boxyard has always had)."
+        )
+    elif owner == config.machine_name:
+        typer.echo(f"'{resolved}' is owned by this machine ({owner}).")
+    else:
+        typer.echo(
+            f"'{resolved}' is owned by '{owner}'. This machine "
+            f"({config.machine_name or 'unnamed'}) pulls it but never pushes it."
+        )
+
+# %% [markdown]
 # # `doctor`
 
 # %%
@@ -2826,7 +3222,7 @@ def cli_doctor(
     no_remote: bool = Option(
         False,
         "--no-remote",
-        help="Skip checks that access remote storage (stale-meta-mirror and tombstoned-box), so doctor works offline.",
+        help="Skip checks that access remote storage (stale-meta-mirror, tombstoned-box and diverged-box), so doctor works offline.",
     ),
     storage_locations: list[str] | None = Option(
         None,
@@ -2846,7 +3242,9 @@ def cli_doctor(
     symlinks and debris in the group tree, orphaned sync records, interrupted
     syncs, leftovers from removed storage locations, rclone configuration,
     remote boxmetas missing from the local mirror and boxes tombstoned on the
-    remote (both unless --no-remote), and boxes referencing unknown parents.
+    remote (both unless --no-remote), boxes referencing unknown parents,
+    boxmetas or a config carrying keys written by a newer boxyard, and a
+    missing `machine_name`.
 
     Never mutates or auto-fixes anything. Exit code is 0 when healthy and 1
     when there is at least one finding, so it can be asserted by cron jobs and

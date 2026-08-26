@@ -10,6 +10,7 @@ default_box_groups = []
 box_subid_character_set = "abcdefghijklmnopqrstuvwxyz0123456789"
 box_subid_length = 5
 max_concurrent_rclone_ops = 10
+machine_name = "test-machine"
 
 [storage_locations.local_test]
 storage_type = "rclone"

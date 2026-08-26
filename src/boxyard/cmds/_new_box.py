@@ -130,13 +130,22 @@ def new_box(
     # Resolve sync_first from config if not specified
     if sync_first is None:
         sync_first = config.sync_before_new_box
+    # `sync_before_new_box` had never once run. Two independent faults sat on
+    # top of each other, and nothing exercised the branch because the setting
+    # defaults to False:
+    #
+    #   * `sync_boxmetas` is not a name `boxyard.cmds` exports -- the function is
+    #     `sync_missing_boxmetas`, and has been since the repoyard->boxyard rename
+    #     (`32e1b24`). The import raised ImportError.
+    #   * `asyncio.get_event_loop()` raises `RuntimeError: There is no current
+    #     event loop` on Python 3.14 (which is what boxyard is installed under);
+    #     it has been deprecated for this use since 3.12. Every other call site in
+    #     the codebase already uses `asyncio.run`. This one was the only holdout.
     if sync_first:
-        from boxyard.cmds import sync_boxmetas
+        from boxyard.cmds import sync_missing_boxmetas
         if verbose:
             print("Syncing boxmetas before creating new box...")
-        asyncio.get_event_loop().run_until_complete(
-            sync_boxmetas(config_path=config_path, verbose=verbose)
-        )
+        asyncio.run(sync_missing_boxmetas(config_path=config_path, verbose=verbose))
     from boxyard._models import get_boxyard_meta, BoxPart
     
     boxyard_meta = get_boxyard_meta(config)
@@ -168,22 +177,30 @@ def new_box(
                 f"Another boxyard operation may be in progress."
             )
         )
-    from boxyard._models import BoxMeta
+    from boxyard._models import BoxMeta, format_creation_timestamp
+    
+    # Re-read the yard now that the global lock is held. The snapshot taken above
+    # was read BEFORE the lock, so a box created by a concurrent `boxyard new`
+    # between the two would be missing from the collision check -- the one thing
+    # the lock exists to prevent.
+    boxyard_meta = get_boxyard_meta(config)
     
     # Collect all existing box IDs to prevent collisions
     existing_ids = {rm.box_id for rm in boxyard_meta.box_metas}
     
-    # Generate unique timestamp and subid
-    creation_timestamp, box_subid = generate_unique_box_id(config, existing_ids)
-    
-    # If user provided a timestamp, use it (but still use the unique subid)
-    if creation_timestamp_utc is not None:
-        from boxyard.config import BoxTimestampFormat
-        from boxyard import const
-        if config.box_timestamp_format == BoxTimestampFormat.DATE_AND_TIME:
-            creation_timestamp = creation_timestamp_utc.strftime(const.BOX_TIMESTAMP_FORMAT)
-        else:
-            creation_timestamp = creation_timestamp_utc.strftime(const.BOX_TIMESTAMP_FORMAT_DATE_ONLY)
+    # A caller-supplied timestamp is resolved BEFORE the id is generated, so the
+    # collision check runs against the id that will actually be written. The
+    # override used to be applied after the check, which meant
+    # `--creation-timestamp-utc` could mint a duplicate box id -- exactly what
+    # `doctor`'s `duplicate-box-id` check exists to find.
+    fixed_timestamp = (
+        None
+        if creation_timestamp_utc is None
+        else format_creation_timestamp(config, creation_timestamp_utc)
+    )
+    creation_timestamp, box_subid = generate_unique_box_id(
+        config, existing_ids, creation_timestamp=fixed_timestamp
+    )
     
     box_meta = BoxMeta(
         creation_timestamp_utc=creation_timestamp,
@@ -208,14 +225,24 @@ def new_box(
         if git_clone_url is not None:
             if verbose:
                 print(f"Cloning {git_clone_url}")
+            # git's own diagnosis is the only thing that distinguishes "bad URL"
+            # from "no network" from "no permission", so it is captured and
+            # re-raised. It used to go to DEVNULL, and `check=True` raised a
+            # CalledProcessError carrying nothing but the exit status -- while the
+            # `if res.returncode != 0` below it was unreachable.
             res = subprocess.run(
                 ["git", "clone", git_clone_url, str(box_data_path)],
-                check=True,
                 stdout=subprocess.DEVNULL if not verbose else None,
-                stderr=subprocess.DEVNULL if not verbose else None,
+                stderr=subprocess.PIPE,
+                text=True,
             )
             if res.returncode != 0:
-                raise RuntimeError(f"Failed to clone box from {git_clone_url}")
+                detail = (res.stderr or "").strip()
+                raise RuntimeError(
+                    f"Failed to clone box from {git_clone_url} "
+                    f"(git exited {res.returncode})"
+                    + (f": {detail}" if detail else "")
+                )
         elif from_path is not None:
             if copy_from_path:
                 import shutil
@@ -233,16 +260,28 @@ def new_box(
         if initialise_git and git_clone_url is None and not (box_data_path / ".git").exists():
             if verbose:
                 print("Initialising git box")
+            # A warning, not a failure: the box is fully created and registered by
+            # this point, and `git init` is a convenience laid on top of it. The
+            # code always said so -- but `check=True` raised before the warning
+            # could ever be reached, so a machine without git got a
+            # CalledProcessError and a rolled-back box instead. The warning goes to
+            # stderr unconditionally; the CLI passes verbose=False, so gating it
+            # would have made a failed `git init` completely silent.
             res = subprocess.run(
                 ["git", "init"],
-                check=True,
                 cwd=box_data_path,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
             )
             if res.returncode != 0:
-                if verbose:
-                    print("Warning: Failed to initialise git box")
+                detail = (res.stderr or "").strip()
+                print(
+                    f"Warning: `git init` failed in '{box_data_path}' "
+                    f"(git exited {res.returncode}); the box was created without it"
+                    + (f": {detail}" if detail else ""),
+                    file=sys.stderr,
+                )
     except BaseException:
         try:
             _rollback_new_box(box_path, box_data_path, _moved_from_path)
@@ -257,7 +296,14 @@ def new_box(
         raise
     from boxyard._models import refresh_boxyard_meta
     
-    refresh_boxyard_meta(config, _skip_lock=True)
-    if _global_lock.is_locked:
-        _global_lock.release()
+    try:
+        refresh_boxyard_meta(config, _skip_lock=True)
+    finally:
+        # The lock is released in a `finally`, not in a later statement. It used to
+        # sit outside any try, so a refresh that raised left the global lock held --
+        # harmless for a CLI process that is about to exit, but `new_box` is an
+        # importable function and the next boxyard operation in the same process
+        # would then block until the timeout.
+        if _global_lock.is_locked:
+            _global_lock.release()
     return box_meta.index_name

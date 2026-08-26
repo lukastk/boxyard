@@ -27,7 +27,7 @@ from boxyard._cli.app import app, app_state
 
 # %%
 #|export
-from boxyard._models import get_boxyard_meta
+from boxyard._models import get_boxyard_meta, SyncCondition
 from boxyard.cmds import sync_box
 from rich.live import Live
 from rich.text import Text
@@ -169,6 +169,38 @@ else:
     ]
 
 # %% [markdown]
+# ## Fetch the tombstones once, not once per box
+#
+# `sync_box` needs to know whether a box has been deleted from another machine.
+# Asked per box that is one SFTP connection each -- 587 of them per pass, per
+# machine, every 20 minutes. That saturated the storage box's connection limit
+# and was failing ~8 boxes per pass on three machines with "couldn't initialise
+# SFTP". One listing per storage location answers it for every box.
+#
+# A failure here is NOT survivable by carrying on: if we cannot tell which
+# boxes are tombstoned, syncing anyway would resurrect a box another machine
+# deleted. So it raises, naming the storage location. That is a smaller risk
+# than it looks -- this is one call where there used to be 587, so the chance
+# of hitting a transient failure at all is far lower than before.
+
+# %%
+#|export
+from boxyard._tombstones import list_tombstoned_box_ids
+from boxyard.config import StorageType
+
+_tombstoned_ids_by_sl: dict[str, set[str]] = {}
+
+
+async def _load_tombstoned_ids():
+    """Populate `_tombstoned_ids_by_sl`, one listing per rclone storage location."""
+    for _sl_name in sorted({bm.storage_location for bm in box_metas}):
+        if config.storage_locations[_sl_name].storage_type == StorageType.LOCAL:
+            continue  # a local store has no tombstones and needs no remote call
+        _tombstoned_ids_by_sl[_sl_name] = await list_tombstoned_box_ids(
+            config, _sl_name
+        )
+
+# %% [markdown]
 # Define syncing task
 
 # %%
@@ -182,11 +214,29 @@ async def _task(num, box_meta):
             sync_direction=sync_direction,
             sync_setting=sync_setting,
             sync_choices=sync_choices,
+            tombstoned_box_ids=_tombstoned_ids_by_sl.get(box_meta.storage_location),
             verbose=False,
+        )
+        # A box this machine may not push is NOT an error, and must never be
+        # rendered as one. `multi-sync` runs every 1200s under supervisor, so a
+        # red line here would repeat ~72 times a day per machine for a state
+        # that is working as designed and cannot be resolved by retrying --
+        # exactly the noise the v0.4.x work existed to remove. It gets its own
+        # status instead, and `doctor` explains it once with both ways out.
+        _write_denied = any(
+            status.sync_condition == SyncCondition.WRITE_DENIED
+            for status, _ in sync_results.values()
+        )
+        # A box in a `local` storage location has no remote to sync against.
+        # "Success" would be true but misleading, so it gets its own label --
+        # for the same reason "Read-only" is not folded into "Error".
+        _local_only = all(
+            status.sync_condition == SyncCondition.LOCAL_STORAGE
+            for status, _ in sync_results.values()
         )
         sync_stats[box_meta.index_name] = (
             num,
-            "Success",
+            "Read-only" if _write_denied else "Local" if _local_only else "Success",
             None,
             datetime.now(),
             sync_results,
@@ -227,12 +277,16 @@ def get_status_lines(box_index_name):
     status_color = {
         "Syncing": "yellow",
         "Success": "green",
+        "Read-only": "yellow",
+        "Local": "blue",
         "Interrupted": "magenta",
         "Error": "red",
     }.get(sync_stat, "")
 
     name_color = {
         "Success": "green",
+        "Read-only": "yellow",
+        "Local": "blue",
         "Interrupted": "magenta",
         "Error": "red",
     }.get(sync_stat, "")
@@ -261,13 +315,36 @@ def get_status_lines(box_index_name):
     indent = "    "
     if e:
         lines.append(f"{indent}[red]{e}[/red]")
-    elif sync_stat == "Success":
+    elif sync_stat in ("Success", "Read-only", "Local"):
         line = []
         for box_part, synced in zip(sync_choices, syncs_happened):
-            line.append(
-                f"[bold]{box_part.value}:[/bold] {'[green]Synced[/green]' if synced else '[blue]Skipped[/blue]'}"
+            _denied = (
+                sync_results is not None
+                and sync_results[box_part][0].sync_condition
+                == SyncCondition.WRITE_DENIED
             )
+            if _denied:
+                _cell = "[yellow]Write denied[/yellow]"
+            elif synced:
+                _cell = "[green]Synced[/green]"
+            else:
+                _cell = "[blue]Skipped[/blue]"
+            line.append(f"[bold]{box_part.value}:[/bold] {_cell}")
         lines.append(indent + f",{indent}".join(line))
+        if sync_stat == "Read-only":
+            _owner = next(
+                (
+                    status.error_message
+                    for status, _ in sync_results.values()
+                    if status.sync_condition == SyncCondition.WRITE_DENIED
+                ),
+                None,
+            )
+            if _owner:
+                lines.append(f"{indent}[yellow]{_owner}[/yellow]")
+                lines.append(
+                    f"{indent}[dim]`boxyard doctor` names both ways out.[/dim]"
+                )
     else:
         lines.append(f"{indent}[yellow]Results pending...[/yellow]")
 
@@ -296,7 +373,11 @@ def print_finished(box_index_name: str):
         False if sync_results is None else sync_results[box_part][1]
         for box_part in sync_choices
     ]
-    if no_print_skipped and sync_stat == "Success" and not any(syncs_happened):
+    if (
+        no_print_skipped
+        and sync_stat in ("Success", "Local")
+        and not any(syncs_happened)
+    ):
         return
     lines = get_status_lines(box_index_name)
     console.print(Text.from_markup("\n".join(lines).strip()))
@@ -340,6 +421,9 @@ sync_task = async_throttler(
 
 
 async def _runner():
+    # Before any box is synced: if this raises we must not sync at all, since
+    # we cannot tell which boxes another machine has deleted.
+    await _load_tombstoned_ids()
     if show_progress:
         monitor_task = asyncio.create_task(_progress_monitor_task())
         await sync_task

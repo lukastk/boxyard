@@ -46,6 +46,13 @@ BOX_DATA_REL_PATH = "data"
 BOX_METAFILE_REL_PATH = "boxmeta.toml"
 BOX_CONF_REL_PATH = "conf"
 
+# A box's own rclone filter files, inside its CONF part. When present, the
+# exclude file REPLACES the global default -- it does not extend it -- so any
+# code deciding which patterns apply to a box must check for it first.
+RCLONE_INCLUDE_FILENAME = ".rclone_include"
+RCLONE_EXCLUDE_FILENAME = ".rclone_exclude"
+RCLONE_FILTERS_FILENAME = ".rclone_filters"
+
 # Sidecar file, stored at the root of a box's DATA part, recording which files are
 # executable so the +x bit survives sync over backends that can't carry Unix mode
 # metadata (e.g. SFTP). See _utils/perms.py. Ships as ordinary synced content.
@@ -110,6 +117,24 @@ for i in range(2, 7):
 ENV_VAR_BOXYARD_CONFIG_PATH = "BOXYARD_CONFIG_PATH"
 ENV_VAR_DEFAULT_BOX_GROUPS = "DEFAULT_BOX_GROUPS"
 ENV_VAR_BOXYARD_RCLONE = "BOXYARD_RCLONE"  # explicit full path to the rclone binary
+ENV_VAR_BOXYARD_MACHINE_NAME = "BOXYARD_MACHINE_NAME"  # overrides `machine_name`
+
+# %% [markdown]
+# Machine identity
+
+# %% [markdown]
+# A machine name identifies one machine to the whole yard: it is what
+# `boxmeta.toml`'s `write_owner` will hold, and it is compared, not printed.
+# `get_hostname()` cannot serve — the live yard holds both `lukas-pocket4` and
+# `pocket4` for one physical machine, plus macOS pretty names like
+# `Lukas’s MacBook Pro` (spaces, a U+2019 apostrophe, user-editable in
+# System Settings). So the name is configured, never derived, and constrained
+# to characters that survive being compared, printed in an error, and passed
+# on a command line.
+
+# %%
+#|export
+MACHINE_NAME_REGEX = r"[A-Za-z0-9_-]{1,64}"
 
 # %% [markdown]
 # Misc

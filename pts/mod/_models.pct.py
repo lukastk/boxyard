@@ -20,6 +20,7 @@ from nblite import nbl_export, show_doc; nbl_export();
 #|export
 from pydantic import Field, model_validator
 from pathlib import Path
+from typing import Any
 import tomllib
 import tomli_w
 from datetime import datetime, timezone
@@ -111,10 +112,36 @@ def _create_box_subid(character_set: str, length: int) -> str:
 
 # %%
 #|export
+def format_creation_timestamp(
+    config: boxyard.config.Config, dt: datetime
+) -> str:
+    """
+    Render `dt` in the timestamp format this yard's box ids use.
+
+    Extracted so that the format switch lives in exactly one place. It used to
+    be written out twice -- here and in `new_box`, for the
+    `creation_timestamp_utc` override -- and a box id whose timestamp half was
+    formatted by a *different* copy of this switch is precisely the kind of
+    drift that produces ids the rest of the yard cannot parse.
+    """
+    from boxyard.config import BoxTimestampFormat
+
+    if config.box_timestamp_format == BoxTimestampFormat.DATE_AND_TIME:
+        return dt.strftime(const.BOX_TIMESTAMP_FORMAT)
+    elif config.box_timestamp_format == BoxTimestampFormat.DATE_ONLY:
+        return dt.strftime(const.BOX_TIMESTAMP_FORMAT_DATE_ONLY)
+    else:
+        raise Exception(
+            f"Invalid box timestamp format: {config.box_timestamp_format}"
+        )
+
+# %%
+#|export
 def generate_unique_box_id(
     config: boxyard.config.Config,
     existing_ids: set[str],
     max_attempts: int = 100,
+    creation_timestamp: str | None = None,
 ) -> tuple[str, str]:
     """
     Generate a box ID that doesn't collide with existing IDs.
@@ -123,6 +150,13 @@ def generate_unique_box_id(
         config: Boxyard config (for timestamp format and subid settings)
         existing_ids: Set of existing box IDs to check against
         max_attempts: Maximum generation attempts before raising error
+        creation_timestamp: Use this already-formatted timestamp instead of
+            "now". The caller that passes it (`new_box`, for
+            `--creation-timestamp-utc`) needs the collision check to run
+            against the id it will ACTUALLY use: it used to let this function
+            pick a timestamp, check `<generated_ts>_<subid>` for collisions,
+            and then substitute its own timestamp afterwards -- so the id that
+            got written was never the id that was checked.
 
     Returns:
         Tuple of (creation_timestamp, box_subid)
@@ -130,29 +164,19 @@ def generate_unique_box_id(
     Raises:
         RuntimeError: If unable to generate unique ID after max_attempts
     """
-    from boxyard.config import BoxTimestampFormat
-
     for _ in range(max_attempts):
-        if config.box_timestamp_format == BoxTimestampFormat.DATE_AND_TIME:
-            creation_timestamp = datetime.now(timezone.utc).strftime(
-                const.BOX_TIMESTAMP_FORMAT
-            )
-        elif config.box_timestamp_format == BoxTimestampFormat.DATE_ONLY:
-            creation_timestamp = datetime.now(timezone.utc).strftime(
-                const.BOX_TIMESTAMP_FORMAT_DATE_ONLY
-            )
+        if creation_timestamp is None:
+            timestamp = format_creation_timestamp(config, datetime.now(timezone.utc))
         else:
-            raise Exception(
-                f"Invalid box timestamp format: {config.box_timestamp_format}"
-            )
+            timestamp = creation_timestamp
 
         box_subid = _create_box_subid(
             config.box_subid_character_set, config.box_subid_length
         )
-        box_id = f"{creation_timestamp}_{box_subid}"
+        box_id = f"{timestamp}_{box_subid}"
 
         if box_id not in existing_ids:
-            return creation_timestamp, box_subid
+            return timestamp, box_subid
 
     raise RuntimeError(
         f"Failed to generate unique box ID after {max_attempts} attempts. "
@@ -169,6 +193,38 @@ class BoxMeta(const.StrictModel):
     creator_hostname: str
     groups: list[str]
     parents: list[str] = []  # box_id values; default [] for backwards compat
+
+    # The `machine_name` of the single machine allowed to PUSH this box's DATA.
+    # `None` means unowned, which means unrestricted -- exactly the pre-v0.5
+    # behaviour. `save()` OMITS the key when it is None, so an unowned box's
+    # boxmeta.toml is byte-identical to what every earlier version wrote.
+    #
+    # Nothing in v0.5.0 sets this; the claim commands arrive in v0.5.1. The
+    # field exists first so that every machine can already read a boxmeta that
+    # carries it before any machine can write one.
+    write_owner: str | None = None
+
+    # Forward-compat passthrough: keys found in `boxmeta.toml` that this
+    # version of boxyard does not know. `load` collects them here and `save`
+    # writes them back verbatim.
+    #
+    # This is deliberately NOT `extra="ignore"`. Ignoring would make an older
+    # machine silently STRIP a newer machine's key -- one `boxyard
+    # add-to-group` on the old machine and the newer machine's `write_owner`
+    # is gone from the shared boxmeta, with no error anywhere. Preserving is
+    # the only behaviour that makes a mixed-version fleet safe.
+    #
+    # It is also not `extra="allow"`: that would silently accept a typo'd key
+    # at every BoxMeta construction site, not just when loading a file, and
+    # `broken-registration` would stop catching it. Here the tolerance is
+    # scoped to reading a file, and `doctor`'s `unknown-boxmeta-keys` reports
+    # every key that lands in it, so a newer key is loud rather than hidden.
+    #
+    # Consequence worth stating plainly: v0.5.0 is the LAST release that a
+    # `boxmeta.toml` addition can break. From here on, an unknown key costs an
+    # older machine a doctor finding instead of making the box vanish from
+    # `boxyard list`, from `~/g` and from `multi-sync`.
+    unknown_keys: dict[str, Any] = {}
 
     @classmethod
     def create(
@@ -325,9 +381,22 @@ class BoxMeta(const.StrictModel):
         save_path = self.get_local_part_path(config, BoxPart.META)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         model_dump = self.model_dump()
+        # These three are derived from the registration's directory name, not
+        # stored in the file.
         del model_dump["creation_timestamp_utc"]
         del model_dump["box_subid"]
         del model_dump["name"]
+        # An unowned box must write the pre-v0.5 file, byte for byte: the key
+        # is absent, not `write_owner = ""` and not a null. That is what keeps
+        # all 583 existing boxmetas untouched by the upgrade, and what makes
+        # `boxyard release` restore a file an older machine can still read.
+        if model_dump["write_owner"] is None:
+            del model_dump["write_owner"]
+        # Keys a newer boxyard wrote go back exactly as they came in. They
+        # cannot shadow a field this version owns: `validate_box_meta` rejects
+        # a known field name in here, so the two key sets are disjoint.
+        unknown_keys = model_dump.pop("unknown_keys")
+        model_dump.update(unknown_keys)
         # Atomic write: temp file + rename
         tmp_path = save_path.with_suffix(".tmp")
         tmp_path.write_text(tomli_w.dumps(model_dump))
@@ -359,13 +428,39 @@ class BoxMeta(const.StrictModel):
         if not boxmeta_path.exists():
             raise ValueError(f"Box meta file {boxmeta_path} does not exist.")
 
+        parsed = tomllib.loads(boxmeta_path.read_text(encoding="utf-8"))
+
+        # Split the file into keys this version knows and keys it does not.
+        # Without this split the model's `extra="forbid"` would reject the
+        # whole registration, and a rejected registration does not merely fail
+        # to parse: `create_boxyard_meta` SKIPS it, so the box drops out of
+        # `boxyard_meta.json` and with it out of `boxyard list`, out of `~/g`
+        # (whose symlinks are then deleted) and out of `multi-sync` -- it stops
+        # syncing altogether, and upgrading afterwards does not heal it.
+        #
+        # `unknown_keys` is the passthrough container itself, never a key of
+        # the file. A boxmeta.toml that carries it is corrupt rather than
+        # merely newer -- silently folding it in would flatten its contents to
+        # top-level keys on the next save -- so say so instead of guessing.
+        if "unknown_keys" in parsed:
+            raise ValueError(
+                f"Box meta file {boxmeta_path} contains the reserved key "
+                "'unknown_keys', which boxyard uses internally to carry keys "
+                "written by a newer version. Remove it from the file."
+            )
+
+        known_fields = set(cls.model_fields)
+        unknown_keys = {k: v for k, v in parsed.items() if k not in known_fields}
+        known_keys = {k: v for k, v in parsed.items() if k in known_fields}
+
         return BoxMeta(
             **{
-                **tomllib.loads(boxmeta_path.read_text(encoding="utf-8")),
+                **known_keys,
                 "creation_timestamp_utc": creation_timestamp,
                 "box_subid": box_subid,
                 "name": name,
                 "storage_location": storage_location_name,
+                "unknown_keys": unknown_keys,
             }
         )
 
@@ -389,6 +484,8 @@ class BoxMeta(const.StrictModel):
 
     @model_validator(mode="after")
     def validate_box_meta(self):
+        import re
+
         # `creator_hostname` is the only free-text field written to
         # boxmeta.toml -- it comes from `scutil --get ComputerName` or
         # `platform.node()`, so its content is not otherwise constrained.
@@ -419,6 +516,29 @@ class BoxMeta(const.StrictModel):
 
         if self.box_id in self.parents:
             raise ValueError("A box cannot be its own parent.")
+
+        # `write_owner` is compared, not printed: it decides which machine may
+        # push this box's DATA. So unlike `creator_hostname` above -- a
+        # historical label that tolerates whatever the OS reported -- it is
+        # constrained to a name that survives comparison, a shell argument and
+        # an error message unchanged.
+        if self.write_owner is not None:
+            if not re.fullmatch(const.MACHINE_NAME_REGEX, self.write_owner):
+                raise ValueError(
+                    f"Invalid write_owner {self.write_owner!r}. A machine name must "
+                    f"match {const.MACHINE_NAME_REGEX} (alphanumeric, '_', '-'; "
+                    "1-64 characters)."
+                )
+
+        # The passthrough must stay disjoint from the fields this version
+        # owns, or `save` would write the same key twice -- once from the
+        # model and once from the container -- and the file would disagree
+        # with itself.
+        _shadowed = set(self.unknown_keys) & set(type(self).model_fields)
+        if _shadowed:
+            raise ValueError(
+                f"unknown_keys must not contain keys boxyard knows: {sorted(_shadowed)}"
+            )
 
         # Test that the creation timestamp is valid
         try:
@@ -834,6 +954,31 @@ class SyncCondition(Enum):
     EXCLUDED = "excluded"
     ERROR = "error"
     TOMBSTONED = "tombstoned"  # Box was deleted on remote
+    # This machine is not the box's `write_owner`, and the part has local
+    # changes that would have to be pushed. Substituted by `sync_box` into the
+    # status it returns for the refused part; `get_sync_status` never produces
+    # it, because that function is a pure function of paths and records and
+    # knows nothing about boxes or machines.
+    #
+    # Deliberately a CONDITION and not an exception. `multi-sync` runs every
+    # 1200s under supervisor and catches per-box exceptions into a red `Error`
+    # line, so raising here would manufacture ~72 identical unresolvable errors
+    # per machine per day -- the exact pathology v0.4.0-v0.4.4 spent a week
+    # removing. The box simply does not push; the state is reported once by
+    # `doctor` and shown by `multi-sync` as its own non-error status.
+    WRITE_DENIED = "write_denied"
+    # The box's storage location is `local`, so there is nothing to sync
+    # against: the store is a directory on this machine. Substituted by
+    # `sync_box` for the whole box, like TOMBSTONED and for the same reason --
+    # it is a fact about the BOX, not about any pair of paths, so
+    # `get_sync_status` cannot produce it.
+    #
+    # A condition rather than an early `return None`, which is what `sync_box`
+    # used to do: its contract is a dict, every caller reads one, and
+    # `multi-sync` called `.values()` on it. A local-storage box therefore
+    # turned into a red `Error` line repeated every 1200s -- for a state that
+    # is working exactly as designed.
+    LOCAL_STORAGE = "local_storage"
 
 
 class SyncStatus(NamedTuple):
@@ -854,8 +999,29 @@ async def get_sync_status(
     remote: str,
     remote_path: str,
     remote_sync_record_path: str,
+    exclude_path: "str | Path | None" = None,
+    local_absence_means_excluded: bool = True,
 ) -> SyncStatus:
-    from boxyard._utils import check_last_time_modified
+    """
+    `exclude_path` is the box part's EFFECTIVE rclone exclude file (its own
+    `conf/.rclone_exclude` if it has one, else the global default). Literal
+    names in it are skipped when measuring the local modification time, so a
+    file that can never be transferred cannot make the box look modified.
+
+    `local_absence_means_excluded` says how to read "absent locally, present
+    remotely". For DATA that means the box is not INCLUDED here, which is a
+    deliberate choice and must stay `EXCLUDED` -- pulling it would undo an
+    `boxyard exclude`.
+
+    For CONF it means the opposite: nobody chose anything, the files have
+    simply never been fetched. Reading that as `EXCLUDED` made the absence
+    SELF-PERPETUATING -- conf/ is missing, so it is judged excluded, so it is
+    never pulled, so it stays missing -- and the effect was that a box's own
+    rclone filters existed only on the machine that wrote them. A box whose
+    `conf/.rclone_include` narrows what it syncs would sync EVERYTHING on the
+    second machine.
+    """
+    from boxyard._utils import check_last_time_modified, literal_exclude_names
     from boxyard._utils import rclone_path_exists
 
     local_path_exists, local_path_is_dir = await rclone_path_exists(
@@ -924,7 +1090,9 @@ async def get_sync_status(
         )
         return SyncStatus(**sync_status)
 
-    local_last_modified = check_last_time_modified(local_path)
+    local_last_modified = check_last_time_modified(
+        local_path, exclude_names=literal_exclude_names(exclude_path)
+    )
     if local_last_modified is None and local_path_exists:
         if (not local_path_is_dir) or (local_path_is_dir and not local_path_is_empty):
             # Logic here: If the local path is a file, it should be able to be checked for last modification.
@@ -996,7 +1164,11 @@ async def get_sync_status(
                     sync_condition = SyncCondition.NEEDS_PUSH
             else:
                 if remote_path_exists:
-                    sync_condition = SyncCondition.EXCLUDED
+                    sync_condition = (
+                        SyncCondition.EXCLUDED
+                        if local_absence_means_excluded
+                        else SyncCondition.NEEDS_PULL
+                    )
                 else:
                     sync_condition = SyncCondition.SYNCED  # Synced by default, since neither local nor remote path exists. This will often be the case for `conf`, for example.
 

@@ -4,7 +4,8 @@ from pathlib import Path
 import asyncio
 
 from .._utils.sync_helper import sync_helper, SyncSetting, SyncDirection
-from .._models import SyncStatus, BoxPart, BoxMeta, SyncCondition
+from .._models import SyncStatus, BoxPart, BoxMeta, SyncCondition, get_sync_status
+from .._ownership import may_push, push_would_transfer, write_denied_message
 from ..config import get_config, StorageType
 from .._utils import (
     check_interrupted,
@@ -25,6 +26,7 @@ async def sync_box(
     verbose: bool = False,
     show_rclone_progress: bool = False,
     soft_interruption_enabled: bool = True,
+    tombstoned_box_ids: set[str] | None = None,
     _skip_lock: bool = False,
 ) -> dict[BoxPart, tuple[SyncStatus, bool]]:
     """
@@ -36,6 +38,9 @@ async def sync_box(
         sync_direction: Direction of sync.
         sync_setting: SyncSetting option (SAFE, CAREFUL, FORCE).
         sync_choices: List of BoxPart specifying what to sync. If None, all parts are synced.
+        tombstoned_box_ids: Every tombstoned box id at this box's storage location,
+            when the caller already holds the set (see `list_tombstoned_box_ids`).
+            Avoids one remote probe per box. If None, the box is probed individually.
         force: Force syncing, possibly overwriting changes.
         verbose: Print verbose output during sync.
         show_rclone_progress: Show rclone progress during sync.
@@ -54,13 +59,58 @@ async def sync_box(
         raise ValueError(f"Box '{box_index_name}' not found.")
     
     box_meta = boxyard_meta.by_index_name[box_index_name]
+    # A `local` storage location has no remote: its store is a directory on this
+    # machine, so there is nothing to sync against. That is a legitimate,
+    # permanent state -- not an error, and not something a retry resolves.
+    #
+    # It used to `return` with no value, while the signature promises a dict and
+    # every caller reads one. `multi-sync` calls `.values()` on the result, so a
+    # single local-storage box became an `AttributeError` rendered as a red
+    # `Error` line, every 1200s, on every machine. The shape below mirrors the
+    # TOMBSTONED path, which had the same "a fact about the whole box" problem.
     if box_meta.get_storage_location_config(config).storage_type == StorageType.LOCAL:
-        pass
-        return
+        if verbose:
+            print(
+                f"Box '{box_index_name}' is in the local storage location "
+                f"'{box_meta.storage_location}'. Nothing to sync."
+            )
+        from boxyard._models import SyncRecord as _SyncRecord
+    
+        _local_only_record = _SyncRecord.create(sync_complete=False)
+        sync_results = {
+            part: (
+                SyncStatus(
+                    sync_condition=SyncCondition.LOCAL_STORAGE,
+                    local_path_exists=True,
+                    remote_path_exists=False,
+                    local_sync_record=_local_only_record,
+                    remote_sync_record=_local_only_record,
+                    is_dir=True,
+                    error_message=None,
+                ),
+                False,
+            )
+            for part in sync_choices
+        }
+        return sync_results
     box_id = BoxMeta.extract_box_id(box_index_name)
     storage_location = box_meta.storage_location
     
-    _is_tombstoned = await is_tombstoned(config, storage_location, box_id)
+    # One remote probe PER BOX is what this parameter exists to avoid: a
+    # `multi-sync` pass over 587 boxes made 587 separate SFTP connections to the
+    # same storage box, every 20 minutes, on every machine. That saturated the
+    # server's connection limit and was measurably failing ~8 boxes per pass on
+    # three machines with "couldn't initialise SFTP".
+    #
+    # The caller passes the set when it already holds one for this storage
+    # location. When it does not -- `sync_box` is also a standalone command --
+    # fall back to the single probe rather than skipping the check: a silent
+    # skip would turn a safety check into a no-op and let a box deleted from
+    # another machine be resurrected here.
+    if tombstoned_box_ids is not None:
+        _is_tombstoned = box_id in tombstoned_box_ids
+    else:
+        _is_tombstoned = await is_tombstoned(config, storage_location, box_id)
     if _is_tombstoned:
         _tombstone = await get_tombstone(config, storage_location, box_id)
         _tombstone_msg = f"Box '{box_index_name}' was deleted"
@@ -144,11 +194,19 @@ async def sync_box(
         if check_interrupted():
             raise SoftInterruption()
     
+        # META is synced whenever DATA is, even when the caller did not ask for it:
+        # the ownership decision below reads `write_owner` out of the boxmeta, and
+        # `boxyard sync -c data` would otherwise decide it from a local copy that
+        # predates another machine's claim. That is the one path by which a
+        # non-owner could push without ever learning it had been claimed.
+        #
+        # Its result is only RECORDED when META was actually requested, so the
+        # returned dict still answers exactly what the caller asked about.
         sync_part = BoxPart.META
-        if sync_part in sync_choices:
+        if sync_part in sync_choices or BoxPart.DATA in sync_choices:
             if verbose:
                 print(f"Syncing {sync_part.value}.")
-            sync_results[BoxPart.META] = await sync_helper(
+            _meta_sync_result = await sync_helper(
                 rclone_config_path=config.rclone_config_path,
                 sync_direction=sync_direction,
                 sync_setting=sync_setting,
@@ -164,16 +222,132 @@ async def sync_box(
                 verbose=verbose,
                 show_rclone_progress=show_rclone_progress,
             )
+            if sync_part in sync_choices:
+                sync_results[BoxPart.META] = _meta_sync_result
+    
+        # ---- Write ownership -------------------------------------------------
+        #
+        # Decided HERE: after the META sync, so it reads whatever the rest of the
+        # fleet last said about this box, and before CONF/DATA, which are the parts
+        # ownership governs. Not in `sync_helper` -- that takes paths and knows
+        # nothing about boxes, and pushing box semantics into it would be the wrong
+        # layer.
+        #
+        # `box_meta` above came from `get_boxyard_meta`, a cache read BEFORE the
+        # META sync, and is stale the moment that sync pulls: re-read from disk.
+        _box_meta_on_disk = BoxMeta.load(config, storage_location, box_index_name)
+        _write_owner = _box_meta_on_disk.write_owner
+        _may_push = may_push(config, _box_meta_on_disk)
+    
+        def _deny(status: SyncStatus) -> tuple[SyncStatus, bool]:
+            return (
+                status._replace(
+                    sync_condition=SyncCondition.WRITE_DENIED,
+                    error_message=write_denied_message(config, _box_meta_on_disk),
+                ),
+                False,
+            )
+    
+        async def _sync_part(
+            *,
+            probe_include_path=None,
+            probe_exclude_path=None,
+            probe_filters_path=None,
+            **helper_kwargs,
+        ) -> tuple[SyncStatus, bool]:
+            """
+            `sync_helper`, except that a non-owner never pushes.
+    
+            A non-owner is a read-only replica doing its job, so it pulls quietly
+            and says nothing; it only speaks up when it holds changes that will
+            never leave this machine. Nothing here raises -- see
+            `SyncCondition.WRITE_DENIED`.
+            """
+            if _may_push:
+                return await sync_helper(**helper_kwargs)
+    
+            # Only a non-owner pays for this extra status read; an unowned box or
+            # one we own takes the path above untouched.
+            _status = await get_sync_status(
+                rclone_config_path=config.rclone_config_path,
+                local_path=helper_kwargs["local_path"],
+                local_sync_record_path=helper_kwargs["local_sync_record_path"],
+                remote=helper_kwargs["remote"],
+                remote_path=helper_kwargs["remote_path"],
+                remote_sync_record_path=helper_kwargs["remote_sync_record_path"],
+                exclude_path=probe_exclude_path,
+                # Must match what the sync below will use, or a non-owner reads a
+                # different condition than the one it then acts on. CONF passes
+                # False here for the same reason it does at the call site.
+                local_absence_means_excluded=helper_kwargs.get(
+                    "local_absence_means_excluded", True
+                ),
+            )
+            _condition = _status.sync_condition
+    
+            if _condition == SyncCondition.SYNCED:
+                return _status, False
+    
+            if _condition == SyncCondition.NEEDS_PULL:
+                # The ordinary state of a read-only replica. Pull, silently.
+                return await sync_helper(
+                    **{**helper_kwargs, "sync_direction": SyncDirection.PULL}
+                )
+    
+            if _condition == SyncCondition.NEEDS_PUSH:
+                # `needs_push` is not evidence of a real change: it comes from a
+                # tree walk, so a single `.DS_Store` sets it even though the file
+                # can never be transferred. Ask what a push would ACTUALLY move.
+                _would_transfer = await push_would_transfer(
+                    config,
+                    local_path=Path(helper_kwargs["local_path"]),
+                    remote=helper_kwargs["remote"],
+                    remote_path=Path(helper_kwargs["remote_path"]),
+                    include_path=probe_include_path,
+                    exclude_path=probe_exclude_path,
+                    filters_path=probe_filters_path,
+                )
+                if not _would_transfer:
+                    # Nothing to send. Report it as what it is rather than as a
+                    # refusal, or every machine would carry a permanent complaint
+                    # about changes that do not exist.
+                    return _status._replace(sync_condition=SyncCondition.SYNCED), False
+                return _deny(_status)
+    
+            if _condition == SyncCondition.CONFLICT:
+                return _deny(_status)
+    
+            # ERROR, EXCLUDED, TOMBSTONED, and the interrupted-sync conditions are
+            # not ownership's business: they are handled exactly as before.
+            return await sync_helper(**helper_kwargs)
     
         # Sync the boxconf
         if check_interrupted():
             raise SoftInterruption()
     
+        # CONF is synced whenever DATA is, even when the caller did not ask for it,
+        # for the same reason META is: `conf/.rclone_include|_exclude|_filters`
+        # decide WHAT DATA syncs, and they are read off the local disk immediately
+        # below. `boxyard sync -c data` on a machine that has never pulled this
+        # box's conf/ would otherwise sync DATA with the GLOBAL filters -- so a box
+        # whose `.rclone_include` narrows what it syncs would sync EVERYTHING.
+        # That is precisely the harm v0.5.3 fixed, still reachable through `-c
+        # data` (which `multi-sync` also accepts, i.e. across the whole yard).
+        #
+        # Its result is only RECORDED when CONF was actually requested, so the
+        # returned dict still answers exactly what the caller asked about.
         sync_part = BoxPart.CONF
-        if sync_part in sync_choices:
+        if sync_part in sync_choices or BoxPart.DATA in sync_choices:
             if verbose:
                 print("Syncing", sync_part.value)
-            sync_results[sync_part] = await sync_helper(
+            # CONF follows DATA: `conf/.rclone_include|_exclude|_filters` decide
+            # what DATA syncs, so letting a non-owner push CONF would let it change
+            # the owner's filters. Non-owners pull it only.
+            #
+            # META, by contrast, stays writable by every machine -- without that,
+            # ownership could never be transferred and `groups`/`parents` could not
+            # be edited from a non-owner.
+            _conf_sync_result = await _sync_part(
                 rclone_config_path=config.rclone_config_path,
                 sync_direction=sync_direction,
                 sync_setting=sync_setting,
@@ -189,17 +363,26 @@ async def sync_box(
                 verbose=verbose,
                 show_rclone_progress=show_rclone_progress,
                 allow_missing_source=True,  # CONF is optional - may not exist on either side
+                # A missing local conf/ means "never fetched", NOT "deliberately
+                # excluded" -- exclusion is a DATA concept. Reading it as EXCLUDED
+                # made the absence self-perpetuating, so a box's own rclone filters
+                # only ever existed on the machine that wrote them, and a box whose
+                # `conf/.rclone_include` narrows its sync would sync EVERYTHING on
+                # the second machine.
+                local_absence_means_excluded=False,
             )
+            if sync_part in sync_choices:
+                sync_results[sync_part] = _conf_sync_result
     
         # Get the now locally synced conf files for the sync of the box data
         _rclone_include_path = (
-            box_meta.get_local_part_path(config, BoxPart.CONF) / ".rclone_include"
+            box_meta.get_local_part_path(config, BoxPart.CONF) / const.RCLONE_INCLUDE_FILENAME
         )
         _rclone_exclude_path = (
-            box_meta.get_local_part_path(config, BoxPart.CONF) / ".rclone_exclude"
+            box_meta.get_local_part_path(config, BoxPart.CONF) / const.RCLONE_EXCLUDE_FILENAME
         )
         _rclone_filters_path = (
-            box_meta.get_local_part_path(config, BoxPart.CONF) / ".rclone_filters"
+            box_meta.get_local_part_path(config, BoxPart.CONF) / const.RCLONE_FILTERS_FILENAME
         )
     
         _rclone_include_path = _rclone_include_path if _rclone_include_path.exists() else None
@@ -218,7 +401,10 @@ async def sync_box(
         if sync_part in sync_choices:
             if verbose:
                 print("Syncing", sync_part.value)
-            sync_results[sync_part] = await sync_helper(
+            sync_results[sync_part] = await _sync_part(
+                probe_include_path=_rclone_include_path,
+                probe_exclude_path=_rclone_exclude_path,
+                probe_filters_path=_rclone_filters_path,
                 rclone_config_path=config.rclone_config_path,
                 sync_direction=sync_direction,
                 sync_setting=sync_setting,

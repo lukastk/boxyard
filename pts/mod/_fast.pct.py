@@ -96,6 +96,11 @@ class BoxyardFast:
             "groups": bm.get("groups", []),
             "parents": bm.get("parents", []),
             "storage_location": bm.get("storage_location", ""),
+            # `.get` rather than `[...]`: this reads `boxyard_meta.json` as
+            # plain dicts, and a cache written by a pre-v0.5 boxyard has no
+            # such key. None means unowned, which is also what an old cache
+            # correctly implies.
+            "write_owner": bm.get("write_owner"),
         }
 
     # ── parent-child queries ──

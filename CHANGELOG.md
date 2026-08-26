@@ -1,3 +1,722 @@
+## [0.5.10] - 2026-08-26
+
+### 🐛 Bug Fixes
+
+- **Two of `boxyard doctor`'s suggested commands could not be run.** doctor's
+  own contract is that "every hint names an exact command that is safe to run
+  verbatim", and two of them did not parse:
+
+  - the `diverged-box` hint said
+    `boxyard sync --box <x> --sync-direction to_remote --sync-setting force`,
+    but `--sync-direction` takes `push`/`pull` — `to_remote` is the *sync
+    record's* internal direction name, not the CLI's. Running it exited 2 with
+    `'to_remote' is not one of 'push', 'pull'`.
+  - the missing-local-data hint said `` `boxyard new --from` ``, which is
+    missing its argument.
+
+  Found while trying to follow doctor's advice on two real boxes that have
+  failed every sync pass since 2026-06-29 — the hint for the exact fault could
+  not be executed.
+
+  A new test (`test_doctor_hints_are_runnable.py`) now walks doctor's source
+  with `ast`, pulls every `` `boxyard …` `` out of its string literals
+  (f-string holes filled with a placeholder, adjacent literals joined the way
+  the parser joins them), and feeds each one to click's own parser. A hint that
+  does not parse fails the suite, so this class of rot cannot come back.
+
+### 🔥 Removals
+
+- **`boxyard path --interactive` (the Textual TUI) is gone**, along with
+  `--browse-mode`, `--collapsed`, `--expanded`, `--hide-status` and
+  `--hide-groups`, and the `textual` dependency with it. Nothing in the rig
+  called it — a grep across every mysetup repo found callers only in boxyard's
+  own docs. The fzf pickers (`--interactive` on `include`/`exclude`, and the
+  no-selector picker) are the interactive surface that is actually used.
+
+## [0.5.9] - 2026-08-25
+
+### 🐛 Bug Fixes
+
+- **`boxyard tree` has never shown a box's groups.** The label was built as a
+  rich *markup* string:
+
+  ```python
+  groups_str = f" [groups: {', '.join(bm.groups)}]" if bm.groups else ""
+  return f"{status}{bm.name} ({bm.box_id}){groups_str}"
+  ```
+
+  rich parses `[...]` as a style tag, so the whole suffix was swallowed — the
+  only trace left was a stray trailing space where the groups should have been.
+  Both `boxyard tree` and `boxyard list --view tree` did it. Both now build the
+  label as a `rich.text.Text`, which is data rather than markup.
+
+  `list --view groups` escaped its own bracketed suffix by hand (`\[`), which
+  is what makes the other two an oversight rather than a choice — but it did
+  not escape the box or group NAMES, and `[` is perfectly legal in a name
+  (`validate_box_name` forbids only path separators and the like). A box called
+  `weird[name]` was mangled in every view. Those are escaped now.
+
+  The `[unknown parent]` header above the orphan branch was a markup string
+  too, so it vanished the same way — leaving a bare `└── ` with nothing to
+  explain what was underneath it.
+
+  Found while porting `tree` to Go: the Go version would have had to reproduce
+  "prints nothing" to be faithful. The orphan header came out of diffing the
+  two implementations' output afterwards.
+
+## [0.5.8] - 2026-08-25
+
+### 🐛 Bug Fixes
+
+- **`boxyard new --parent` now accepts all three forms it documents.** The
+  flag's help says *"Parent box (index name, id, or name)"*, and it only ever
+  honoured the **name**: the value was passed as `box_name`, which matches
+  against `box_meta.name`, and an index name is never a substring of the bare
+  name it ends with. `--parent 20260601_ab12cd__thing` reported "Parent box
+  not found."
+
+  The two exact forms are now tried first, then the name match. The order is
+  unambiguous because an index name, a box id and a name have distinct shapes,
+  and the first two are looked up by equality rather than by substring.
+
+  (`boxyard add-parent` was never affected — it takes three separate flags.)
+
+## [0.5.7] - 2026-08-25
+
+### 🐛 Bug Fixes
+
+- **A bare command now means "the box I am standing in".**
+  `_get_box_index_name` ended with a cwd-inference fallback whose error message
+  read *"Box not specified and could not be inferred from current working
+  directory."* — and the block was **unreachable**. With no selector the
+  function always entered the picker branch first, so `boxyard sync` typed
+  inside a box opened an fzf picker over all 586 boxes instead of syncing that
+  box. The skill documentation already described the inference, so the code was
+  the odd one out.
+
+  The inference now runs *before* the picker, and the dead tail (with its
+  misleading message) is gone. If the cwd is not inside a box, the picker still
+  appears exactly as before.
+
+  A cwd box must also be a *candidate*: several callers pass a filtered
+  `box_metas` — `include` passes only excluded boxes, `exclude` only eligible
+  ones, `path` a group-filtered set — and a cwd box outside that set is not a
+  valid answer for the command, so it falls through to the picker.
+
+  Affects the nine commands that allow a bare invocation: `sync`, `include`,
+  `exclude`, `box-status`, `path`, `add-to-group`, `remove-from-group`,
+  `add-parent`, `remove-parent`. The destructive ones (`delete`, `rename`,
+  `copy`, `force-push`, `sync-name`) already refuse a bare invocation
+  (`allow_no_args=False`) and are untouched — which matters, because `delete`
+  has no confirmation prompt.
+
+  No shell helper or automation was relying on the old behaviour: every myrig
+  and mysystem call site passes an explicit selector.
+
+## [0.5.6] - 2026-08-25
+
+### 🧹 Robustness
+
+- **A picker can no longer act on the wrong box.** `run_fzf` and
+  `run_fzf_multi` return the *line* the user chose and map it back to a term
+  with `disp_terms.index(...)`, which returns the **first** match. Two items
+  rendering to the same line resolved to the same term, so picking the second
+  silently acted on the first — and these pickers feed `boxyard include` and
+  `boxyard exclude`, so that is the wrong box being removed from a machine.
+
+  Every caller today embeds the box id in its display line, so this could not
+  fire; the guard exists so a caller that forgets gets a loud error rather than
+  a wrong box. Mismatched `terms`/`disp_terms` lengths are refused for the same
+  reason — the mapping is positional.
+
+  Found while reading `run_fzf` to port it to Go.
+
+## [0.5.5] - 2026-08-25
+
+Eight faults, all found by reading the code line by line while porting it to
+Go — five in `new_box`, two in how a `local` storage location is handled, and
+one in `sync_box`. Every one of them was invisible: nothing
+in the suite reached the branches, and the branches that were reached were
+unreachable in a different sense — dead code behind a `check=True`.
+
+### 🐛 Bug Fixes
+
+- **`sync_before_new_box` had never once run.** Two independent faults sat on
+  top of each other, and the setting defaults to `False`, so nothing ever tried:
+
+  * `from boxyard.cmds import sync_boxmetas` — a name `boxyard.cmds` has never
+    exported. The function is `sync_missing_boxmetas`, and has been since the
+    repoyard→boxyard rename (`32e1b24`). The import raised `ImportError`.
+  * `asyncio.get_event_loop().run_until_complete(...)` raises `RuntimeError:
+    There is no current event loop` on Python 3.14, which is what boxyard is
+    installed under. It has been deprecated for this use since 3.12. Every
+    other call site in the codebase already used `asyncio.run`; this was the
+    only holdout.
+
+  So turning the setting on did not sync boxmetas before creating a box — it
+  made `boxyard new` fail outright. The setting exists to catch a box id
+  already taken on the remote, which is exactly what a multi-machine fleet
+  wants.
+
+- **`--creation-timestamp-utc` could mint a duplicate box id.** `new_box` asked
+  `generate_unique_box_id` for an id, which checked `<now>_<subid>` against the
+  existing ids — and then `new_box` overwrote the timestamp half with the
+  caller's. The id that got written was never the id that was checked, so every
+  collision guarantee was void for that path. `doctor`'s `duplicate-box-id`
+  check exists to find precisely this.
+
+  `generate_unique_box_id` now takes the resolved timestamp, and the format
+  switch moved into a new `format_creation_timestamp` so it is written once
+  rather than twice.
+
+- **A failing `git init` destroyed the box.** The code has always carried a
+  "Warning: Failed to initialise git box" branch — but `check=True` raised
+  first, so the warning was unreachable and the failure instead rolled the
+  whole box back. On a machine without git, `boxyard new` produced a
+  `CalledProcessError` and no box. The box is complete and registered before
+  `git init` runs; it is now kept, with a warning on **stderr**
+  (unconditionally — the CLI passes `verbose=False`, so gating it on verbosity
+  would have made a failed `git init` silent).
+
+- **A failed `git clone` said nothing about why.** `stderr` went to `DEVNULL`
+  and `check=True` raised a `CalledProcessError` carrying only an exit status,
+  while the `if res.returncode != 0: raise RuntimeError(...)` beneath it was
+  dead code. Bad URL, no network and no permission were indistinguishable.
+  git's own message is now captured and included.
+
+- **`boxyard new --no-refresh-user-symlinks` rebuilt the symlinks anyway.**
+  `new` was the only command that declared the flag and then ignored it; every
+  other command guards the call.
+
+- **Syncing a box in a `local` storage location returned `None`.** The
+  signature promises `dict[BoxPart, tuple[SyncStatus, bool]]` and every caller
+  reads one — `multi-sync` calls `.values()` on it. So a single local-storage
+  box became an `AttributeError` caught into a red `Error` line, repeated every
+  1200s under supervisor, on every machine, for a state that is working exactly
+  as designed. It now returns a real result carrying a new
+  `SyncCondition.LOCAL_STORAGE`, and `multi-sync` shows it as its own `Local`
+  status rather than a success or an error.
+
+- **`box-status` on a local-storage box died inside rclone.**
+  `get_box_sync_status` passes `remote=<storage_location>` as an rclone remote
+  *name*, and a `local` storage location has no section in
+  `boxyard_rclone.conf` — so `box-status`, `yard-status` and `list --status`
+  all failed with `didn't find section in config file`. It now reports
+  `LOCAL_STORAGE`, the same thing `sync` says.
+
+  Both of these are latent rather than live: v0.5.4 is what made `local`
+  storage locations usable at all, so the paths only became reachable then, and
+  the fleet has no boxes in one yet.
+
+- **`sync -c data` did not sync the filters that decide what DATA syncs.**
+  `conf/.rclone_include|_exclude|_filters` are read off the local disk
+  immediately before DATA is synced, so a DATA-only sync on a machine that has
+  never pulled a box's `conf/` used the **global** filters — and a box whose
+  `.rclone_include` narrows what it syncs would sync **everything**. That is
+  the same harm v0.5.3 fixed, still reachable through `boxyard sync -c data`
+  and through `boxyard multi-sync -c data`, i.e. across the whole yard.
+
+  CONF is now synced whenever DATA is, exactly as META already was (META is
+  forced because the ownership decision reads `write_owner` out of it). In both
+  cases the result is only *recorded* when the part was actually requested, so
+  the returned dict still answers exactly what the caller asked about.
+
+  The fleet's own sync loop passes no `-c`, so it was never on this path.
+
+### 🧹 Robustness
+
+- The global lock is now released in a `finally`, and the box-id collision
+  snapshot is re-read **after** the lock is taken. The snapshot used to be read
+  before it, which made the lock's guarantee vacuous: a box created by a
+  concurrent `boxyard new` in between would be missing from the check.
+
+- The test suite spawned a bare `python` for its subprocess tests, which does
+  not exist on a machine that installs only `python3` — ten tests failed
+  locally while CI (where uv provides `python`) stayed green. They now use
+  `sys.executable`, which is also more correct: they test with the interpreter
+  running the suite. One of them,
+  `test_timeout_kills_child_processes`, was additionally spawning `python` from
+  *inside* its own script, so it had never actually tested that the process
+  group dies.
+
+- CI now tests Python **3.13 and 3.14** as well as 3.11 and 3.12. 3.14 is what
+  `uv tool install boxyard` picks, so it is what the tool actually runs on —
+  and the `asyncio.get_event_loop()` fault above is exactly the class of thing
+  that gap hides: deprecated in 3.12, raising in 3.14, green on every version
+  CI tested. Verified: the whole suite passes on 3.14 (939 passed, 2 skipped).
+
+## [0.5.4] - 2026-08-25
+
+### 🐛 Bug Fixes
+
+- **`init` never linked a `local` storage location.** The guard read
+  `storage_type != StorageType.LOCAL.value`, but `StorageType` is a plain
+  `Enum`, not a `str, Enum` — so `StorageType.LOCAL == "local"` is **False**,
+  the comparison was always true, and the loop `continue`d for every storage
+  location. The `local_store` entry was never created and the location's
+  `store_path` never made.
+
+  Silent in the worst way: `init` printed "Done!" and reported success. A
+  `local` storage location was configured but unusable, and nothing said so.
+
+  Confirmed on the live yard before fixing — `~/.boxyard/local_store/` held
+  only the rclone location, and the configured `local` one had never existed.
+
+  Every other `storage_type` comparison in the codebase already used the enum
+  member correctly; this was the only site.
+
+## [0.5.3] - 2026-08-23
+
+### 🐛 Bug Fixes
+
+- **A box's `conf/` now reaches machines that did not write it.** Per-box rclone
+  filters (`conf/.rclone_include|_exclude|_filters`) decide what a box's DATA
+  syncs — and they only ever existed on the machine that created them. Every
+  other machine synced that box with the *global* filters instead. A box whose
+  `.rclone_include` narrows what it syncs would sync **everything** on the
+  second machine.
+
+  The cause was a single branch in `get_sync_status`: absent locally + present
+  remotely was read as `EXCLUDED`. That is correct for DATA, where absence
+  means the box is deliberately not included here and pulling it would undo an
+  `boxyard exclude`. For CONF nobody chose anything — the files have simply
+  never been fetched — and reading it as `EXCLUDED` made the absence
+  **self-perpetuating**: `conf/` is missing, so it is judged excluded, so it is
+  never pulled, so it stays missing.
+
+  `get_sync_status` takes paths rather than a `BoxPart`, so it could not tell
+  the two apart. It now takes `local_absence_means_excluded`, threaded through
+  `sync_box` → `sync_helper`, defaulting to today's behaviour and passed as
+  `False` only for CONF.
+
+  Found while reviewing release 2, and pre-existing — reproduced on an *unowned*
+  box, so not caused by ownership. On the live yard it had no effect yet: only
+  5 boxes have a per-box filter and each is included solely on its creating
+  machine. It would have started biting during the ownership migration, which
+  is what encourages including a box on a second machine.
+
+  Cost is negligible: for the ~580 boxes with no `conf/` at all, both sides are
+  absent, which already resolves to `SYNCED` with no transfer.
+
+  **The Go port has the same branch and needs the same change.**
+
+## [0.5.2] - 2026-08-23
+
+Release 2 of two for single-writer box ownership ("claim"). A box may now be
+**claimed** by one machine, and only that machine pushes its DATA. Ownership is
+**opt-in per box**: a box nobody claimed behaves exactly as it did in v0.4.x, so
+nothing changes for the 583 boxes in the yard until someone claims them.
+
+### ✨ Features
+
+- **`boxyard claim` / `release` / `claim --steal` / `discard-local` / `owner`.**
+  `claim` makes this machine the write owner; `release` gives it up; the tidy
+  handover is release-then-claim, two online steps with no force and no race.
+  `--steal` exists for when the owner is gone, and says plainly that the
+  previous owner's unpushed work will be refused there from then on.
+
+  **`claim` verifies by reading the remote back.** Two machines claiming at the
+  same instant is last-write-wins — measured at 5 trials in 6 — and the loser
+  reverts *silently*, because a completed push writes a fresh sync record so its
+  own claim then reads as an ordinary `needs_pull`. After pushing, `claim`
+  re-reads the remote boxmeta and fails loudly if it does not name this machine.
+  This shrinks the window; it does not close it. **Ownership converges — it is
+  not a lock**, and CONFLICT detection remains load-bearing.
+
+- **A non-owner pulls quietly and never raises.** `SyncCondition.WRITE_DENIED`
+  is a condition, not an exception, and that is the whole design: `multi-sync`
+  runs every 1200s under supervisor and catches per-box exceptions into a red
+  `Error` line, so raising would manufacture ~72 identical unresolvable errors
+  per machine per day — the exact pathology v0.4.0–v0.4.4 spent a week removing.
+  A read-only replica syncs silently when clean, pulls silently when behind, and
+  is reported **once**, by `doctor`, when it holds changes that will never be
+  pushed. `multi-sync` shows it as a yellow `Read-only`, never as an error.
+
+- **A dry-run probe decides whether a non-owner actually has changes.** Asking
+  "is the mtime newer?" is not the same question as "would a push move
+  anything": v0.4.6 stopped *literal* excludes (`.DS_Store`) from looking like
+  changes, but glob patterns are deliberately not interpreted, so a
+  glob-excluded file still flips a box to `needs_push`. On a read-only machine
+  that would be a permanent, false "you have local changes". The probe asks
+  rclone directly, under the box's real filters.
+
+  It uses `rclone check --combined` rather than parsing `sync --dry-run`, and
+  the difference is load-bearing rather than stylistic: measured, a file with
+  identical content but a different mtime makes the dry run print `Skipped
+  update modification time`, so any text-matching approach reports a change that
+  is not one. A check that cannot be performed at all (unreachable remote)
+  counts as "would transfer", so a box is reported rather than silently declared
+  clean.
+
+- **`--sync-setting force` does not bypass ownership**, and there is no
+  `--ignore-ownership` flag. `force` is a sync-*safety* override ("I accept
+  overwriting"); ownership is a *coordination* statement. A forced push that
+  left the remote holding this machine's data while `boxmeta.toml` still named
+  another owner would put a lie in shared state, which is worse than a refusal.
+  The paths that bypass `sync_helper` — `force-push`, `rename --scope
+  remote|both`, `delete` — carry their own gates.
+
+- **`boxyard include` says what it means for writing.** A box owned by another
+  machine prints "included read-only — `<machine>` is the write owner"; an
+  unowned box gets a one-line nudge naming `boxyard claim`, suppressible with
+  `--read-only`.
+
+- **`boxyard list --owner X` / `--show-owner`**, and `write_owner` exposed
+  through `_fast`.
+
+- **Two new `doctor` checks.** `write-denied` is the *only* report of a box
+  whose local changes will never be pushed — sync stays deliberately silent, so
+  if doctor did not say it, nothing would. `stale-owner` reports a box whose
+  owner cannot be a working owner.
+
+### 🛡️ Three ways a box could have been frozen fleet-wide, closed
+
+Each of these was found by reading the design against real usage, and each one
+would have made a box unpushable from *every* machine, silently:
+
+- **`claim` now refuses a box that is not included here.** A box that is not
+  included still has a local registration and boxmeta — that is what
+  `sync-missing-meta` maintains for the hundreds of boxes a machine does not
+  hold — so claiming one would have made this machine the designated writer of
+  DATA it does not have, locking out every machine that does. The refusal names
+  `boxyard include` as the fix.
+
+- **`exclude` on a box this machine owns now releases ownership** in the same
+  operation. `exclude` reads as local housekeeping, but it would have left
+  `boxmeta.toml` naming a machine that no longer has the box. Because releasing
+  pushes META, `exclude` is now a network operation: if the remote is
+  unreachable it **refuses** rather than excluding and leaving a stale owner,
+  and `release` rolls its local change back so that refusal is honest. A box
+  owned by another machine is unaffected.
+
+- **`stale-owner` catches the routes nobody thought of.** Both of the above were
+  found by inspection rather than by anything reporting them. The check reports
+  a box owned by this machine that is not included here (exact), and a box owned
+  by a name that owns nothing else while another machine owns several (a
+  heuristic, and labelled as one in its hint).
+
+### 📋 Known limitations, stated rather than implied
+
+- **This is not a lock.** Simultaneous claims are last-write-wins. Ownership
+  reduces the rate at which conflicts are manufactured; it does not remove the
+  need to detect them.
+- **It does not know whether a machine is alive.** `--steal` from a machine that
+  is offline for a week is indistinguishable from stealing from one that is
+  gone.
+- **`check_last_time_modified` is still not filter-aware.** The probe works
+  around that for non-owners; the underlying no-op pushes across the yard remain.
+
+## [0.5.1] - 2026-08-23
+
+### 🐛 Bug Fixes
+
+- **`multi-sync` no longer opens one SFTP connection per box just to check
+  tombstones.** `sync_box` asked "has this box been deleted elsewhere?" with a
+  remote probe per box — 587 of them per pass, per machine, every 20 minutes,
+  across six machines. That saturated the storage box's connection limit and
+  was measurably failing ~8 boxes per pass on macbook, macstudio and ideapad
+  with `couldn't initialise SFTP: error receiving version packet from server`.
+  All three machines logged an identical count of refusals within the same
+  hour — the signature of a shared server limit, not a machine-local fault.
+
+  `multi-sync` now fetches the tombstoned ids **once per storage location**
+  and tests membership in memory. The filename of a tombstone is the box id,
+  so a single listing answers it for every box; the pre-existing
+  `list_tombstones` could not be reused because it reads every tombstone file
+  to build objects (161 `rclone cat`s on the live yard).
+
+  Three deliberate constraints:
+
+  - **The standalone path still probes.** `sync_box` is also a single-box
+    command, and when no set is supplied it makes the individual call rather
+    than skipping the check — a silent skip would turn a safety check into a
+    no-op and let a box deleted from another machine be resurrected.
+  - **A failed lookup raises.** An empty set means "nothing is tombstoned",
+    so returning that when the remote could not be listed would be the same
+    silent resurrection with no error anywhere. Only a *missing* tombstones
+    directory — which genuinely means nothing has ever been deleted — yields
+    an empty set.
+  - **The fetch happens before any box is synced**, so a failure stops the
+    pass instead of syncing part of it blind. This is one call where there
+    used to be 587, so the chance of hitting a transient failure at all is far
+    lower than before.
+
+  This was found by reading the supervisor logs while investigating something
+  else; the errors had been recurring every 20 minutes. They surface as errors
+  at all only because v0.4.3 stopped conflating an rclone exit 1 with "path not
+  found" — before that, a failed tombstone probe silently concluded "not
+  tombstoned" and synced the box anyway.
+
+## [0.5.0] - 2026-08-23
+
+Release 1 of two for single-writer box ownership ("tolerate"). **Zero
+behaviour change**: nothing in this release writes the new `boxmeta.toml` key,
+nothing refuses a sync, and there are no claim commands. It exists so that
+every machine can *read* the new format before any machine can *write* it.
+
+### ✨ Features
+
+- **`boxmeta.toml` is now forward compatible.** A key that this version of
+  boxyard does not know is preserved verbatim through a load/save round-trip
+  instead of making the registration unloadable.
+
+  This is the change that matters most, because the old behaviour was far
+  worse than "fails to parse". An unknown key made `BoxMeta.load` raise, and
+  `create_boxyard_meta` **skips** a registration it cannot load — so on a
+  machine running an older boxyard the box silently disappeared from
+  `boxyard_meta.json`, and with it from `boxyard list`, from `~/g` (its group
+  symlinks are actively deleted), and from `boxyard multi-sync`, which
+  iterates that cache. The box **stopped syncing, with no error**, and
+  upgrading the machine afterwards did not heal it: the half-finished pull
+  leaves no META sync record, which is `SyncCondition.ERROR`, and `sync_box`
+  then raises until someone runs an explicit forced META pull.
+
+  The preservation is deliberately not `extra="ignore"` — ignoring would make
+  an older machine silently **strip** a newer machine's key on the next
+  `boxyard add-to-group`, which is a worse outcome than either. It is not
+  `extra="allow"` either: that would accept a typo'd key at every construction
+  site and `broken-registration` would stop catching it. Unknown keys are
+  collected only when reading a file, and `doctor` reports every one of them.
+
+  **v0.5.0 is therefore the last release that a `boxmeta.toml` addition can
+  break.**
+
+- **`write_owner` on `BoxMeta`** — the machine name of the single machine
+  allowed to push a box's DATA. Nothing reads or writes it yet; the claim
+  commands and the sync refusal arrive in v0.5.1. `save()` **omits** the key
+  when it is unset, so an unowned box's `boxmeta.toml` is byte-identical to
+  what earlier versions wrote — verified against all 583 boxmetas in the live
+  yard, none of which this release rewrites.
+
+- **`config.toml` is now forward compatible too**, for the same reason and
+  with a wider blast radius. `Config` is a `StrictModel` as well, and on this
+  fleet `config.toml` is one myrig-rendered artefact shared by every machine —
+  so a key added for a newer boxyard would make **every command on every
+  machine** fail at once, not just one box go quiet. `get_config` now collects
+  unknown keys instead of rejecting the file.
+
+  Read the limit of this carefully: **it does not rescue a machine already
+  running an older version.** Tolerance has to be deployed before the key it
+  tolerates, so v0.5.0 must be installed everywhere before any config gains a
+  new key. Its value is forward-looking — from here on a config addition costs
+  an older machine a doctor finding instead of a machine that cannot run
+  boxyard at all.
+
+  Unlike `boxmeta.toml`, the keys are not written back, because boxyard never
+  rewrites `config.toml`. They are reported instead: `extra="forbid"` is what
+  catches a *typo'd* config key today, and tolerating unknown keys without
+  reporting them would trade a loud typo for a silent one.
+
+  **The tolerance reaches inside the config's tables, not just its top level.**
+  `[storage_locations.X]`, `[box_groups.X]` and `[virtual_box_groups.X]`
+  entries are `StrictModel`s too, so covering only the top level would have
+  left the identical trap one level down — and a nested addition is not
+  hypothetical: `symlink_name` was added to both group models in `8d9e074`.
+  Unknown keys are collected by dotted path
+  (`storage_locations.hetzner-box.some_key`), so the doctor finding says where
+  the key is rather than only that the file has one. The tables to walk are
+  derived from the model annotations, so a config model added later is covered
+  without anyone having to remember a list.
+
+  One case is deliberately left as a loud error: an *entry* that is not a table
+  at all — a key written directly under one of those containers rather than
+  under one of its entries. That takes one of two forms, a dotted key before
+  any `[table]` header (`virtual_box_groups.future = "x"`), or a scalar under a
+  bare `[virtual_box_groups]` header. Either way it is a line the author
+  believed they were putting somewhere else, so it raises and names the exact
+  path rather than being quietly discarded.
+
+  Note what does *not* reach that branch: appending a line to the end of a real
+  `config.toml`. TOML lands it inside whatever table came last, and in a
+  populated config that is a sub-table, so the line becomes an unknown key
+  inside an entry and is tolerated.
+
+- **`boxyard --version`** — prints the installed version and exits. It exists
+  to be a rollout gate: checking a change across the fleet means
+  `ssh-target <machine> boxyard --version` on each, and until now boxyard could
+  not be asked at all — only `pip show boxyard`, which does not answer for a uv
+  tool install. It needs no config file, so it still works on a machine whose
+  config is missing or written for a newer boxyard — exactly the machines worth
+  asking.
+
+- **`machine_name` config key**, overridable by `BOXYARD_MACHINE_NAME`. This
+  is how a machine will identify itself as a box's write owner. It is
+  configured and never derived: `get_hostname()` cannot serve as an identity —
+  one machine in this fleet has reported both `lukas-pocket4` and `pocket4`,
+  and macOS reports user-editable pretty names like `Lukas’s MacBook Pro`. The
+  key is optional, because requiring it would break every machine's config on
+  upgrade; a machine without a name simply can never own a box.
+
+- **Two new `doctor` checks:**
+  - **`unknown-boxmeta-keys`** — a boxmeta carries a key written by a newer
+    boxyard. The key is preserved untouched, so nothing is broken; this check
+    is what stops that preservation from being silent.
+  - **`machine-name-unset`** — no `machine_name` is configured, so this
+    machine cannot own a box. Expected on every machine until its config is
+    rendered with a name.
+  - **`unknown-config-keys`** — `config.toml` carries a key this version does
+    not know. The hint does not assume "newer boxyard": doctor cannot tell that
+    from a typo, and a typo means whatever it was meant to configure is
+    silently not in effect.
+
+### 🐛 Bug Fixes
+
+- **`boxyard add-to-group` (and every other `modify_boxmeta` caller) no longer
+  writes `boxmeta.toml` from a cache of it.** It read the box meta from
+  `boxyard_meta.json` — a snapshot of the last refresh — modified that, and
+  wrote it back to disk, so anything that had reached `boxmeta.toml` since the
+  refresh was silently overwritten with the older values. A lost update in
+  general; specifically, it would have stripped a newer machine's key straight
+  back out again, defeating the passthrough above. The file is now re-read
+  from disk before being modified.
+
+## [0.4.7] - 2026-08-23
+
+### ✨ Features
+
+- **`boxyard doctor` can now see a wedged box.** Until this release it could
+  not: a box in `CONFLICT`, or one left half-written by an interrupted push
+  from another machine, produced no finding at all. Two boxes on macbook sat
+  wedged from March to August 2026 — five months — while `doctor` reported
+  "all checks passed" on that machine every time. They surfaced only in the
+  supervisor log, one line per 20-minute pass, and were found by accident.
+
+  The new **`diverged-box`** check reports two situations:
+
+  - The local and remote sync records disagree *and* the local copy has also
+    changed since its own record — both sides moved on independently, so sync
+    refuses rather than pick a winner.
+  - The local record is complete but the remote one is not: a push from
+    another machine died half-way. Nothing could see this before —
+    `interrupted-sync` reads only local records.
+
+  Three deliberate constraints, each of which decides whether the check is
+  worth reading:
+
+  - **A box that merely needs pulling is not reported.** Its records disagree
+    too, so the naive comparison fires on it — and on a fleet where most boxes
+    are routinely a sync behind, that would flag hundreds of healthy boxes and
+    make the report worthless.
+  - **A push still in flight is not reported.** It is indistinguishable from an
+    interrupted one, so only a remote record older than six hours counts —
+    comfortably longer than any real push here, far shorter than "months".
+  - **The local-modification test is the sync engine's own**, same exclude-aware
+    scan and same comparison, so `doctor` and `sync` cannot disagree about
+    whether a box has changed.
+
+  Cost was the deciding constraint on the design. Fetching every remote record
+  takes over two minutes against the storage box and opens enough SFTP
+  connections to disturb the syncs running alongside doctor, so the check makes
+  **one recursive listing** and reads only the records that listing shows to
+  have been written at a different moment than our own — zero extra fetches on
+  a healthy machine, measured across 750 records. That prefilter leaves a
+  5-second window in which two pushes would look like one; it is documented at
+  the constant, and is a far smaller blind spot than the one being closed.
+
+  The check is skipped — reported as `SKIPPED`, never as `ok` — under
+  `--no-remote` or when rclone is unresolvable, and a failed listing is a loud
+  finding rather than a silent all-clear.
+
+### 🧹 Internal
+
+- The `.rclone_include` / `.rclone_exclude` / `.rclone_filters` filenames are
+  now constants in `const` rather than string literals repeated across modules.
+- `check_last_time_modified`'s return annotation said `float | None`; it has
+  returned a `datetime` since it was written.
+
+## [0.4.6] - 2026-08-23
+
+### 🐛 Bug Fixes
+
+- **Debris that is never synced no longer looks like a local change.**
+  `check_last_time_modified` answers "has anything changed here?", and that
+  answer drives the sync decision — but it walked every file with no awareness
+  of the sync filters. So a file that can never be transferred still marked the
+  box as modified: macOS Finder writing a `.DS_Store` was enough to flip a box
+  to `NEEDS_PUSH`, and — when the remote had also moved on — to `CONFLICT`.
+
+  Found while diagnosing a box wedged in conflict since March, where 4 of the
+  39 "changed" files were `.DS_Store`. This is the mechanism behind boxes
+  desyncing across machines purely from operating-system debris.
+
+  The scan now skips what the sync would skip. Two deliberate constraints:
+
+  - The **box's own** effective exclude file is used, not a hardcoded default.
+    A `conf/.rclone_exclude` *replaces* the global default, so assuming the
+    defaults for a box that overrides them could prune a directory the box
+    really does sync — hiding genuine changes. That false negative would be
+    worse than the false positive being fixed.
+  - Only **literal names** are applied (`node_modules/`, `.DS_Store`); glob
+    patterns are deliberately not interpreted. Reimplementing rclone's filter
+    language would be a second, subtly different implementation of the thing
+    that decides what actually transfers. The gap errs on the safe side: a
+    glob-excluded file can still make a box look modified, but nothing that
+    *would* be synced is ever skipped.
+
+- `box-status` now resolves the same effective exclude file `sync` does, so it
+  reports the state a sync would act on.
+
+## [0.4.5] - 2026-08-23
+
+### 🐛 Bug Fixes
+
+- **Every rename created a duplicate registration on every other machine.**
+  `sync_missing_boxmetas` diffed `_ls_remote - _ls_local` on the full
+  `{index_name}/boxmeta.toml` path — a purely additive, one-way comparison. But
+  an index name is `{box_id}__{name}` and a rename changes only the name half,
+  so a renamed box looked like a brand-new one. Nothing ever removed the stale
+  pre-rename registration, so every machine *other* than the one that did the
+  rename accumulated two registrations for the same box id.
+
+  Found via `doctor`'s `duplicate-box-id` check, which was reporting three
+  boxes on each of macbook, macstudio and ideapad — identical on all three, and
+  absent on mymain, which had done the renames.
+
+  Reconciliation is now keyed on **box id**. The same id under a different name
+  means the box was renamed elsewhere; since the remote is authoritative for
+  names, the local registration is renamed to match — exactly what
+  `sync-name --direction to_local` does. Ambiguous cases (more than one
+  directory for one id on either side) are skipped rather than guessed at.
+
+  Renames now propagate to every machine on the next meta sync, silently and
+  correctly, with no duplicate and no manual step.
+
+### 🔧 Changes
+
+- `rename` no longer warns "Remote box not found. Skipping remote rename." when
+  a box simply has not been pushed yet. Since v0.4.3 an unreachable remote
+  raises rather than reporting absence, so that path now means only "not on the
+  remote yet" — and it says so, noting the new name will be used on first push.
+
+- The `duplicate-box-id` doctor hint said "inspect the duplicates and delete or
+  re-create one of them", which does not say *which* to delete and whose
+  "re-create" advice would mint a new box id. It now explains that this
+  normally means a rename on another machine, that the remote's name is
+  authoritative, and that the registration to remove is the one the remote does
+  not have.
+
+## [0.4.4] - 2026-08-23
+
+### 🐛 Bug Fixes
+
+- **A sync record that no operation could ever clear.** `sync_helper`'s
+  `allow_missing_source` branch — used only for the optional `conf` part, which
+  "may not exist on either side" — returns early *before* any sync record is
+  written. So if a `conf` transfer was interrupted and the part then vanished
+  from both sides, the incomplete local record became permanent: no later sync
+  could touch it, and `boxyard doctor` reported `interrupted-sync` for that box
+  forever.
+
+  Found on macbook, where obako's `conf` carried an incomplete record from a
+  pull interrupted in February 2026 while neither the local nor the remote
+  `conf` directory existed at all.
+
+  The record is now cleared when **both** sides are absent — an incomplete
+  record describing an interrupted transfer between two things that do not
+  exist is noise. Only that case is resolved: a missing source with a *present*
+  destination means the part was deleted on the other side, which is a real
+  divergence and is left alone.
+
 ## [0.4.3] - 2026-08-22
 
 ### 🐛 Bug Fixes

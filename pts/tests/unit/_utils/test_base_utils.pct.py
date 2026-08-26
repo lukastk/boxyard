@@ -16,6 +16,7 @@
 #|export
 import pytest
 import asyncio
+import sys
 import tempfile
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -252,7 +253,7 @@ class TestRunCmdAsync:
         """Captures stderr output."""
         async def _test():
             returncode, stdout, stderr = await run_cmd_async(
-                ["python", "-c", "import sys; sys.stderr.write('error\\n')"]
+                [sys.executable, "-c", "import sys; sys.stderr.write('error\\n')"]
             )
             assert returncode == 0
             assert "error" in stderr
@@ -263,7 +264,7 @@ class TestRunCmdAsync:
         """Handles command failure."""
         async def _test():
             returncode, stdout, stderr = await run_cmd_async(
-                ["python", "-c", "import sys; sys.exit(1)"]
+                [sys.executable, "-c", "import sys; sys.exit(1)"]
             )
             assert returncode == 1
 
@@ -273,7 +274,7 @@ class TestRunCmdAsync:
         """Handles commands with multiple arguments."""
         async def _test():
             returncode, stdout, stderr = await run_cmd_async(
-                ["python", "-c", "print('arg1', 'arg2')"]
+                [sys.executable, "-c", "print('arg1', 'arg2')"]
             )
             assert returncode == 0
             assert "arg1" in stdout
@@ -315,7 +316,7 @@ class TestRunCmdAsyncTimeout:
         async def _test():
             with pytest.raises(CommandTimeout):
                 await run_cmd_async(
-                    ["python", "-c", "import time; time.sleep(30)"], timeout=0.5
+                    [sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.5
                 )
 
         asyncio.run(_test())
@@ -336,7 +337,7 @@ class TestRunCmdAsyncTimeout:
             with patch("asyncio.create_subprocess_exec", _spy):
                 with pytest.raises(CommandTimeout):
                     await run_cmd_async(
-                        ["python", "-c", "import time; time.sleep(30)"], timeout=0.5
+                        [sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.5
                     )
 
         asyncio.run(_test())
@@ -353,14 +354,14 @@ class TestRunCmdAsyncTimeout:
         # and the marker would appear.
         script = (
             "import subprocess, time; "
-            f"subprocess.Popen(['python','-c',\"import time; time.sleep(2); "
+            f"subprocess.Popen([{sys.executable!r},'-c',\"import time; time.sleep(2); "
             f"open({str(marker)!r},'w').write('orphan')\"]); "
             "time.sleep(30)"
         )
 
         async def _test():
             with pytest.raises(CommandTimeout):
-                await run_cmd_async(["python", "-c", script], timeout=0.5)
+                await run_cmd_async([sys.executable, "-c", script], timeout=0.5)
 
         asyncio.run(_test())
         time.sleep(3)
@@ -370,7 +371,7 @@ class TestRunCmdAsyncTimeout:
         """timeout=None keeps the old unbounded behaviour for transfers."""
         async def _test():
             returncode, stdout, _ = await run_cmd_async(
-                ["python", "-c", "import time; time.sleep(1); print('done')"],
+                [sys.executable, "-c", "import time; time.sleep(1); print('done')"],
                 timeout=None,
             )
             assert returncode == 0
@@ -400,7 +401,7 @@ class TestSuspendWatchdog:
 
     async def _spawn_sleeper(self, seconds: int = 30):
         return await asyncio.create_subprocess_exec(
-            "python", "-c", f"import time; time.sleep({seconds})",
+            sys.executable, "-c", f"import time; time.sleep({seconds})",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
@@ -467,7 +468,7 @@ class TestSuspendWatchdog:
                     try:
                         with pytest.raises(SuspendInterruption):
                             await run_cmd_async(
-                                ["python", "-c", "import time; time.sleep(30)"]
+                                [sys.executable, "-c", "import time; time.sleep(30)"]
                             )
                     finally:
                         suspend.cancel()
@@ -788,3 +789,91 @@ class TestCheckLastTimeModifiedWalkErrors:
         result = check_last_time_modified(tmp_path)
         assert result is not None
         assert abs(result.timestamp() - newest.stat().st_mtime) < 0.001
+
+# %% [markdown]
+# ## Regression: the modification scan must respect the sync's excludes
+
+# %%
+#|export
+class TestModificationScanRespectsExcludes:
+    """
+    `check_last_time_modified` answers "has anything changed here?", and that
+    answer drives the sync decision. It used to walk every file with no
+    awareness of the sync filters, so a file that can NEVER be transferred
+    still marked the box as modified.
+
+    Observed on macbook: Finder writing `.DS_Store` (which is in boxyard's
+    default exclude list) was enough to flip a box to NEEDS_PUSH, and -- with
+    the remote also moved on -- to CONFLICT.
+    """
+
+    def test_literal_names_are_extracted(self, tmp_path):
+        from boxyard._utils import literal_exclude_names
+
+        f = tmp_path / "ex"
+        f.write_text(".venv/\nnode_modules/\n\n# a comment\n.DS_Store\n")
+        assert literal_exclude_names(f) == {".venv", "node_modules", ".DS_Store"}
+
+    def test_glob_and_path_patterns_are_ignored(self, tmp_path):
+        """
+        Reimplementing rclone's filter language here would be a second,
+        subtly-different implementation of the thing that decides what actually
+        gets transferred. Globs are skipped, which errs on the safe side: a
+        false "modified", never a missed change.
+        """
+        from boxyard._utils import literal_exclude_names
+
+        f = tmp_path / "ex"
+        f.write_text("*.tmp\n**/build\na/b/c\nkeepme\n")
+        assert literal_exclude_names(f) == {"keepme"}
+
+    def test_missing_exclude_file_is_not_an_error(self, tmp_path):
+        from boxyard._utils import literal_exclude_names
+
+        assert literal_exclude_names(tmp_path / "nope") == set()
+        assert literal_exclude_names(None) == set()
+
+    def test_excluded_file_does_not_count_as_a_modification(self, tmp_path):
+        import time
+
+        real = tmp_path / "real.txt"
+        real.write_text("x")
+        time.sleep(0.02)
+        debris = tmp_path / ".DS_Store"
+        debris.write_text("y")
+
+        without = check_last_time_modified(tmp_path)
+        with_excl = check_last_time_modified(tmp_path, exclude_names={".DS_Store"})
+
+        assert without is not None and with_excl is not None
+        # Unfiltered, the newest file is the debris; filtered, it is the real one.
+        assert abs(without.timestamp() - debris.stat().st_mtime) < 0.001
+        assert abs(with_excl.timestamp() - real.stat().st_mtime) < 0.001
+        assert with_excl < without
+
+    def test_excluded_directory_is_pruned_entirely(self, tmp_path):
+        import time
+
+        real = tmp_path / "real.txt"
+        real.write_text("x")
+        time.sleep(0.02)
+        nm = tmp_path / "node_modules" / "deep" / "nested"
+        nm.mkdir(parents=True)
+        (nm / "pkg.js").write_text("y")
+
+        with_excl = check_last_time_modified(tmp_path, exclude_names={"node_modules"})
+        assert abs(with_excl.timestamp() - real.stat().st_mtime) < 0.001
+
+    def test_a_box_of_pure_debris_reports_no_modification(self, tmp_path):
+        (tmp_path / ".DS_Store").write_text("x")
+        assert check_last_time_modified(tmp_path, exclude_names={".DS_Store"}) is None
+
+    def test_no_excludes_keeps_the_old_behaviour(self, tmp_path):
+        (tmp_path / ".DS_Store").write_text("x")
+        assert check_last_time_modified(tmp_path) is not None
+
+    def test_single_excluded_file_path(self, tmp_path):
+        f = tmp_path / ".DS_Store"
+        f.write_text("x")
+        assert check_last_time_modified(f, exclude_names={".DS_Store"}) is None
+        assert check_last_time_modified(f) is not None

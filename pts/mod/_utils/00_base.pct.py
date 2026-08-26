@@ -25,6 +25,7 @@ import subprocess
 import asyncio
 import time
 from boxyard import const
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Coroutine
 
@@ -90,6 +91,44 @@ def get_hostname():
     return hostname
 
 # %%
+#|exporti
+def _reject_ambiguous_disp_terms(terms: list[str], disp_terms: list[str]) -> None:
+    """
+    Refuse a picker whose display lines cannot be mapped back to one term.
+
+    fzf returns the LINE the user chose, and both wrappers map that back to a
+    term with `disp_terms.index(...)` -- which returns the FIRST match. Two
+    items rendering to the same line therefore resolve to the same term, so
+    picking the second one silently acts on the first. For a picker that feeds
+    `boxyard exclude`, that is the wrong box being removed from the machine.
+
+    Every caller today embeds the box id in its display line, so this cannot
+    fire; it exists so that a caller which forgets gets a loud error instead of
+    a wrong box. Lines are compared after `.strip()`, because that is what the
+    lookup does.
+
+    Mismatched list lengths are refused for the same reason: the mapping is
+    positional, so a short `terms` would resolve a high index to the wrong item
+    or raise an opaque IndexError deep inside the wrapper.
+    """
+    if len(terms) != len(disp_terms):
+        raise ValueError(
+            f"run_fzf: {len(terms)} terms but {len(disp_terms)} display terms; "
+            f"the two are mapped positionally and must be the same length."
+        )
+    stripped = [t.strip() for t in disp_terms]
+    seen = set()
+    for term in stripped:
+        if term in seen:
+            raise ValueError(
+                f"run_fzf: duplicate display term {term!r}. fzf returns the "
+                f"chosen LINE, so duplicates cannot be mapped back to a single "
+                f"item and picking one would act on another. Include something "
+                f"unique (the box id) in each display term."
+            )
+        seen.add(term)
+
+# %%
 #|hide
 show_doc(this_module.run_fzf)
 
@@ -114,6 +153,7 @@ def run_fzf(terms: list[str], disp_terms: list[str] | None = None):
 
     if disp_terms is None:
         disp_terms = terms
+    _reject_ambiguous_disp_terms(terms, disp_terms)
     try:
         # Launch fzf with the list of strings
         result = subprocess.run(
@@ -155,6 +195,7 @@ def run_fzf_multi(terms: list[str], disp_terms: list[str] | None = None):
 
     if disp_terms is None:
         disp_terms = terms
+    _reject_ambiguous_disp_terms(terms, disp_terms)
     try:
         result = subprocess.run(
             ["fzf", "--multi"], input="\n".join(disp_terms), text=True, capture_output=True
@@ -177,13 +218,70 @@ show_doc(this_module.check_last_time_modified)
 
 # %%
 #|export
-def check_last_time_modified(path: str | Path) -> float | None:
+def literal_exclude_names(exclude_path: "str | Path | None") -> set[str]:
+    """
+    Read an rclone exclude file and return the patterns that are LITERAL names.
+
+    Only literal names are returned -- `node_modules/`, `.DS_Store` -- with any
+    trailing slash stripped. Glob patterns (`*.tmp`, `**/build`) are deliberately
+    NOT interpreted: reimplementing rclone's filter language here would be a
+    second, subtly-different implementation of the thing that actually decides
+    what gets transferred.
+
+    The consequence is a one-sided inaccuracy, which is the safe side to err on:
+    a glob-excluded file can still make a box look modified (a false "needs
+    push", which sync then resolves as a no-op), but nothing that WOULD be
+    synced is ever skipped.
+    """
+    if exclude_path is None:
+        return set()
+    try:
+        text = Path(exclude_path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return set()
+    names = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if any(ch in line for ch in "*?[]{}") or "/" in line.rstrip("/"):
+            continue  # a glob or a path pattern -- not a literal name
+        names.add(line.rstrip("/"))
+    return names
+
+
+def check_last_time_modified(
+    path: "str | Path",
+    exclude_names: "set[str] | None" = None,
+) -> "datetime | None":
+    """
+    Return the most recent modification time beneath `path`, or None if there is
+    nothing to measure.
+
+    `exclude_names` are literal file/directory names to skip -- normally derived
+    from the box's effective rclone exclude file via `literal_exclude_names`.
+
+    Skipping them matters because this answer drives the sync decision. Without
+    it, a file that can NEVER be transferred still marks the box as locally
+    modified: macOS Finder writing a `.DS_Store` was enough to flip a box to
+    `NEEDS_PUSH`, and -- when the remote had also moved on -- to `CONFLICT`.
+    That is exactly how a box ends up wedged with no real changes on one side.
+
+    The patterns must be the box's OWN effective excludes, not a hardcoded list:
+    a per-box `conf/.rclone_exclude` REPLACES the global default, so assuming
+    the defaults for a box that overrides them could skip a directory the box
+    really does sync -- which would hide genuine changes.
+    """
     import os
-    from datetime import datetime, timezone
+    from datetime import timezone
+
+    exclude_names = exclude_names or set()
 
     path = Path(path).expanduser().resolve()
 
     if path.is_file():
+        if path.name in exclude_names:
+            return None
         max_mtime = path.stat().st_mtime
     else:
         max_mtime = None
@@ -216,6 +314,8 @@ def check_last_time_modified(path: str | Path) -> float | None:
                 ) from e
 
             for entry in entries:
+                if entry.name in exclude_names:
+                    continue
                 if entry.is_file(follow_symlinks=False):
                     try:
                         stat_result = entry.stat()

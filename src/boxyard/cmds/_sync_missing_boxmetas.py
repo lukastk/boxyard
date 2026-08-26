@@ -83,6 +83,79 @@ async def sync_missing_boxmetas(
         )
         _ls_local = {f["Path"] for f in _ls_local} if _ls_local else set()
     
+        # Reconcile on BOX ID, not on index name.
+        #
+        # A box's index name is `{box_id}__{name}`, and a rename changes only the
+        # name half -- the id is preserved. Diffing the raw paths therefore treats a
+        # renamed box as a brand-new one, and since this pass only ever ADDS, every
+        # other machine ended up with TWO registrations for the same box id: its
+        # stale pre-rename name, which nothing ever removed, plus the new one
+        # fetched here. That is what `doctor`'s `duplicate-box-id` was reporting on
+        # macbook, macstudio and ideapad (three boxes each, identical on all three,
+        # absent on the machine that did the renames).
+        def _index_names_by_box_id(paths: set[str]) -> dict[str, set[str]]:
+            by_id: dict[str, set[str]] = {}
+            for _p in paths:
+                _index_name = Path(_p).parts[0]
+                by_id.setdefault(BoxMeta.extract_box_id(_index_name), set()).add(_index_name)
+            return by_id
+    
+        _remote_by_id = _index_names_by_box_id(_ls_remote)
+        _local_by_id = _index_names_by_box_id(_ls_local)
+    
+        # A box that was RENAMED elsewhere: the same id, under a different name.
+        # The remote is authoritative for names, so adopt it -- exactly what
+        # `boxyard sync-name --direction to_local` does.
+        #
+        # Ambiguity is skipped rather than guessed at: more than one directory for
+        # one id on either side means something is already wrong, and picking one
+        # arbitrarily could rename a box onto a name that is already taken.
+        _renames: list[tuple[str, str]] = []
+        for _box_id, _remote_names in _remote_by_id.items():
+            _local_names = _local_by_id.get(_box_id)
+            if not _local_names or len(_remote_names) != 1 or len(_local_names) != 1:
+                continue
+            _remote_index_name = next(iter(_remote_names))
+            _local_index_name = next(iter(_local_names))
+            if _remote_index_name != _local_index_name:
+                _renames.append((_local_index_name, _remote_index_name))
+    
+        if box_index_names is not None:
+            _renames = [
+                _r for _r in _renames
+                if _r[0] in box_index_names or _r[1] in box_index_names
+            ]
+    
+        if _renames:
+            from boxyard._enums import RenameScope
+            from boxyard.cmds._rename_box import rename_box
+            from boxyard._models import refresh_boxyard_meta as _refresh
+    
+            # rename_box resolves the box through the cached meta, so make sure the
+            # cache reflects what is actually on disk before renaming.
+            _refresh(config)
+    
+            for _local_index_name, _remote_index_name in _renames:
+                _new_name = _remote_index_name.split("__", 1)[1]
+                if verbose:
+                    print(
+                        f"Adopting remote name for '{_local_index_name}' "
+                        f"-> '{_remote_index_name}' (renamed on another machine)."
+                    )
+                await rename_box(
+                    config_path=config.config_path,
+                    box_index_name=_local_index_name,
+                    new_name=_new_name,
+                    scope=RenameScope.LOCAL,
+                    verbose=False,
+                )
+                # The local registration now matches the remote, so it is no longer
+                # missing.
+                _ls_local = {
+                    _p for _p in _ls_local
+                    if Path(_p).parts[0] != _local_index_name
+                } | {f"{_remote_index_name}/{const.BOX_METAFILE_REL_PATH}"}
+    
         missing_metas = sorted(_ls_remote - _ls_local)
     
         if box_index_names is not None:

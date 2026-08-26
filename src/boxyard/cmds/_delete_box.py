@@ -19,7 +19,8 @@ async def delete_box(
     
     if soft_interruption_enabled:
         enable_soft_interruption()
-    from boxyard._models import get_boxyard_meta
+    from boxyard._models import get_boxyard_meta, BoxMeta
+    from boxyard._ownership import owner_gate
     
     boxyard_meta = get_boxyard_meta(config)
     
@@ -27,6 +28,18 @@ async def delete_box(
         raise ValueError(f"Box '{box_index_name}' does not exist.")
     
     box_meta = boxyard_meta.by_index_name[box_index_name]
+    
+    # Ownership is checked BEFORE and INDEPENDENTLY of any force/safety flag. A
+    # `--force` that also bypassed ownership would leave the remote holding this
+    # machine's data while `boxmeta.toml` still names another machine as the owner
+    # -- a lie in shared state, which is worse than a refusal.
+    # `delete` purges the REMOTE and writes a tombstone keyed by box id, so it
+    # takes the box away from every machine, not just this one.
+    owner_gate(
+        config,
+        BoxMeta.load(config, box_meta.storage_location, box_index_name),
+        f"delete '{box_index_name}'",
+    )
     import shutil
     from boxyard import const
     from boxyard._models import BoxPart, refresh_boxyard_meta, BoxMeta

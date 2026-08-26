@@ -7,6 +7,7 @@ from ..config import get_config, StorageType
 from .._utils.locking import BoxyardLockManager, LockAcquisitionError, BOX_SYNC_LOCK_TIMEOUT, acquire_lock_async
 from .._remote_index import update_remote_index_cache, find_remote_box_by_id
 from .._enums import RenameScope
+from .._ownership import owner_gate
 from .._models import validate_box_name
 from .. import const
 
@@ -46,6 +47,17 @@ async def rename_box(
     box_meta = boxyard_meta.by_index_name[box_index_name]
     box_id = BoxMeta.extract_box_id(box_index_name)
     storage_location = box_meta.storage_location
+    
+    # A remote-scoped rename renames the box's directory ON THE REMOTE, so it is a
+    # write to shared state and needs the ownership gate. A LOCAL-scope rename
+    # touches only this machine and is deliberately left alone: a read-only replica
+    # may still call its own copy whatever it likes.
+    if scope in (RenameScope.REMOTE, RenameScope.BOTH):
+        owner_gate(
+            config,
+            BoxMeta.load(config, storage_location, box_index_name),
+            f"rename '{box_index_name}' on the remote",
+        )
     
     # Compute new index name. The name is used verbatim as a directory name, so it
     # has to be a single path component.
@@ -126,8 +138,19 @@ async def rename_box(
                 remote_index_name = await find_remote_box_by_id(config, storage_location, box_id)
     
                 if remote_index_name is None:
+                    # Since v0.4.3, `rclone_lsjson`/`rclone_path_exists` report
+                    # absence ONLY for rclone's not-found exit codes and raise on
+                    # any real failure -- so reaching here means the box genuinely
+                    # is not on the remote yet, not that the remote was
+                    # unreachable. That is the ordinary case for a box created and
+                    # renamed before its first sync, and the new name will be used
+                    # when it is first pushed.
                     if verbose:
-                        print("Warning: Remote box not found. Skipping remote rename.")
+                        print(
+                            "This box is not on the remote yet, so there is nothing "
+                            "to rename there; it will be pushed under its new name "
+                            "on the next sync."
+                        )
                 else:
                     # Rename box directory
                     old_remote_box_path = boxes_path / remote_index_name

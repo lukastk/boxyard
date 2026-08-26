@@ -23,8 +23,8 @@ Generated data — including large outputs — generally belongs **inside** the 
 
   If Boxyard is already installed in the environment, `boxyard ...` is also fine.
 
-- Read-only commands are safe to run without confirmation: `--help`, `list`, `tree`, `path`, `which`, `box-status`, `yard-status`, `list-groups`, `doctor`.
-- Ask before running commands that can modify local or remote state: `init`, `new`, `sync`, `multi-sync`, `sync-missing-meta`, `include`, `exclude`, `delete`, `rename`, `sync-name`, `add-to-group`, `remove-from-group`, `add-parent`, `remove-parent`, `create-user-symlinks`, `copy`, `force-push`.
+- Read-only commands are safe to run without confirmation: `--help`, `list`, `tree`, `path`, `which`, `box-status`, `yard-status`, `list-groups`, `owner`, `doctor`.
+- Ask before running commands that can modify local or remote state: `init`, `new`, `sync`, `multi-sync`, `sync-missing-meta`, `include`, `exclude`, `delete`, `rename`, `sync-name`, `add-to-group`, `remove-from-group`, `add-parent`, `remove-parent`, `create-user-symlinks`, `copy`, `force-push`, `claim`, `release`, `discard-local`.
 - Be especially careful with:
   - `boxyard new --from PATH` / `-f PATH`: moves `PATH` into Boxyard unless `--copy` is supplied.
   - `boxyard exclude`: syncs first by default, then removes the local data copy.
@@ -127,14 +127,6 @@ boxyard path --box INDEX_NAME
 
 `boxyard path` defaults to the **data** path. By default it filters to included boxes. Use `--all` when you need to select from included and excluded boxes.
 
-Interactive selector:
-
-```bash
-boxyard path --interactive
-boxyard path -I --browse-mode groups
-boxyard path -I --browse-mode tree
-```
-
 ### Get non-data paths for a box
 
 ```bash
@@ -180,7 +172,7 @@ Group filters support boolean expressions over group names:
 
 ```bash
 boxyard list --group-filter 'work AND NOT archived'
-boxyard path --group-filter 'ctx/mac OR ctx/linux' --interactive
+boxyard path --group-filter 'ctx/mac OR ctx/linux' --pick-first
 ```
 
 Other list filters:
@@ -214,7 +206,13 @@ Name matching options:
 --pick-first           # available on `path`; use only when ambiguity is acceptable
 ```
 
-If no box is provided for some commands, Boxyard may infer it from the current working directory when inside `<user_boxes_path>/<index_name>/...`.
+With no `--box`/`--box-id`/`--box-name` at all, boxyard uses the box you are
+standing in — anywhere under `<user_boxes_path>/<index_name>/...`. If the cwd is
+not inside a box (or the box is not a candidate for that command, e.g. an
+already-included box for `include`), it falls back to an fzf picker over the
+candidates. Commands that destroy something — `delete`, `rename`, `copy`,
+`force-push`, `sync-name` — refuse a bare invocation outright and always need
+an explicit selector.
 
 ## Creating boxes
 
@@ -291,6 +289,39 @@ boxyard yard-status
 ```
 
 Soft interruption is enabled by default for long operations: interrupt once or twice to stop after the current operation; repeated interrupts exit immediately.
+
+## Write ownership (`owner`, `claim`, `release`, `discard-local`)
+
+A box can have a **write owner**: the single machine allowed to push its DATA. A box with
+**no owner is unrestricted**, exactly as before this feature existed — so most boxes are
+unowned and nothing about them changed. Ownership is recorded per box as `write_owner`
+and compared against this machine's configured `machine_name` (configured, never derived
+from the hostname, because hostnames are unreliable — one machine reports both
+`lukas-pocket4` and `pocket4`).
+
+```bash
+boxyard owner --box-name NAME          # who may push this box (read-only; -o json too)
+boxyard claim --box-name NAME          # make THIS machine the write owner
+boxyard claim --all-included           # claim every box included here that has no owner
+boxyard release --box-name NAME        # give up this machine's ownership
+```
+
+**If a sync is refused because another machine owns the box**, there are exactly two ways
+out, and the error prints both:
+
+```bash
+boxyard claim --steal --box-name NAME  # take ownership from the current owner (prompts; -y to skip)
+boxyard discard-local --box-name NAME  # throw away THIS machine's copy, take the remote's
+```
+
+`discard-local` is the destructive one, but not lossy: what it overwrites is kept under
+the sync backups directory and the path is printed. Prefer `--steal` when this machine's
+copy is the one you want to keep, `discard-local` when the remote's is.
+
+**Ownership is also enforced on three commands that bypass sync entirely** and would
+otherwise write to the remote unchecked: `force-push`, `rename --scope remote|both`, and
+`delete`. Being refused by one of these is the gate working, not a bug — resolve it with
+`claim`/`--steal` rather than reaching for a workaround.
 
 ## Health check (`doctor`)
 

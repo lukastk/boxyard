@@ -38,7 +38,34 @@
 #     locally (what `sync-missing-meta` would fetch). Skippable so doctor works offline.
 # 13. **tombstoned-box** — locally registered boxes whose id is tombstoned on the
 #     remote (deleted from another machine). Skippable, like stale-meta-mirror.
-# 14. **tree-orphans** — boxmeta parents referencing unknown box ids.
+# 14. **diverged-box** — a box that is wedged: either its local and remote sync
+#     records disagree and the local copy has also changed (both sides moved on
+#     independently), or a push from another machine never completed. Until this
+#     check existed doctor could see neither: two boxes on macbook sat wedged
+#     from March to August 2026 while doctor reported "all checks passed" on that
+#     machine throughout. They were found by reading a supervisor log. A box that
+#     merely needs pulling is deliberately NOT reported — see the check.
+# 15. **tree-orphans** — boxmeta parents referencing unknown box ids.
+# 16. **unknown-boxmeta-keys** — a `boxmeta.toml` carries a key this version of
+#     boxyard does not know, i.e. it was written by a newer one. The key is
+#     preserved untouched (see `BoxMeta.unknown_keys`); this check is what makes
+#     that preservation visible instead of silent.
+# 17. **machine-name-unset** — no `machine_name` in the config. Box write
+#     ownership identifies a machine by that name and never by its hostname, so
+#     until it is set this machine can never own a box.
+# 18. **unknown-config-keys** — `config.toml` carries a key this version of
+#     boxyard does not know, at the top level or inside one of its tables. Like
+#     `unknown-boxmeta-keys`, the key is tolerated rather than fatal; this check
+#     is what keeps that tolerance from turning a loud typo into a silent one.
+# 19. **write-denied** — a box owned by another machine that has local changes
+#     here which will never be pushed. This is the ONLY report of that state:
+#     sync stays deliberately silent about it (see `SyncCondition.WRITE_DENIED`),
+#     so if doctor did not say it, nothing would.
+# 20. **stale-owner** — a box whose `write_owner` cannot be a working owner:
+#     either it names a machine that owns nothing else in this yard, or it names
+#     THIS machine for a box this machine does not have. Both mean no machine
+#     can push the box. `claim` and `exclude` each close one known route into
+#     that state; this check is what catches the routes nobody thought of.
 #
 # Doctor never mutates or auto-fixes anything.
 
@@ -78,7 +105,13 @@ DOCTOR_CHECK_NAMES = [
     "rclone-config",
     "stale-meta-mirror",
     "tombstoned-box",
+    "diverged-box",
     "tree-orphans",
+    "unknown-boxmeta-keys",
+    "machine-name-unset",
+    "unknown-config-keys",
+    "write-denied",
+    "stale-owner",
 ]
 
 # %% [markdown]
@@ -434,7 +467,7 @@ if config.user_boxes_path.is_dir():
             _add_finding(
                 "malformed-name",
                 f"Directory name '{entry.name}' does not parse as an index name '<timestamp>_<subid>__<name>'",
-                "Boxes must be created via `boxyard new`, which generates the index name; rename/move the folder or register it with `boxyard new --from`.",
+                "Boxes must be created via `boxyard new`, which generates the index name; rename/move the folder or register it with `boxyard new --from <path>`.",
                 path=entry,
             )
 
@@ -456,7 +489,12 @@ for _box_id, _bms in sorted(_metas_by_id.items()):
         _add_finding(
             "duplicate-box-id",
             f"Box id '{_box_id}' is registered {len(_bms)} times: {_locations}",
-            "Box ids must be unique; inspect the duplicates and delete or re-create one of them.",
+            "Box ids must be unique. This usually means the box was RENAMED on "
+            "another machine: `sync-missing-meta` fetched the new name while the "
+            "old registration stayed behind. The remote's name is authoritative "
+            "— check it with `boxyard copy`/`rclone lsf` or on the machine that "
+            "owns the box, then remove the registration whose name the remote "
+            "does not have. Do NOT re-create the box; that would mint a new id.",
             box_id=_box_id,
         )
 
@@ -836,6 +874,232 @@ else:
                     )
 
 # %% [markdown]
+# ## Check: `diverged-box`
+#
+# A box whose LOCAL and REMOTE sync records disagree has had both sides move on
+# independently — the `CONFLICT` condition, which no other check could see.
+# Doctor reported "all checks passed" on a machine with two boxes wedged since
+# March 2026; they surfaced only in the supervisor log, once per pass, for five
+# months.
+#
+# The remote records are fetched in ONE bulk copy rather than a round trip per
+# box: the per-box form is ~4 rclone calls x 3 parts x 583 boxes, which would
+# make doctor unusable. The records are a few hundred KB in total.
+#
+# Only boxes registered locally are examined — a box with no local copy cannot
+# have diverged. Whether the local tree has been modified since its own record
+# is what separates a plain `needs_pull` (harmless, the next sync fixes it) from
+# a real divergence, and that uses the same exclude-aware scan the sync engine
+# uses, so the two agree.
+
+# %%
+#|export
+if not check_remote or not _rclone_available:
+    checks["diverged-box"]["skipped"] = True
+else:
+    from datetime import datetime as _datetime, timedelta as _timedelta, timezone as _timezone
+    from boxyard._models import BoxPart, SyncRecord as _SyncRecord
+    from boxyard._utils import (
+        check_last_time_modified,
+        literal_exclude_names,
+        rclone_lsjson,
+        rclone_cat,
+    )
+    from boxyard._utils.rclone import RcloneFailed
+
+    # A remote record written at our own record's moment IS our record, so only
+    # the rest need a round trip. rclone stamps the destination with the source
+    # temp file's mtime, which is the moment the ULID was minted, so for one and
+    # the same record the two agree closely: measured across 750 records on this
+    # fleet, the worst gap was 2.1s, and a 5s window costs zero extra fetches.
+    #
+    # The window is a real, if narrow, blind spot -- two DIFFERENT pushes of the
+    # same box landing within 5s of each other would look like one. That is a
+    # far smaller risk than the one being removed here, and the exact
+    # alternative (fetching all ~2400 records) takes over two minutes and opens
+    # enough SFTP connections to disturb the syncs running alongside doctor.
+    _RECORD_TIME_SLACK = _timedelta(seconds=5)
+
+    # Long enough that no real push on this fleet is still running (the largest
+    # box is ~100 GB and pushes in well under this), short enough that a genuine
+    # wedge is reported the same day rather than months later.
+    _INCOMPLETE_REMOTE_GRACE = _timedelta(hours=6)
+    _now = _datetime.now(_timezone.utc)
+
+    def _parse_rclone_modtime(raw: str) -> "_datetime":
+        # rclone emits RFC3339 with up to nanosecond precision, which
+        # `fromisoformat` cannot parse on 3.11. Truncate to microseconds.
+        text = raw.replace("Z", "+00:00")
+        if "." in text:
+            head, _, tail = text.partition(".")
+            frac, sign, offset = (
+                tail.partition("+") if "+" in tail else tail.partition("-")
+            )
+            text = f"{head}.{frac[:6]}{sign}{offset}"
+        return _datetime.fromisoformat(text)
+
+    for _sl_name, _sl_config in config.storage_locations.items():
+        if _sl_config.storage_type != StorageType.RCLONE:
+            continue
+        if storage_locations is not None and _sl_name not in storage_locations:
+            continue
+
+        _boxes_here = [bm for bm in box_metas if bm.storage_location == _sl_name]
+        if not _boxes_here:
+            continue
+
+        # ONE listing for every record on the remote. The per-box form would be
+        # thousands of round trips; this is a single call.
+        try:
+            _ls_recs = await rclone_lsjson(
+                config.rclone_config_path,
+                source=_sl_name,
+                source_path=_sl_config.store_path / const.SYNC_RECORDS_REL_PATH,
+                files_only=True,
+                recursive=True,
+            )
+        except RcloneFailed as e:
+            # An unreachable remote is a real inability to answer the question.
+            # Never report "no divergence" when we could not look -- silence here
+            # would be the false all-clear this check exists to end -- but do not
+            # crash doctor either, so the other checks still report.
+            _add_finding(
+                "diverged-box",
+                f"Could not list the sync records on '{_sl_name}', so no box on it "
+                f"could be checked for divergence: {e}",
+                "Check connectivity and the rclone config, or pass --no-remote to skip "
+                "the remote checks deliberately.",
+                storage_location=_sl_name,
+            )
+            continue
+        if _ls_recs is None:
+            continue  # nothing has ever been pushed here; an empty remote is fine
+
+        _remote_modtimes = {}
+        for _entry in _ls_recs:
+            _parts = Path(_entry["Path"]).parts
+            if len(_parts) != 2 or not _parts[1].endswith(".rec"):
+                continue
+            _remote_modtimes[(_parts[0], _parts[1][: -len(".rec")])] = (
+                _parse_rclone_modtime(_entry["ModTime"])
+            )
+
+        for _bm in _boxes_here:
+            for _part in BoxPart:
+                _local_rec_path = _bm.get_local_sync_record_path(config, _part)
+                if not _local_rec_path.exists():
+                    continue
+                _remote_modtime = _remote_modtimes.get((_bm.index_name, _part.value))
+                if _remote_modtime is None:
+                    continue  # nothing pushed for this part
+                try:
+                    _local_rec = _SyncRecord.model_validate_json(
+                        _local_rec_path.read_text()
+                    )
+                except Exception:
+                    continue  # a malformed record is `interrupted-sync`'s business
+
+                if not _local_rec.sync_complete:
+                    continue  # `interrupted-sync` already owns this one
+
+                # The prefilter: a remote record written at our own record's
+                # moment IS our record. Only the rest are worth a round trip.
+                if abs(_remote_modtime - _local_rec.ulid.datetime) <= _RECORD_TIME_SLACK:
+                    continue
+
+                _exists, _raw = await rclone_cat(
+                    rclone_config_path=config.rclone_config_path,
+                    source=_sl_name,
+                    source_path=(
+                        _sl_config.store_path
+                        / const.SYNC_RECORDS_REL_PATH
+                        / _bm.index_name
+                        / f"{_part.value}.rec"
+                    ).as_posix(),
+                )
+                if not _exists:
+                    continue  # vanished between the listing and the read
+                try:
+                    _remote_rec = _SyncRecord.model_validate_json(_raw)
+                except Exception:
+                    continue
+
+                if not _remote_rec.sync_complete:
+                    # The LOCAL record is complete but the remote one is not: a
+                    # push from ANOTHER machine died half-way. No other check can
+                    # see this -- `interrupted-sync` reads only local records --
+                    # so it is exactly the kind of wedge that stays silent for
+                    # months.
+                    #
+                    # A push in flight looks identical, so only a record older
+                    # than the grace window is reported. Anything shorter would
+                    # flag every long push on the fleet, and a report that cries
+                    # wolf is one nobody reads.
+                    _age = _now - _remote_rec.ulid.datetime
+                    if _age < _INCOMPLETE_REMOTE_GRACE:
+                        continue
+                    _add_finding(
+                        "diverged-box",
+                        f"A push of the {_part.value} of '{_bm.index_name}' from "
+                        f"'{_remote_rec.syncer_hostname}' never completed "
+                        f"({_remote_rec.timestamp:%Y-%m-%d}, {_age.days}d ago), so the "
+                        f"remote copy may be half-written",
+                        f"Syncing here will refuse until it is resolved. Check whether "
+                        f"'{_remote_rec.syncer_hostname}' still has the box, then re-run "
+                        f"the push from whichever machine holds the good copy: `boxyard "
+                        f"sync -r '{_bm.index_name}' --sync-direction push "
+                        f"--sync-setting force`.",
+                        index_name=_bm.index_name,
+                        box_part=_part.value,
+                        storage_location=_sl_name,
+                    )
+                    continue
+
+                if _local_rec.ulid == _remote_rec.ulid:
+                    continue  # the prefilter was merely cautious
+
+                # The records disagree. Whether the LOCAL side has also moved is
+                # what separates a real conflict from a plain needs-pull. This
+                # mirrors `get_sync_status` exactly -- same exclude-aware scan,
+                # same comparison -- so doctor and sync cannot disagree.
+                _conf_exclude = (
+                    _bm.get_local_part_path(config, BoxPart.CONF)
+                    / const.RCLONE_EXCLUDE_FILENAME
+                )
+                _local_modified = check_last_time_modified(
+                    _bm.get_local_part_path(config, _part),
+                    exclude_names=literal_exclude_names(
+                        _conf_exclude
+                        if _conf_exclude.exists()
+                        else config.default_rclone_exclude_path
+                    ),
+                )
+                _local_changed = (
+                    _local_modified is not None
+                    and _local_modified > _local_rec.timestamp
+                )
+                _remote_newer = _remote_rec.ulid.datetime > _local_rec.ulid.datetime
+                if _remote_newer and not _local_changed:
+                    continue  # NEEDS_PULL -- the next sync resolves it
+
+                _add_finding(
+                    "diverged-box",
+                    f"The {_part.value} of '{_bm.index_name}' has diverged: local record "
+                    f"{_local_rec.timestamp:%Y-%m-%d} from '{_local_rec.syncer_hostname}', "
+                    f"remote record {_remote_rec.timestamp:%Y-%m-%d} from "
+                    f"'{_remote_rec.syncer_hostname}'"
+                    + (" and the local copy has changed since" if _local_changed else ""),
+                    f"Both sides moved on independently, so sync refuses rather than pick a "
+                    f"winner. Look before choosing: `boxyard box-status -r "
+                    f"'{_bm.index_name}'`, and compare against the remote with `boxyard copy "
+                    f"-r '{_bm.index_name}' -d /tmp/compare`. Then resolve with an explicit "
+                    f"`--sync-direction` and `--sync-setting force`.",
+                    index_name=_bm.index_name,
+                    box_part=_part.value,
+                    storage_location=_sl_name,
+                )
+
+# %% [markdown]
 # ## Check: `tree-orphans`
 #
 # Boxmeta `parents` entries referencing box ids that are unknown locally.
@@ -855,6 +1119,281 @@ for bm in box_metas:
                 index_name=bm.index_name,
                 parent_box_id=_parent_id,
             )
+
+# %% [markdown]
+# ## Check: `unknown-boxmeta-keys`
+#
+# A `boxmeta.toml` written by a NEWER boxyard than this one. `BoxMeta.load`
+# keeps such keys verbatim rather than rejecting the file, because rejecting it
+# does not merely fail to parse: `create_boxyard_meta` skips the registration,
+# so the box disappears from `boxyard_meta.json`, from `boxyard list`, from
+# `~/g` (its symlinks are deleted) and from `multi-sync` — it stops syncing
+# with no error, and upgrading afterwards does not heal it.
+#
+# Tolerating the key is what prevents that; this check is what stops the
+# tolerance from being silent. Purely local — the keys are already on disk.
+
+# %%
+#|export
+import importlib.metadata as _importlib_metadata
+
+try:
+    _running_version = _importlib_metadata.version("boxyard")
+except _importlib_metadata.PackageNotFoundError:
+    # Running from a source checkout with no installed distribution. Say
+    # nothing about the version rather than inventing one.
+    _running_version = None
+_running_suffix = f" (running {_running_version})" if _running_version else ""
+
+for bm in box_metas:
+    if not bm.unknown_keys:
+        continue
+    _keys = ", ".join(sorted(bm.unknown_keys))
+    _add_finding(
+        "unknown-boxmeta-keys",
+        f"Box '{bm.index_name}' has boxmeta key(s) this boxyard does not know: {_keys}",
+        f"The box was written by a newer boxyard. The key(s) are preserved "
+        f"untouched, so nothing is lost and there is nothing to repair — but this "
+        f"machine cannot act on what they mean. Upgrade boxyard here"
+        f"{_running_suffix} to the version that writes them.",
+        index_name=bm.index_name,
+        storage_location=bm.storage_location,
+        unknown_keys=sorted(bm.unknown_keys),
+    )
+
+# %% [markdown]
+# ## Check: `machine-name-unset`
+#
+# `machine_name` is how a machine identifies itself for box write-ownership.
+# It is configured and never derived: `get_hostname()` cannot serve as an
+# identity — one machine in this fleet has reported both `lukas-pocket4` and
+# `pocket4`, and macOS reports user-editable pretty names like
+# `Lukas’s MacBook Pro`.
+#
+# Reported whenever it is unset, not only once boxes are owned: an unnamed
+# machine can never claim a box, and the point of reporting it is to make the
+# gap between installing this version and configuring the name visible while
+# it is still true, rather than at the moment someone first tries to claim.
+
+# %%
+#|export
+if config.machine_name is None:
+    _add_finding(
+        "machine-name-unset",
+        f"No `machine_name` is configured in '{config.config_path}'",
+        f"Nothing is broken by this today — box write-ownership is not yet "
+        f"enforced — but this machine cannot own a box until it has a name. Set "
+        f"`machine_name` to this machine's canonical short name (the same one "
+        f"myrig uses, e.g. 'macbook' or 'mymain') in '{config.config_path}', or "
+        f"export {const.ENV_VAR_BOXYARD_MACHINE_NAME} for a one-off.",
+        config_path=config.config_path,
+    )
+
+# %% [markdown]
+# ## Check: `unknown-config-keys`
+#
+# `config.toml` carries a key this version does not know. Since v0.5.0 that no
+# longer makes every command on the machine fail — `get_config` collects such
+# keys instead of rejecting the file — and this check is the other half of that
+# bargain.
+#
+# It matters more than it looks. `extra="forbid"` is what catches a TYPO'd
+# config key today; tolerating unknown keys without reporting them would trade
+# a loud typo for a silent one, which is a worse deal than the one being
+# fixed. So every key that lands in the passthrough is named here, whether it
+# came from a newer boxyard or from a slip of the fingers — doctor cannot tell
+# the two apart, and the hint says so rather than guessing.
+#
+# Keys are reported by their dotted path, so a key inside a table names the
+# entry it is in (`storage_locations.hetzner-box.some_key`) rather than leaving
+# the reader to search the file for it.
+
+# %%
+#|export
+if config.unknown_keys:
+    _config_keys = ", ".join(sorted(config.unknown_keys))
+    _add_finding(
+        "unknown-config-keys",
+        f"Config '{config.config_path}' has key(s) this boxyard does not know: "
+        f"{_config_keys}",
+        f"They are ignored, not fatal. Either the config was written for a newer "
+        f"boxyard -- upgrade this machine{_running_suffix} -- or the key is a typo, "
+        f"in which case whatever it was meant to configure is silently not in "
+        f"effect. Check the spelling against `boxyard init`'s generated config "
+        f"before assuming the former.",
+        config_path=config.config_path,
+        unknown_keys=sorted(config.unknown_keys),
+    )
+
+# %% [markdown]
+# ## Check: `stale-owner`
+#
+# A box whose `write_owner` cannot be a working owner — meaning NO machine can
+# push it, and the only way back is `--steal` from somewhere. Purely local.
+#
+# Two sub-cases, and they are not equally certain:
+#
+# - **Owned by this machine, but not included here.** Exact, with no false
+#   positives: this machine is the designated writer of DATA it does not hold.
+#   `claim` now refuses a box that is not included, and `exclude` releases a box
+#   it owns, so both known routes into this are closed — but they were both
+#   found by inspection rather than by anything reporting them, which is the
+#   whole reason this check exists.
+# - **Owned by a name that owns exactly one box, while some other machine owns
+#   several.** A heuristic, and labelled as one. A real machine in a migrated
+#   yard owns tens to hundreds of boxes, so a name holding exactly one — in a
+#   yard where another name holds more — is far more likely a machine that was
+#   renamed or retired than a machine with one box. The "some other machine owns
+#   several" condition is what keeps this quiet during the migration itself,
+#   when the first machine to claim is legitimately the only owner in the yard.
+#
+# Note what is deliberately NOT reported: a box owned by another machine that is
+# not included here. That is the ordinary state of most boxes on most machines.
+
+# %%
+#|export
+_owner_counts: dict[str, int] = {}
+for bm in box_metas:
+    if bm.write_owner is not None:
+        _owner_counts[bm.write_owner] = _owner_counts.get(bm.write_owner, 0) + 1
+
+# Is there a machine in this yard that owns more than one box? Until there is,
+# "owns exactly one box" says nothing.
+_yard_has_an_established_owner = any(count > 1 for count in _owner_counts.values())
+
+for bm in box_metas:
+    if bm.write_owner is None:
+        continue
+
+    if bm.write_owner == config.machine_name:
+        if not bm.check_included(config):
+            _add_finding(
+                "stale-owner",
+                f"Box '{bm.index_name}' names this machine "
+                f"('{config.machine_name}') as its write owner, but it is not "
+                f"included here — so the one machine allowed to push it does not "
+                f"have it",
+                f"No machine can push this box until that is fixed. Either give it "
+                f"up with `boxyard release -r '{bm.index_name}'`, or take the box "
+                f"back with `boxyard include -r '{bm.index_name}'`.",
+                index_name=bm.index_name,
+                write_owner=bm.write_owner,
+                storage_location=bm.storage_location,
+            )
+        continue
+
+    if _yard_has_an_established_owner and _owner_counts[bm.write_owner] == 1:
+        _add_finding(
+            "stale-owner",
+            f"Box '{bm.index_name}' is owned by '{bm.write_owner}', which owns no "
+            f"other box in this yard",
+            f"Probably a machine that was renamed or retired, in which case no "
+            f"machine can push this box. If '{bm.write_owner}' is real and simply "
+            f"owns only this box, nothing is wrong. Otherwise take it over from "
+            f"the machine that should have it: `boxyard claim --steal -r "
+            f"'{bm.index_name}'`.",
+            index_name=bm.index_name,
+            write_owner=bm.write_owner,
+            storage_location=bm.storage_location,
+        )
+
+# %% [markdown]
+# ## Check: `write-denied`
+#
+# A box owned by another machine that has local changes here which will never be
+# pushed. **This is the only report of that state.** The sync path deliberately
+# says nothing — see `SyncCondition.WRITE_DENIED`, and the ~72 supervisor passes
+# per machine per day that would otherwise each produce an identical error — so
+# a state doctor does not surface is a state nobody ever sees.
+#
+# Cost is the deciding constraint, as it was for `diverged-box`. The expensive
+# question ("would a push actually transfer anything?") is asked only of boxes
+# that pass two free local filters first: owned by someone else AND included
+# here AND locally modified since their own sync record. On a machine where
+# every box is owned correctly, that is zero remote calls.
+#
+# The modification test is the sync engine's own exclude-aware scan, so doctor
+# and sync cannot disagree about whether a box has changed.
+
+# %%
+#|export
+if not check_remote or not _rclone_available:
+    checks["write-denied"]["skipped"] = True
+else:
+    from boxyard._models import BoxPart as _BoxPart, SyncRecord as _SyncRec
+    from boxyard._ownership import (
+        push_would_transfer,
+        write_denied_hint,
+        write_denied_message,
+    )
+    from boxyard._utils import check_last_time_modified, literal_exclude_names
+
+    for bm in box_metas:
+        if bm.write_owner is None or bm.write_owner == config.machine_name:
+            continue
+        _sl_config = config.storage_locations.get(bm.storage_location)
+        if _sl_config is None or _sl_config.storage_type != StorageType.RCLONE:
+            continue
+        if storage_locations is not None and bm.storage_location not in storage_locations:
+            continue
+        if not bm.check_included(config):
+            continue  # not here at all, so nothing of ours can be stranded
+
+        _data_path = bm.get_local_part_path(config, _BoxPart.DATA)
+        _conf_exclude = (
+            bm.get_local_part_path(config, _BoxPart.CONF) / const.RCLONE_EXCLUDE_FILENAME
+        )
+        _effective_exclude = (
+            _conf_exclude if _conf_exclude.exists() else config.default_rclone_exclude_path
+        )
+
+        _rec_path = bm.get_local_sync_record_path(config, _BoxPart.DATA)
+        if not _rec_path.exists():
+            continue  # never synced here; `interrupted-sync`/`stale-cache` territory
+        try:
+            _rec = _SyncRec.model_validate_json(_rec_path.read_text())
+        except Exception:
+            continue  # a malformed record is `interrupted-sync`'s business
+
+        _modified = check_last_time_modified(
+            _data_path, exclude_names=literal_exclude_names(_effective_exclude)
+        )
+        if _modified is None or _modified <= _rec.timestamp:
+            continue  # unchanged since our own record: nothing is stranded
+
+        # Only now is a remote call worth making. `needs_push` is not evidence
+        # of a real change -- a single `.DS_Store` sets it -- so ask what a push
+        # would ACTUALLY move, under the box's real filters.
+        _remote_data_path = (
+            _sl_config.store_path
+            / const.REMOTE_BOXES_REL_PATH
+            / bm.index_name
+            / const.BOX_DATA_REL_PATH
+        )
+        _conf_path = bm.get_local_part_path(config, _BoxPart.CONF)
+        _include_file = _conf_path / const.RCLONE_INCLUDE_FILENAME
+        _filters_file = _conf_path / const.RCLONE_FILTERS_FILENAME
+
+        if not await push_would_transfer(
+            config,
+            local_path=_data_path,
+            remote=bm.storage_location,
+            remote_path=_remote_data_path,
+            include_path=_include_file if _include_file.exists() else None,
+            exclude_path=_effective_exclude,
+            filters_path=_filters_file if _filters_file.exists() else None,
+        ):
+            continue
+
+        _add_finding(
+            "write-denied",
+            write_denied_message(config, bm)
+            + " This copy has local changes that will never leave this machine.",
+            write_denied_hint(config, bm),
+            index_name=bm.index_name,
+            write_owner=bm.write_owner,
+            storage_location=bm.storage_location,
+        )
 
 # %% [markdown]
 # Assemble the report.
