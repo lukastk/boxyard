@@ -28,6 +28,7 @@ DOCTOR_CHECK_NAMES = [
     "unknown-config-keys",
     "write-denied",
     "stale-owner",
+    "unpushed-meta-edit",
 ]
 
 # Subid format used by boxes created before the current config conventions.
@@ -895,6 +896,35 @@ async def run_doctor(
                 write_owner=bm.write_owner,
                 storage_location=bm.storage_location,
             )
+    from boxyard._models import read_meta_base
+    
+    for bm in box_metas:
+        _base = read_meta_base(config, bm)
+        if _base is None:
+            continue
+    
+        # Compare the FIELDS, not the file bytes. A boxmeta rewritten with the same
+        # content -- reordered keys, a trailing newline -- is not an edit, and
+        # reporting it would train the reader to ignore this check.
+        _changed = [
+            _field
+            for _field in ("groups", "parents", "write_owner")
+            if getattr(bm, _field) != getattr(_base, _field)
+        ]
+        if not _changed:
+            continue
+    
+        _add_finding(
+            "unpushed-meta-edit",
+            f"Box '{bm.index_name}' has local metadata changes ({', '.join(_changed)}) "
+            f"that have not been pushed",
+            f"Harmless until another machine pushes this box's META, at which point "
+            f"it becomes a divergence that sync refuses. Push it with `boxyard sync "
+            f"-r '{bm.index_name}' --sync-choices meta`.",
+            index_name=bm.index_name,
+            changed_fields=_changed,
+            storage_location=bm.storage_location,
+        )
     num_findings = sum(len(check["findings"]) for check in checks.values())
     report = {
         "healthy": num_findings == 0,

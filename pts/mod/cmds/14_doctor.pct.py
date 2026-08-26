@@ -66,6 +66,18 @@
 #     THIS machine for a box this machine does not have. Both mean no machine
 #     can push the box. `claim` and `exclude` each close one known route into
 #     that state; this check is what catches the routes nobody thought of.
+# 21. **unpushed-meta-edit** — a `boxmeta.toml` that differs from the copy this
+#     machine last agreed with the remote about, and no push since. Purely
+#     local, and the POINT IS THE TIMING: on its own this is an ordinary pending
+#     edit, but if another machine pushes that box's META first it becomes a
+#     two-sided divergence that sync refuses and no automatic path resolves.
+#     Forty-four boxes on macbook went that way in one afternoon in August 2026
+#     — group edits made locally with `add-to-group`, which does not push by
+#     default, and a fleet-wide ownership claim landing on top — and every
+#     machine but macbook reported "all checks passed" throughout. This makes
+#     the pending edit visible BEFORE something lands on it. Needs the merge
+#     base (`BoxMeta.get_local_meta_base_path`), so it says nothing about a box
+#     that has not synced its META since v0.5.14.
 #
 # Doctor never mutates or auto-fixes anything.
 
@@ -112,6 +124,7 @@ DOCTOR_CHECK_NAMES = [
     "unknown-config-keys",
     "write-denied",
     "stale-owner",
+    "unpushed-meta-edit",
 ]
 
 # %% [markdown]
@@ -1394,6 +1407,62 @@ else:
             write_owner=bm.write_owner,
             storage_location=bm.storage_location,
         )
+
+# %% [markdown]
+# ## Check: `unpushed-meta-edit`
+#
+# A `boxmeta.toml` that differs from the copy this machine last agreed with the
+# remote about, with no push since.
+#
+# On its own that is an ordinary pending edit, not a fault — `add-to-group`,
+# `set-parent` and friends do not push unless asked (`--sync-after`). The point
+# is the TIMING. While the edit sits unpushed it is one push by any other
+# machine away from becoming a two-sided divergence, and a two-sided divergence
+# is a dead end: sync refuses, and nothing but a human picking a winner
+# resolves it.
+#
+# That is not hypothetical. On 2026-08-25, forty-four boxes on macbook were
+# given an `archived` or `dormant` group locally; over the same afternoon the
+# other machines ran the v0.5.x ownership claim sweep, which writes
+# `write_owner` into `boxmeta.toml` and pushes. Every one of the forty-four
+# became a conflict, they stopped propagating their groups entirely, and every
+# machine except macbook reported "all checks passed" throughout.
+#
+# Purely local and free: it compares two files already on disk. It says nothing
+# about a box whose META has not synced since the merge base was introduced,
+# because there is nothing to compare against — an absence, not a fault.
+
+# %%
+#|export
+from boxyard._models import read_meta_base
+
+for bm in box_metas:
+    _base = read_meta_base(config, bm)
+    if _base is None:
+        continue
+
+    # Compare the FIELDS, not the file bytes. A boxmeta rewritten with the same
+    # content -- reordered keys, a trailing newline -- is not an edit, and
+    # reporting it would train the reader to ignore this check.
+    _changed = [
+        _field
+        for _field in ("groups", "parents", "write_owner")
+        if getattr(bm, _field) != getattr(_base, _field)
+    ]
+    if not _changed:
+        continue
+
+    _add_finding(
+        "unpushed-meta-edit",
+        f"Box '{bm.index_name}' has local metadata changes ({', '.join(_changed)}) "
+        f"that have not been pushed",
+        f"Harmless until another machine pushes this box's META, at which point "
+        f"it becomes a divergence that sync refuses. Push it with `boxyard sync "
+        f"-r '{bm.index_name}' --sync-choices meta`.",
+        index_name=bm.index_name,
+        changed_fields=_changed,
+        storage_location=bm.storage_location,
+    )
 
 # %% [markdown]
 # Assemble the report.

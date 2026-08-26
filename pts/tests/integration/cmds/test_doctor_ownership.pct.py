@@ -283,3 +283,93 @@ def test_an_unknown_nested_config_key_does_not_stop_boxyard_working(temp_boxyard
         config_path=config_path, box_name="after-future-key", storage_location=remote_name
     )
     assert idx in get_boxyard_meta(reloaded, force_create=True).by_index_name
+
+# %% [markdown]
+# ## `unpushed-meta-edit`
+#
+# A local boxmeta that differs from the merge base — the copy this machine last
+# agreed with the remote about — with no push since.
+#
+# On its own that is an ordinary pending edit. The reason doctor reports it is
+# the TIMING: until it is pushed it is one push by any other machine away from
+# becoming a two-sided divergence that sync refuses and no automatic path
+# resolves. Forty-four boxes on macbook went that way in one afternoon in
+# August 2026, and every machine but macbook said "all checks passed"
+# throughout.
+#
+# It says nothing when there is no base. That is an absence, not a fault: a box
+# whose META has not synced since the base was introduced has nothing to be
+# compared against, and inventing a finding there would report every box on
+# every machine on the day of the upgrade.
+
+# %%
+#|export
+@pytest.mark.integration
+def test_unpushed_meta_edit_reported(temp_boxyard):
+    from boxyard._models import record_meta_base
+
+    remote_name, _, config, config_path, _ = temp_boxyard
+    index_name = new_box(
+        config_path=config_path, box_name="pending", storage_location=remote_name
+    )
+    config = get_config(config_path)
+    box = get_boxyard_meta(config).by_index_name[index_name]
+
+    # Agree with the remote, then edit locally without pushing -- which is what
+    # `add-to-group` does by default.
+    record_meta_base(config, box)
+    modify_boxmeta(
+        config_path=config_path,
+        box_index_name=index_name,
+        modifications={"groups": ["archived"]},
+    )
+
+    findings = _findings(_doctor(config_path), "unpushed-meta-edit")
+    assert len(findings) == 1, findings
+    assert index_name in findings[0]["message"]
+    assert findings[0]["changed_fields"] == ["groups"]
+    # The hint has to name the command that resolves it, scoped to META.
+    assert "--sync-choices meta" in findings[0]["hint"]
+
+
+@pytest.mark.integration
+def test_no_finding_without_a_base(temp_boxyard):
+    remote_name, _, config, config_path, _ = temp_boxyard
+    index_name = new_box(
+        config_path=config_path, box_name="never-synced", storage_location=remote_name
+    )
+    modify_boxmeta(
+        config_path=config_path,
+        box_index_name=index_name,
+        modifications={"groups": ["archived"]},
+    )
+
+    assert _findings(_doctor(config_path), "unpushed-meta-edit") == []
+
+
+@pytest.mark.integration
+def test_no_finding_when_the_base_matches(temp_boxyard):
+    from boxyard._models import record_meta_base
+
+    remote_name, _, config, config_path, _ = temp_boxyard
+    index_name = new_box(
+        config_path=config_path, box_name="settled", storage_location=remote_name
+    )
+    modify_boxmeta(
+        config_path=config_path,
+        box_index_name=index_name,
+        modifications={"groups": ["archived"]},
+    )
+    config = get_config(config_path)
+    record_meta_base(config, get_boxyard_meta(config).by_index_name[index_name])
+
+    # Rewriting the boxmeta with the SAME content is not an edit. Comparing
+    # file bytes rather than fields would report reordered keys and train the
+    # reader to ignore this check.
+    modify_boxmeta(
+        config_path=config_path,
+        box_index_name=index_name,
+        modifications={"groups": ["archived"]},
+    )
+
+    assert _findings(_doctor(config_path), "unpushed-meta-edit") == []
