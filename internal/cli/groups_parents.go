@@ -30,7 +30,7 @@ type metaEditFlags struct {
 func (f *metaEditFlags) register(cmd *cobra.Command) {
 	fs := cmd.Flags()
 	fs.BoolVarP(&f.SyncAfter, "sync-after", "s", false, "Sync the box after modifying it.")
-	fs.StringVar(&f.SyncSetting, "sync-setting", string(enums.SyncCareful), "The sync setting to use.")
+	enumVar(fs, &f.SyncSetting, "sync-setting", "", string(enums.SyncCareful), "The sync setting to use.", enums.SyncSettingNames)
 	fs.BoolVar(&f.RefreshUserSymlinks, "refresh-user-symlinks", true, "Refresh the user symlinks.")
 	fs.BoolVar(&f.NoRefreshSymlinks, "no-refresh-user-symlinks", false, "Do not refresh the user symlinks.")
 	fs.BoolVar(&f.SoftInterruption, "soft-interruption-enabled", true, "Enable soft interruption.")
@@ -47,10 +47,7 @@ func (f *metaEditFlags) after(cfg *config.Config, indexName string, changed bool
 	if f.NoSoftInterruption {
 		f.SoftInterruption = false
 	}
-	setting := enums.SyncSetting(f.SyncSetting)
-	if !setting.Valid() {
-		return &usageError{err: fmt.Errorf("invalid sync setting: %q", f.SyncSetting)}
-	}
+	setting := enums.SyncSetting(f.SyncSetting) // validated at parse time
 
 	if changed && f.SyncAfter {
 		client, err := rclone.New(cfg.RcloneConfigPath())

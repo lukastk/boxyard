@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lukastk/boxyard/internal/pyref"
 	"github.com/lukastk/boxyard/internal/storage"
 	"github.com/lukastk/boxyard/internal/syncengine"
 )
@@ -38,23 +39,8 @@ type pyResult struct {
 	Epoch *float64 `json:"epoch"`
 }
 
-// pythonBin finds an interpreter that can import boxyard. The system python3
-// usually cannot: boxyard is installed as a uv TOOL, into its own venv, so the
-// comparison has to run against that interpreter or it silently compares
-// against nothing.
-func pythonBin() string {
-	home, err := os.UserHomeDir()
-	if err == nil {
-		uvTool := filepath.Join(home, ".local", "share", "uv", "tools", "boxyard", "bin", "python3")
-		if exec.Command(uvTool, "-c", "import boxyard").Run() == nil {
-			return uvTool
-		}
-	}
-	if exec.Command("python3", "-c", "import boxyard").Run() == nil {
-		return "python3"
-	}
-	return ""
-}
+// pythonBin finds an interpreter that can import boxyard.
+func pythonBin() string { return pyref.Bin() }
 
 func runPython(t *testing.T, root, excludeFile string) pyResult {
 	t.Helper()

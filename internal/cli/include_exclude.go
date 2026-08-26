@@ -8,6 +8,7 @@ import (
 	"github.com/lukastk/boxyard/internal/boxref"
 	"github.com/lukastk/boxyard/internal/cmds"
 	"github.com/lukastk/boxyard/internal/config"
+	"github.com/lukastk/boxyard/internal/enums"
 	"github.com/lukastk/boxyard/internal/models"
 	"github.com/lukastk/boxyard/internal/perms"
 	"github.com/lukastk/boxyard/internal/rclone"
@@ -31,9 +32,6 @@ func newIncludeCommand() *cobra.Command {
 		Use:   "include",
 		Short: "Include a box in the local store",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if interactive {
-				return notPorted("`--interactive`")
-			}
 			if noRefreshSymlinks {
 				refreshUserSymlinks = false
 			}
@@ -57,6 +55,40 @@ func newIncludeCommand() *cobra.Command {
 				if !bm.CheckIncluded(cfg) {
 					eligible = append(eligible, bm)
 				}
+			}
+
+			if interactive {
+				ctx, stop := maybeSoftInterrupt(softInterruption)
+				defer stop()
+				store, err := newStore(cfg)
+				if err != nil {
+					return err
+				}
+				candidates := make([]pickCandidate, len(eligible))
+				for i, bm := range eligible {
+					candidates[i] = pickCandidate{bm: bm}
+				}
+				sortByName(candidates)
+
+				chosen, err := interactivePick(candidates,
+					func(c pickCandidate) string { return includePickLine(c.bm) },
+					"No excluded boxes to include.", "include",
+					func(c pickCandidate) string { return includeConfirmLine(c.bm) },
+					nil, os.Stdout, os.Stdin)
+				if err != nil || len(chosen) == 0 {
+					return err
+				}
+
+				if err := runBatch(chosen, "Including", func(bm *models.BoxMeta) error {
+					return cmds.IncludeBox(ctx, cfg, store, perms.Adapter{}, cmds.IncludeBoxOptions{
+						BoxIndexName: bm.IndexName(),
+						ReadOnly:     readOnly,
+						Out:          os.Stdout,
+					})
+				}, os.Stdout, os.Stderr); err != nil {
+					return err
+				}
+				return maybeRefreshSymlinks(cfg, refreshUserSymlinks)
 			}
 
 			indexName, err := sel.resolve(cfg, eligible, boxref.Options{AllowNoArgs: true})
@@ -114,12 +146,6 @@ func newExcludeCommand() *cobra.Command {
 		Use:   "exclude",
 		Short: "Exclude a box from the local store",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if interactive {
-				return notPorted("`--interactive`")
-			}
-			if showSizes {
-				return notPorted("`--show-sizes` (interactive mode)")
-			}
 			if noRefreshSymlinks {
 				refreshUserSymlinks = false
 			}
@@ -152,6 +178,70 @@ func newExcludeCommand() *cobra.Command {
 					continue
 				}
 				eligible = append(eligible, bm)
+			}
+
+			if interactive {
+				ctx, stop := maybeSoftInterrupt(softInterruption)
+				defer stop()
+				store, err := newStore(cfg)
+				if err != nil {
+					return err
+				}
+				candidates := make([]pickCandidate, len(eligible))
+				for i, bm := range eligible {
+					candidates[i] = pickCandidate{bm: bm}
+					if showSizes {
+						dataPath, err := bm.LocalPartPath(cfg, enums.PartData)
+						if err != nil {
+							return err
+						}
+						if _, statErr := os.Stat(dataPath); statErr == nil {
+							candidates[i].size = dirSize(dataPath)
+						}
+					}
+				}
+				if showSizes {
+					sortBySizeDesc(candidates)
+				} else {
+					sortByName(candidates)
+				}
+
+				sizePrefix := func(c pickCandidate) string {
+					if !showSizes {
+						return ""
+					}
+					return "[" + formatSize(c.size) + "]  "
+				}
+				var totalLine func([]pickCandidate) string
+				if showSizes {
+					totalLine = func(chosen []pickCandidate) string {
+						var total int64
+						for _, c := range chosen {
+							total += c.size
+						}
+						return "Total: " + formatSize(total)
+					}
+				}
+
+				chosen, err := interactivePick(candidates,
+					func(c pickCandidate) string { return excludePickLine(c.bm, sizePrefix(c)) },
+					"No eligible boxes to exclude.", "exclude",
+					func(c pickCandidate) string { return excludeConfirmLine(c.bm, sizePrefix(c)) },
+					totalLine, os.Stdout, os.Stdin)
+				if err != nil || len(chosen) == 0 {
+					return err
+				}
+
+				if err := runBatch(chosen, "Excluding", func(bm *models.BoxMeta) error {
+					return cmds.ExcludeBox(ctx, cfg, store, perms.Adapter{}, cmds.ExcludeBoxOptions{
+						BoxIndexName: bm.IndexName(),
+						SkipSync:     skipSync,
+						Out:          os.Stdout,
+					})
+				}, os.Stdout, os.Stderr); err != nil {
+					return err
+				}
+				return maybeRefreshSymlinks(cfg, refreshUserSymlinks)
 			}
 
 			indexName, err := sel.resolve(cfg, eligible, boxref.Options{AllowNoArgs: true})

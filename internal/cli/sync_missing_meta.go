@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/lukastk/boxyard/internal/cmds"
@@ -34,17 +33,11 @@ func newSyncMissingMetaCommand() *cobra.Command {
 			if noSoftInterruption {
 				softInterruption = false
 			}
-			// Accepted for surface parity and validated, but not yet acted on:
-			// the discovery pass is one listing plus one filtered fetch per
-			// storage location, so neither a direction nor a concurrency limit
-			// has anything to apply to. Validating them anyway means a typo
-			// still fails, rather than being silently accepted.
-			if setting := enums.SyncSetting(syncSetting); !setting.Valid() {
-				return &usageError{err: fmt.Errorf("invalid sync setting: %q", syncSetting)}
-			}
-			if _, err := parseDirection(syncDirection); err != nil {
-				return err
-			}
+			// --sync-setting and --sync-direction are accepted for surface
+			// parity but not yet acted on: the discovery pass is one listing
+			// plus one filtered fetch per storage location, so neither has
+			// anything to apply to. They are still enum flags, so a typo in
+			// one fails at parse time rather than being silently accepted.
 
 			cfg, err := appState.Config()
 			if err != nil {
@@ -73,8 +66,8 @@ func newSyncMissingMetaCommand() *cobra.Command {
 	f := cmd.Flags()
 	f.StringArrayVarP(&boxIndexNames, "box", "r", nil, "The index name of the box to sync.")
 	f.StringArrayVarP(&storageLocations, "storage-location", "s", nil, "The storage location to sync.")
-	f.StringVar(&syncSetting, "sync-setting", string(enums.SyncCareful), "The sync setting to use.")
-	f.StringVarP(&syncDirection, "sync-direction", "d", "", "The direction of the sync.")
+	enumVar(f, &syncSetting, "sync-setting", "", string(enums.SyncCareful), "The sync setting to use.", enums.SyncSettingNames)
+	enumVar(f, &syncDirection, "sync-direction", "d", "", "The direction of the sync.", enums.SyncDirectionNames)
 	f.IntVarP(&maxConcurrent, "max-concurrent", "m", 0, "The maximum number of concurrent rclone operations.")
 	f.BoolVar(&refreshUserSymlinks, "refresh-user-symlinks", true, "Refresh the user symlinks.")
 	f.BoolVar(&noRefreshSymlinks, "no-refresh-user-symlinks", false, "Do not refresh the user symlinks.")

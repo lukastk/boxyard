@@ -117,7 +117,11 @@ BOXYARD_CONFIG_PATH="$B" "$PYBIN" owner -r "$idx" -o json | python3 -c "
 import json,sys; print('   B sees write_owner =', json.load(sys.stdin)['write_owner'])"
 
 echo "== multi-sync: the finished line is byte-identical across implementations"
-GO_LINE=$(COLUMNS=80 "$GOBIN" --config "$A" multi-sync --no-refresh-user-symlinks --print-skipped 2>&1 \
+# Both sides take the SAME flag. They did not: the Go had invented a
+# friendlier `--print-skipped` for what typer spells `--no-no-print-skipped`,
+# and this script quietly passed each implementation its own spelling — so the
+# one comparison that would have caught the divergence was the thing hiding it.
+GO_LINE=$(COLUMNS=80 "$GOBIN" --config "$A" multi-sync --no-refresh-user-symlinks --no-no-print-skipped 2>&1 \
   | grep -oE '\(1/1\) [^ ]+ \.+ [A-Za-z-]+' | head -1)
 # The LAST non-"Syncing" match: rich redraws the line in place while the sync
 # runs, so the earlier matches are transient frames, not the result.

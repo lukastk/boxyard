@@ -183,11 +183,21 @@ the bug fixed in v0.4.3.
   verified — and the Go binary reports whatever `-ldflags` stamped, defaulting
   to `dev`. Whatever ships has to stamp a real version, or that check silently
   stops meaning anything.
-- **The interactive surfaces**, all refusing loudly today: `path`'s Textual TUI
-  and the fzf multi-select flows in `include`/`exclude`. **Open question:**
-  `path`'s TUI may be dead weight — the picker actually in daily use is
-  `boxyard-pick` (fzf + `boxyard-groups.py` over `boxyard list -o json`), not
-  `boxyard path --interactive`.
+- ~~**The interactive surfaces.**~~ Done. `include -I` and `exclude -I`
+  (with `--show-sizes`) are ported: fzf multi-select, the confirmation list,
+  the per-box `[i/n]` progress lines and the collected error summary. A per-box
+  failure is reported and the batch continues; a LOCK failure aborts, because
+  every remaining box would hit the same wall. The four line formats live in
+  `internal/cli/interactive_pick.go` and are differentialled against the
+  Python's f-strings by `interactive_pick_differential_test.go` — the commands
+  call the same functions the test compares, so a changed glyph or a lost
+  space fails.
+
+  `path --interactive` and its Textual TUI were **deleted from both
+  implementations** (Python v0.5.10), not ported. A grep across every mysetup
+  repo found no caller outside boxyard's own docs; the picker actually in daily
+  use is `boxyard-pick` (fzf + `boxyard-groups.py` over `boxyard list -o
+  json`).
 - **`sync_before_new_box`**, which refuses loudly. It needs a boxmeta sync
   before minting an id; the pieces exist, but the setting is off everywhere and
   turning it on is a decision, not a port.
@@ -214,13 +224,28 @@ Python, and cannot perturb the live supervisor.
 
 ## Things a future session should know
 
-- **The Python fixes are merged to local `main` but NOT pushed, and NOT
-  deployed.** The five other machines still run the old Python. Rolling out is
-  a deliberate step that needs a decision — two of the fixes turn previously
-  silent conditions into errors.
+- **The Python fixes are merged, pushed and deployed** as far as v0.5.10
+  (2026-08-26), on every machine that is reachable. `pocket4` was offline when
+  the roll-out ran and still needs
+  `uv tool install --force git+https://github.com/lukastk/boxyard.git`.
+- **Two differentials now compare against the INSTALLED Python**, not a
+  worktree: `TestFlagSurfaceMatchesPython` (every subcommand's option set, both
+  directions, asked of click rather than scraped from `--help` — rich
+  *truncates* long option names into its panel, so a help-text diff silently
+  matches on names it never printed) and `TestPickerLinesMatchPython`. They
+  skip when no interpreter can import boxyard, and they FAIL when the
+  installed Python is older than the port expects — which is the intended
+  signal during a roll-out.
 - **A worktree at `/tmp/boxyard-pyfix`** holds the Python fix branches. It is
   in `/tmp`, so it will not survive a reboot; the branches are in the repo, so
   nothing is lost, but `git worktree prune` may be needed.
+- **A parity check that gives each side its OWN spelling is the thing hiding
+  the divergence.** `parity/cross_impl_sync.sh` compared multi-sync's finished
+  line by passing the Go `--print-skipped` and the Python
+  `--no-no-print-skipped` — because the port had invented the friendlier
+  spelling for a flag typer derives as a double negative. The one comparison
+  that would have caught it was written around it. Whenever a differential
+  needs different arguments per implementation, that difference IS the finding.
 - **Differential testing is what has caught everything that mattered.** Three
   separate real bugs in the Go code were found by comparing against Python over
   a generated input space, and none would have been found by reading the code.
@@ -233,9 +258,15 @@ Python, and cannot perturb the live supervisor.
 
 ## Open questions for Lukas
 
-1. Roll the v0.4.x Python fixes out to the fleet now, or wait?
-2. Does `boxyard path`'s Textual TUI need porting at all?
+1. ~~Roll the Python fixes out to the fleet now, or wait?~~ Answered: rolled
+   out, v0.5.10, 2026-08-26 (pocket4 pending, it was offline).
+2. ~~Does `boxyard path`'s Textual TUI need porting at all?~~ Answered: no —
+   deleted from both implementations.
 3. Replace `lukastk/boxyard` in place at v1.0.0, or a new repo for the Go one?
+   Still open. The constraint that decides it: the Go port and the Python
+   package live in the SAME repo today, so a `v0.6.0` tag would release both —
+   and that tag is also what `boxyard --version` has to report on a Go machine,
+   which is the roll-out gate.
 4. `_remove_empty_non_group_folders` compares group NAMES against directories
    named after `symlink_name`, so group directories with a `symlink_name` are
    pruned when empty while others are kept. Fixing it would leave ~30

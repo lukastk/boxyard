@@ -34,21 +34,22 @@ type syncStat struct {
 
 func newMultiSyncCommand() *cobra.Command {
 	var (
-		boxIndexNames         []string
-		storageLocations      []string
-		maxConcurrent         int
-		syncDirection         string
-		syncSetting           string
-		syncChoices           []string
-		recentlyModifiedFirst bool
-		refreshUserSymlinks   bool
-		noRefreshSymlinks     bool
-		showProgress          bool
-		noShowProgress        bool
-		noPrintSkipped        bool
-		printSkipped          bool
-		softInterruption      bool
-		noSoftInterruption    bool
+		boxIndexNames           []string
+		storageLocations        []string
+		maxConcurrent           int
+		syncDirection           string
+		syncSetting             string
+		syncChoices             []string
+		recentlyModifiedFirst   bool
+		noRecentlyModifiedFirst bool
+		refreshUserSymlinks     bool
+		noRefreshSymlinks       bool
+		showProgress            bool
+		noShowProgress          bool
+		noPrintSkipped          bool
+		noNoPrintSkipped        bool
+		softInterruption        bool
+		noSoftInterruption      bool
 	)
 
 	cmd := &cobra.Command{
@@ -61,8 +62,11 @@ func newMultiSyncCommand() *cobra.Command {
 			if noShowProgress {
 				showProgress = false
 			}
-			if printSkipped {
+			if noNoPrintSkipped {
 				noPrintSkipped = false
+			}
+			if noRecentlyModifiedFirst {
+				recentlyModifiedFirst = false
 			}
 			if noSoftInterruption {
 				softInterruption = false
@@ -71,10 +75,7 @@ func newMultiSyncCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			setting := enums.SyncSetting(syncSetting)
-			if !setting.Valid() {
-				return &usageError{err: fmt.Errorf("invalid sync setting: %q", syncSetting)}
-			}
+			setting := enums.SyncSetting(syncSetting) // validated at parse time
 			parts, err := parseBoxParts(syncChoices)
 			if err != nil {
 				return err
@@ -182,16 +183,24 @@ func newMultiSyncCommand() *cobra.Command {
 	f.StringArrayVarP(&boxIndexNames, "box", "r", nil, "The index names of the box, in the form.")
 	f.StringArrayVarP(&storageLocations, "storage-location", "s", nil, "The storage locations to sync.")
 	f.IntVarP(&maxConcurrent, "max-concurrent", "m", 0, "The maximum number of concurrent rclone operations.")
-	f.StringVar(&syncDirection, "sync-direction", "", "The direction of the sync.")
-	f.StringVar(&syncSetting, "sync-setting", string(enums.SyncCareful), "The sync setting to use.")
-	f.StringArrayVarP(&syncChoices, "sync-choices", "c", nil, "The parts of the box to sync.")
+	enumVar(f, &syncDirection, "sync-direction", "", "", "The direction of the sync.", enums.SyncDirectionNames)
+	enumVar(f, &syncSetting, "sync-setting", "", string(enums.SyncCareful), "The sync setting to use.", enums.SyncSettingNames)
+	enumSliceVar(f, &syncChoices, "sync-choices", "c", "The parts of the box to sync.", enums.BoxPartNames)
 	f.BoolVar(&recentlyModifiedFirst, "sync-recently-modified-first", false, "Sync boxes that have been recently modified first.")
+	f.BoolVar(&noRecentlyModifiedFirst, "no-sync-recently-modified-first", false, "Do not sync recently modified boxes first.")
 	f.BoolVar(&refreshUserSymlinks, "refresh-user-symlinks", true, "Refresh the user symlinks.")
 	f.BoolVar(&noRefreshSymlinks, "no-refresh-user-symlinks", false, "Do not refresh the user symlinks.")
 	f.BoolVar(&showProgress, "show-progress", true, "Show the progress of the sync.")
 	f.BoolVar(&noShowProgress, "no-show-progress", false, "Do not show the progress of the sync.")
 	f.BoolVar(&noPrintSkipped, "no-print-skipped", true, "Do not print boxes for which no syncs happened.")
-	f.BoolVar(&printSkipped, "print-skipped", false, "Print boxes for which no syncs happened.")
+	// The double negative is not a typo. typer derives the off-switch for a
+	// bool option by prefixing "--no-", so a Python parameter already called
+	// `no_print_skipped` yields `--no-no-print-skipped` — and that spelling,
+	// ugly as it is, is what the CLI contract says. A friendlier
+	// `--print-skipped` was here instead, which the Python rejects with exit
+	// 2, so a script written against the Go would have broken on any machine
+	// still running the Python.
+	f.BoolVar(&noNoPrintSkipped, "no-no-print-skipped", false, "Print boxes for which no syncs happened.")
 	f.BoolVar(&softInterruption, "soft-interruption-enabled", true, "Enable soft interruption.")
 	f.BoolVar(&noSoftInterruption, "no-soft-interruption-enabled", false, "Disable soft interruption.")
 	return cmd

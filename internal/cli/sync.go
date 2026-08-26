@@ -46,10 +46,7 @@ func newSyncCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			setting := enums.SyncSetting(syncSetting)
-			if !setting.Valid() {
-				return &usageError{err: fmt.Errorf("invalid sync setting: %q", syncSetting)}
-			}
+			setting := enums.SyncSetting(syncSetting) // validated at parse time
 			parts, err := parseBoxParts(syncChoices)
 			if err != nil {
 				return err
@@ -132,11 +129,13 @@ func newSyncCommand() *cobra.Command {
 	// flag here. That is the Python's arrangement, not drift.
 	sel.register(cmd, selectorSpec{Noun: "sync", WithBoxPath: true})
 	f := cmd.Flags()
-	f.StringVarP(&syncDirection, "sync-direction", "d", "",
-		"The direction of the sync. If not provided, the appropriate direction will be automatically determined based on the sync status. This mode is only available for the 'CAREFUL' sync setting.")
-	f.StringVarP(&syncSetting, "sync-setting", "s", string(enums.SyncCareful), "The sync setting to use.")
-	f.StringArrayVarP(&syncChoices, "sync-choices", "c", nil,
-		"The parts of the box to sync. If not provided, all parts will be synced. By default, all parts are synced.")
+	enumVar(f, &syncDirection, "sync-direction", "d", "",
+		"The direction of the sync. If not provided, the appropriate direction will be automatically determined based on the sync status. This mode is only available for the 'CAREFUL' sync setting.",
+		enums.SyncDirectionNames)
+	enumVar(f, &syncSetting, "sync-setting", "s", string(enums.SyncCareful), "The sync setting to use.", enums.SyncSettingNames)
+	enumSliceVar(f, &syncChoices, "sync-choices", "c",
+		"The parts of the box to sync. If not provided, all parts will be synced. By default, all parts are synced.",
+		enums.BoxPartNames)
 	f.BoolVar(&showRcloneProgress, "progress", false, "Show the progress of the sync in rclone.")
 	f.BoolVar(&refreshUserSymlinks, "refresh-user-symlinks", true, "Refresh the user symlinks.")
 	f.BoolVar(&noRefreshSymlinks, "no-refresh-user-symlinks", false, "Do not refresh the user symlinks.")

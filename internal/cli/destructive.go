@@ -110,10 +110,7 @@ func newRenameCommand() *cobra.Command {
 			if noRefreshSymlinks {
 				refreshUserSymlinks = false
 			}
-			renameScope := enums.RenameScope(scope)
-			if !renameScope.Valid() {
-				return &usageError{err: fmt.Errorf("invalid rename scope: %q", scope)}
-			}
+			renameScope := enums.RenameScope(scope) // validated at parse time
 			cfg, err := appState.Config()
 			if err != nil {
 				return err
@@ -147,7 +144,7 @@ func newRenameCommand() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVarP(&newName, "new-name", "N", "", "The new name for the box.")
 	_ = cmd.MarkFlagRequired("new-name")
-	f.StringVarP(&scope, "scope", "s", string(enums.RenameBoth), "Where to rename: local, remote, or both.")
+	enumVar(f, &scope, "scope", "s", string(enums.RenameBoth), "Where to rename: local, remote, or both.", enums.RenameScopeNames)
 	f.BoolVar(&refreshUserSymlinks, "refresh-user-symlinks", true, "Refresh the user symlinks.")
 	f.BoolVar(&noRefreshSymlinks, "no-refresh-user-symlinks", false, "Do not refresh the user symlinks.")
 	return cmd

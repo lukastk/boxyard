@@ -20,37 +20,12 @@ func newPathCommand() *cobra.Command {
 		excludeGroups []string
 		allBoxes      bool
 		groupFilter   string
-		interactive   bool
-		browseMode    string
-		collapsed     bool
-		expanded      bool
-		hideStatus    bool
-		hideGroups    bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "path",
 		Short: "Get the path of a box",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The Textual TUI is a whole second rendering surface, and the
-			// picker actually in daily use is `boxyard-pick` (fzf over
-			// `boxyard list -o json`), not this. Refusing loudly beats
-			// pretending.
-			if interactive {
-				return notPorted("`--interactive`")
-			}
-			for name, set := range map[string]bool{
-				"`--browse-mode`": browseMode != "",
-				"`--collapsed`":   collapsed,
-				"`--expanded`":    expanded,
-				"`--hide-status`": hideStatus,
-				"`--hide-groups`": hideGroups,
-			} {
-				if set {
-					return notPorted(name + " (interactive mode)")
-				}
-			}
-
 			cfg, err := appState.Config()
 			if err != nil {
 				return err
@@ -92,8 +67,7 @@ func newPathCommand() *cobra.Command {
 
 			out, err := boxPathFor(cfg, bm, pathOption)
 			if err != nil {
-				fmt.Printf("Invalid path option: %s\n", pathOption)
-				os.Exit(1)
+				return err
 			}
 			fmt.Println(out)
 			return nil
@@ -106,18 +80,19 @@ func newPathCommand() *cobra.Command {
 	})
 	f := cmd.Flags()
 	f.BoolVarP(&pickFirst, "pick-first", "1", false, "Pick the first box if there are multiple matches.")
-	f.StringVarP(&pathOption, "path-option", "p", "data", "The part of the box to show the path of.")
+	enumVar(f, &pathOption, "path-option", "p", "data", "The part of the box to show the path of.", pathOptionNames)
 	f.StringArrayVarP(&includeGroups, "include-group", "g", nil, "The group to include in the search.")
 	f.StringArrayVarP(&excludeGroups, "exclude-group", "e", nil, "The group to exclude from the search.")
 	f.BoolVarP(&allBoxes, "all", "a", false, "Show all boxes, including those not included locally.")
 	f.StringVarP(&groupFilter, "group-filter", "f", "", "The filter to apply to the groups.")
-	f.BoolVarP(&interactive, "interactive", "I", false, "Launch interactive TUI to browse boxes.")
-	f.StringVar(&browseMode, "browse-mode", "", "Browse mode for the interactive TUI.")
-	f.BoolVar(&collapsed, "collapsed", false, "Start the interactive TUI collapsed.")
-	f.BoolVar(&expanded, "expanded", false, "Start the interactive TUI expanded.")
-	f.BoolVar(&hideStatus, "hide-status", false, "Hide the status column in the interactive TUI.")
-	f.BoolVar(&hideGroups, "hide-groups", false, "Hide group tags in the interactive TUI.")
 	return cmd
+}
+
+// pathOptionNames is what --path-option accepts, in the order the Python's
+// Literal declares them. boxPathFor below must handle every one.
+var pathOptionNames = []string{
+	"data", "meta", "conf", "root",
+	"sync-record-data", "sync-record-meta", "sync-record-conf",
 }
 
 // boxPathFor resolves --path-option to a path. The names are a documented

@@ -22,8 +22,21 @@ const (
 // are current before they are applied.
 var AllBoxParts = []BoxPart{PartData, PartMeta, PartConf}
 
-func (p BoxPart) Valid() bool {
-	return p == PartData || p == PartMeta || p == PartConf
+// BoxPartNames is the accepted CLI spelling of every box part, in the order
+// the Python enum declares them (that order is what a --help listing shows).
+// The Valid predicates read from these slices so a new member cannot be added
+// to one and forgotten in the other.
+var BoxPartNames = []string{string(PartData), string(PartMeta), string(PartConf)}
+
+func (p BoxPart) Valid() bool { return contains(BoxPartNames, string(p)) }
+
+func contains(names []string, v string) bool {
+	for _, n := range names {
+		if n == v {
+			return true
+		}
+	}
+	return false
 }
 
 func ParseBoxPart(s string) (BoxPart, error) {
@@ -45,9 +58,10 @@ const (
 	SyncForce   SyncSetting = "force"
 )
 
-func (s SyncSetting) Valid() bool {
-	return s == SyncCareful || s == SyncReplace || s == SyncForce
-}
+// SyncSettingNames is the accepted CLI spelling of every sync setting.
+var SyncSettingNames = []string{string(SyncCareful), string(SyncReplace), string(SyncForce)}
+
+func (s SyncSetting) Valid() bool { return contains(SyncSettingNames, string(s)) }
 
 // SyncDirection is the direction of a transfer.
 type SyncDirection string
@@ -57,9 +71,12 @@ const (
 	DirectionPull SyncDirection = "pull" // remote -> local
 )
 
-func (d SyncDirection) Valid() bool {
-	return d == DirectionPush || d == DirectionPull
-}
+// SyncDirectionNames is the accepted CLI spelling of every sync direction.
+// NOTE: these are NOT the sync RECORD's direction names ("to_local"/
+// "to_remote"), which is what a doctor hint once told people to pass here.
+var SyncDirectionNames = []string{string(DirectionPush), string(DirectionPull)}
+
+func (d SyncDirection) Valid() bool { return contains(SyncDirectionNames, string(d)) }
 
 // RenameScope selects which sides of a box a rename applies to.
 type RenameScope string
@@ -70,9 +87,10 @@ const (
 	RenameBoth   RenameScope = "both"
 )
 
-func (r RenameScope) Valid() bool {
-	return r == RenameLocal || r == RenameRemote || r == RenameBoth
-}
+// RenameScopeNames is the accepted CLI spelling of every rename scope.
+var RenameScopeNames = []string{string(RenameLocal), string(RenameRemote), string(RenameBoth)}
+
+func (r RenameScope) Valid() bool { return contains(RenameScopeNames, string(r)) }
 
 // SyncNameDirection selects which side wins when reconciling a box's name.
 type SyncNameDirection string
@@ -82,6 +100,9 @@ const (
 	NameToRemote SyncNameDirection = "to_remote"
 )
 
-func (d SyncNameDirection) Valid() bool {
-	return d == NameToLocal || d == NameToRemote
-}
+// SyncNameDirectionNames is the accepted CLI spelling of every name-sync
+// direction. These ARE "to_local"/"to_remote" — `sync-name` reconciles a
+// name between the two sides and has no push/pull spelling.
+var SyncNameDirectionNames = []string{string(NameToLocal), string(NameToRemote)}
+
+func (d SyncNameDirection) Valid() bool { return contains(SyncNameDirectionNames, string(d)) }

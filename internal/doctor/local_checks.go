@@ -103,7 +103,7 @@ func checkUserBoxes(cfg *config.Config, report *Report, sc *scan) {
 		if !IsValidIndexName(entry.Name(), cfg.BoxSubidCharacterSet, cfg.BoxSubidLength) {
 			report.add("malformed-name",
 				fmt.Sprintf("Directory name '%s' does not parse as an index name '<timestamp>_<subid>__<name>'", entry.Name()),
-				"Boxes must be created via `boxyard new`, which generates the index name; rename/move the folder or register it with `boxyard new --from`.",
+				"Boxes must be created via `boxyard new`, which generates the index name; rename/move the folder or register it with `boxyard new --from <path>`.",
 				Field{"path", filepath.Join(cfg.UserBoxesPath, entry.Name())})
 		}
 	}

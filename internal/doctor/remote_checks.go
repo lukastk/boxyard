@@ -208,8 +208,8 @@ func checkDivergedBoxes(ctx context.Context, cfg *config.Config, s RemoteStore,
 						remoteTime.Format("2006-01-02"), int(age.Hours()/24)),
 					fmt.Sprintf("Syncing here will refuse until it is resolved. Check whether '%s' still has the box, "+
 						"then re-run the push from whichever machine holds the good copy: "+
-						"`boxyard sync -r '%s' --sync-direction to_remote --sync-setting force`.",
-						remoteRec.SyncerHostname, bm.IndexName()),
+						"`boxyard sync -r '%s' --sync-direction push --sync-setting force --sync-choices %s`.",
+						remoteRec.SyncerHostname, bm.IndexName(), part),
 					Field{"index_name", bm.IndexName()}, Field{"box_part", string(part)},
 					Field{"storage_location", slName})
 				continue
