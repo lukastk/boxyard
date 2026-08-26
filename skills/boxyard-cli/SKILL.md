@@ -127,14 +127,6 @@ boxyard path --box INDEX_NAME
 
 `boxyard path` defaults to the **data** path. By default it filters to included boxes. Use `--all` when you need to select from included and excluded boxes.
 
-Interactive selector:
-
-```bash
-boxyard path --interactive
-boxyard path -I --browse-mode groups
-boxyard path -I --browse-mode tree
-```
-
 ### Get non-data paths for a box
 
 ```bash
@@ -180,7 +172,7 @@ Group filters support boolean expressions over group names:
 
 ```bash
 boxyard list --group-filter 'work AND NOT archived'
-boxyard path --group-filter 'ctx/mac OR ctx/linux' --interactive
+boxyard path --group-filter 'ctx/mac OR ctx/linux' --pick-first
 ```
 
 Other list filters:

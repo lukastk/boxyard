@@ -1,3 +1,38 @@
+## [0.5.10] - 2026-08-26
+
+### 🐛 Bug Fixes
+
+- **Two of `boxyard doctor`'s suggested commands could not be run.** doctor's
+  own contract is that "every hint names an exact command that is safe to run
+  verbatim", and two of them did not parse:
+
+  - the `diverged-box` hint said
+    `boxyard sync --box <x> --sync-direction to_remote --sync-setting force`,
+    but `--sync-direction` takes `push`/`pull` — `to_remote` is the *sync
+    record's* internal direction name, not the CLI's. Running it exited 2 with
+    `'to_remote' is not one of 'push', 'pull'`.
+  - the missing-local-data hint said `` `boxyard new --from` ``, which is
+    missing its argument.
+
+  Found while trying to follow doctor's advice on two real boxes that have
+  failed every sync pass since 2026-06-29 — the hint for the exact fault could
+  not be executed.
+
+  A new test (`test_doctor_hints_are_runnable.py`) now walks doctor's source
+  with `ast`, pulls every `` `boxyard …` `` out of its string literals
+  (f-string holes filled with a placeholder, adjacent literals joined the way
+  the parser joins them), and feeds each one to click's own parser. A hint that
+  does not parse fails the suite, so this class of rot cannot come back.
+
+### 🔥 Removals
+
+- **`boxyard path --interactive` (the Textual TUI) is gone**, along with
+  `--browse-mode`, `--collapsed`, `--expanded`, `--hide-status` and
+  `--hide-groups`, and the `textual` dependency with it. Nothing in the rig
+  called it — a grep across every mysetup repo found callers only in boxyard's
+  own docs. The fzf pickers (`--interactive` on `include`/`exclude`, and the
+  no-selector picker) are the interactive surface that is actually used.
+
 ## [0.5.9] - 2026-08-25
 
 ### 🐛 Bug Fixes
