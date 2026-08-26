@@ -1,0 +1,111 @@
+name: Go Release
+
+# `go/vX.Y.Z`, never `vX.Y.Z`. A bare `v*` tag is the PYTHON release and
+# publishes to PyPI (release.yml); GitHub's ref filters do not match `/` with
+# `*`, so the two namespaces cannot collide. Tagging a Go release `v0.6.0`
+# would ship a PyPI release nobody asked for.
+on:
+  push:
+    tags:
+      - 'go/v*'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      # No parity suite: it needs the installed Python boxyard and the real
+      # storage box, neither of which exists here. A differential that SKIPS in
+      # CI is worse than one that is not run there, because the skip reads as a
+      # pass.
+      - run: go vet ./...
+      - run: go test -race ./internal/...
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux,  goarch: amd64 }   # mymain
+          - { goos: linux,  goarch: arm64 }   # ideapad, pocket4 (and spares)
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }   # macbook, macstudio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#go/v}"
+          mkdir -p dist
+          # `boxyard --version` is a ROLLOUT GATE: `ssh-target <machine>
+          # boxyard --version` is how a fleet-wide change is verified. An
+          # unstamped binary reports "dev", which reads like an answer and is
+          # not one, so the stamp is asserted below rather than assumed.
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/lukastk/boxyard/internal/cli.boxyardVersion=${version}" \
+            -o dist/boxyard ./cmd/boxyard
+          tar -czf "dist/boxyard_${version}_${GOOS}_${GOARCH}.tar.gz" -C dist boxyard
+          rm dist/boxyard
+
+      - name: Assert the version was stamped
+        # Only the native build can run here; the cross-compiled ones are
+        # covered by the same ldflags in the same step, and by the install
+        # script, which re-checks --version on the machine it installs to.
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#go/v}"
+          tar -xzf "dist/boxyard_${version}_linux_amd64.tar.gz" -C dist
+          got=$(dist/boxyard --version)
+          echo "stamped: $got   expected: $version"
+          test "$got" = "$version"
+          rm dist/boxyard
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+
+  release:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        # The install script verifies against this before putting anything on
+        # PATH: a truncated download would otherwise be discovered by the
+        # supervisor, mid-pass, on every machine at once.
+        run: |
+          cd dist
+          sha256sum *.tar.gz > checksums.txt
+          cat checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: boxyard (Go) ${{ github.ref_name }}
+          files: dist/*
+          # The hand-written CHANGELOG covers both implementations; a
+          # generated commit list beside it would be noise.
+          generate_release_notes: false

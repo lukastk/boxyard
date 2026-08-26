@@ -67,3 +67,43 @@ jobs:
 
       - name: Run ruff check
         run: uv run ruff check src/boxyard
+
+  go:
+    name: Go (build, vet, test)
+    runs-on: ubuntu-latest
+    # The Go port lives on feat/go-rewrite, which forked before this job
+    # existed; the `if` keeps the job from failing on branches with no Go tree
+    # rather than making every one of them carry a stub.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Is there a Go tree on this ref?
+        id: detect
+        run: |
+          if [ -f go.mod ]; then echo "present=true" >> "$GITHUB_OUTPUT"
+          else echo "present=false" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: actions/setup-go@v5
+        if: steps.detect.outputs.present == 'true'
+        with:
+          go-version: '1.24'
+
+      - name: go vet
+        if: steps.detect.outputs.present == 'true'
+        run: go vet ./...
+
+      - name: gofmt
+        if: steps.detect.outputs.present == 'true'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go test
+        # ./internal/... only: the parity suite needs the installed Python
+        # boxyard and the real storage box, neither of which exists in CI. A
+        # differential that silently SKIPS in CI is worse than one that is not
+        # run there, because the skip reads as a pass.
+        if: steps.detect.outputs.present == 'true'
+        run: go test -race ./internal/...

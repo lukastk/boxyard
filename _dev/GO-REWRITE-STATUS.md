@@ -177,12 +177,35 @@ the bug fixed in v0.4.3.
 
 ## Not started
 
-- **Distribution.** GoReleaser, and the myrig install switch. Note one thing
-  the switch has to answer: `boxyard --version` is a ROLLOUT GATE — checking
-  `ssh-target <machine> boxyard --version` is how a fleet-wide change is
-  verified — and the Go binary reports whatever `-ldflags` stamped, defaulting
-  to `dev`. Whatever ships has to stamp a real version, or that check silently
-  stops meaning anything.
+- ~~**Distribution.**~~ Built, not switched on.
+
+  `.github/workflows/go-release.yml` fires on **`go/vX.Y.Z`** and builds
+  linux and darwin × amd64 and arm64, with checksums. The tag namespace is
+  load-bearing: a bare `vX.Y.Z` already triggers `release.yml`, which
+  PUBLISHES TO PyPI, and GitHub's ref filters do not match `/` with `*`, so
+  the two cannot collide. Tagging a Go release `v0.6.0` would ship a Python
+  release nobody asked for.
+
+  GoReleaser was tried first and dropped: its `monorepo.tag_prefix` — the
+  only way it accepts a `go/v*` tag — is a **Pro** feature, and OSS
+  GoReleaser rejects the tag as non-semver. `GORELEASER_CURRENT_TAG=v0.6.0`
+  would have worked around it by making GoReleaser create a `v0.6.0` release,
+  which is precisely the tag that fires PyPI. A plain matrix build is ~60
+  lines and puts the version string under our control.
+
+  `boxyard --version` is a ROLLOUT GATE — `ssh-target <machine> boxyard
+  --version` is how a fleet-wide change is verified — and an unstamped Go
+  binary reports `dev`, which reads like an answer and is not one. The
+  workflow ASSERTS the stamp landed before publishing, and
+  `scripts/install-go-boxyard.sh` re-checks it on the machine it installs to.
+
+  That script is the mechanism for the cutover, not the cutover. myrig still
+  runs `uv tool install --upgrade git+https://github.com/lukastk/boxyard.git`
+  in `setup/installs/all/python_tools.py`, and switching a machine over is a
+  one-line change there — left for Lukas, per machine. The script refuses to
+  replace an existing `boxyard` without `BOXYARD_REPLACE=1`: silently
+  shadowing the tool the supervisor runs every 20 minutes is not something an
+  install script should decide on its own.
 - ~~**The interactive surfaces.**~~ Done. `include -I` and `exclude -I`
   (with `--show-sizes`) are ported: fzf multi-select, the confirmation list,
   the per-box `[i/n]` progress lines and the collected error summary. A per-box
