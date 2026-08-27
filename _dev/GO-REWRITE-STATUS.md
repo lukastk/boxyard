@@ -360,6 +360,20 @@ Python, and cannot perturb the live supervisor.
    out through v0.5.12, 2026-08-26, on all five machines.
 2. ~~Does `boxyard path`'s Textual TUI need porting at all?~~ Answered: no —
    deleted from both implementations.
+3a. **What the differentials compare against once the Python is gone.**
+   Decided (2026-08-27): pin them to a PyPI release. `main` becomes the Go
+   tree and the Python package is retired, but the differentials — which are
+   where essentially every real bug in this port came from — need a reference.
+   Installing a FROZEN version in CI (`uv tool install boxyard==<last>`) keeps
+   them running through the riskiest period without leaving a dead Python tree
+   in the repo.
+
+   TODO(cleanup): drop the pinned Python reference and the differentials that
+   need it — on or after the whole fleet has run the Go binary for one month
+   with no parity finding. Sites: `internal/pyref`, and every test that calls
+   `pyref.Bin()` (internal/cli, internal/models, internal/richstyle,
+   parity/).
+
 3. ~~Replace `lukastk/boxyard` in place, or a new repo for the Go one?~~
    Answered: ONE repo, and not a fork. The differentials are the port's whole
    value and they run against the installed Python — two repos would make the
