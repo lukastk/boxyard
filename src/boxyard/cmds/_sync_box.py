@@ -3,7 +3,7 @@
 from pathlib import Path
 import asyncio
 
-from .._utils.sync_helper import sync_helper, SyncSetting, SyncDirection
+from .._utils.sync_helper import sync_helper, SyncSetting, SyncDirection, SyncUnsafe
 from .._models import (
     SyncStatus,
     BoxPart,
@@ -60,17 +60,12 @@ async def _try_merge_diverged_boxmeta(
     if not getattr(config, "merge_diverged_boxmetas", False):
         return False
 
-    _status = await get_sync_status(
-        rclone_config_path=config.rclone_config_path,
-        local_path=local_path,
-        local_sync_record_path=local_sync_record_path,
-        remote=box_meta.storage_location,
-        remote_path=remote_path,
-        remote_sync_record_path=remote_sync_record_path,
-    )
-    if _status.sync_condition != SyncCondition.CONFLICT:
-        return False
-
+    # Called only AFTER `sync_helper` has already refused, so the status is
+    # known to be unsafe and does not need asking for again. `sync_helper`
+    # raises for several reasons; the one this can settle is a two-sided
+    # divergence, and the base is what distinguishes it -- a box whose local
+    # and remote agree has nothing to merge, and the merge below is a no-op
+    # that produces the local content unchanged.
     _base = read_meta_base(config, box_meta)
     if _base is None:
         # A box that has not synced its META since the base was introduced.
@@ -135,6 +130,10 @@ async def _try_merge_diverged_boxmeta(
     if verbose:
         print("Merged the diverged boxmeta; pushing the result.")
 
+    # Force, because the records still disagree: this content supersedes both
+    # and the normal push would refuse it. Safe for the same reason the merge
+    # is -- the result CONTAINS what the remote had, so the push adds and never
+    # discards.
     await sync_helper(
         rclone_config_path=config.rclone_config_path,
         sync_direction=SyncDirection.PUSH,
@@ -341,11 +340,7 @@ async def sync_box(
             if verbose:
                 print(f"Syncing {sync_part.value}.")
     
-            # If both sides have edited the boxmeta, try to reconcile them before
-            # the sync sees it. Declines -- no base, no remote copy, a scalar both
-            # sides changed differently -- leave the divergence exactly as it is,
-            # so the refusal below is unchanged for every case this cannot settle.
-            _merge_meta_paths = dict(
+            _meta_paths = dict(
                 local_path=box_meta.get_local_part_path(config, BoxPart.META),
                 local_sync_record_path=box_meta.get_local_sync_record_path(config, sync_part),
                 remote_path=_get_remote_part_path_for_index(remote_index_name, BoxPart.META),
@@ -353,32 +348,51 @@ async def sync_box(
                     remote_index_name, sync_part
                 ),
             )
-            await _try_merge_diverged_boxmeta(
-                config=config,
-                box_meta=box_meta,
-                remote_index_name=remote_index_name,
-                local_sync_backups_path=local_sync_backups_path,
-                remote_sync_backups_path=remote_sync_backups_path,
-                verbose=verbose,
-                **_merge_meta_paths,
-            )
-    
-            _meta_sync_result = await sync_helper(
-                rclone_config_path=config.rclone_config_path,
-                sync_direction=sync_direction,
-                sync_setting=sync_setting,
-                local_path=box_meta.get_local_part_path(config, BoxPart.META),
-                local_sync_record_path=box_meta.get_local_sync_record_path(config, sync_part),
-                remote=box_meta.storage_location,
-                remote_path=_get_remote_part_path_for_index(remote_index_name, BoxPart.META),
-                remote_sync_record_path=_get_remote_sync_record_path_for_index(
-                    remote_index_name, sync_part
-                ),
-                local_sync_backups_path=local_sync_backups_path,
-                remote_sync_backups_path=remote_sync_backups_path,
-                verbose=verbose,
-                show_rclone_progress=show_rclone_progress,
-            )
+            try:
+                _meta_sync_result = await sync_helper(
+                    rclone_config_path=config.rclone_config_path,
+                    sync_direction=sync_direction,
+                    sync_setting=sync_setting,
+                    remote=box_meta.storage_location,
+                    local_sync_backups_path=local_sync_backups_path,
+                    remote_sync_backups_path=remote_sync_backups_path,
+                    verbose=verbose,
+                    show_rclone_progress=show_rclone_progress,
+                    **_meta_paths,
+                )
+            except SyncUnsafe:
+                # Reconcile only from the FAILURE path. Asking beforehand whether a
+                # merge is needed costs two remote calls per box per pass -- 1,180
+                # of them on this fleet's largest yard, every 20 minutes -- and
+                # per-box remote calls are exactly what saturated the storage box's
+                # connection limit once already (see the tombstone fetch in
+                # `multi_sync`). Here the cost is paid only by a box that has
+                # actually diverged.
+                #
+                # Declines -- no base, no remote copy, a scalar both sides changed
+                # differently -- re-raise, so the refusal is unchanged for every
+                # case this cannot settle.
+                if not await _try_merge_diverged_boxmeta(
+                    config=config,
+                    box_meta=box_meta,
+                    remote_index_name=remote_index_name,
+                    local_sync_backups_path=local_sync_backups_path,
+                    remote_sync_backups_path=remote_sync_backups_path,
+                    verbose=verbose,
+                    **_meta_paths,
+                ):
+                    raise
+                _meta_sync_result = await sync_helper(
+                    rclone_config_path=config.rclone_config_path,
+                    sync_direction=sync_direction,
+                    sync_setting=sync_setting,
+                    remote=box_meta.storage_location,
+                    local_sync_backups_path=local_sync_backups_path,
+                    remote_sync_backups_path=remote_sync_backups_path,
+                    verbose=verbose,
+                    show_rclone_progress=show_rclone_progress,
+                    **_meta_paths,
+                )
             if sync_part in sync_choices:
                 sync_results[BoxPart.META] = _meta_sync_result
     
