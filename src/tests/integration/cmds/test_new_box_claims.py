@@ -72,8 +72,11 @@ def test_without_a_machine_name_the_box_is_still_created(temp_boxyard, monkeypat
     # ownership setting would be wildly out of proportion.
     assert index_name in get_boxyard_meta(config, force_create=True).by_index_name
     assert "write_owner" not in _boxmeta(config, index_name)
-    # But NOT silent.
-    assert "no `machine_name`" in capsys.readouterr().out
+    # But NOT silent — and on STDERR, because `boxyard new` prints the index
+    # name on stdout and callers parse it.
+    captured = capsys.readouterr()
+    assert "no `machine_name`" in captured.err
+    assert "machine_name" not in captured.out, f"notice polluted stdout: {captured.out!r}"
 
 
 @pytest.mark.integration

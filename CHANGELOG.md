@@ -1,3 +1,46 @@
+## [0.5.18] - 2026-08-27
+
+### 🐛 Bug Fixes
+
+- **`boxyard new --from` failed across filesystems** (#16). The tree was moved
+  in with `Path.rename`, which is `os.rename` and cannot cross a filesystem
+  boundary, so staging anywhere not on the same filesystem as
+  `user_boxes_path` — `/tmp` where it is tmpfs, `/dev/shm`, an external disk —
+  failed with `Invalid cross-device link`. The same command worked on mymain
+  and failed on ideapad, purely because of how each mounts `/tmp`.
+
+  `shutil.move` renames when it can and falls back to copy+unlink when it
+  cannot, so the fast path is unchanged. `_rollback_new_box` gets the same
+  treatment: safe by construction today (it only runs after a forward rename
+  succeeded) but reachable across devices now that the forward move can cross
+  them.
+
+  `--copy` was never a workaround — it leaves the source behind and pays a
+  second full copy, which is the cost `--from`'s move exists to avoid.
+
+- **`boxyard new -g/--parent` left an orphan box behind when they failed**
+  (#17). Both were applied AFTER `new_box` returned, outside its try/except and
+  `_rollback_new_box`, so a bad group name or a missing parent exited 1 with
+  the box fully created and registered. A caller treating a non-zero exit as
+  "nothing happened" accumulated orphans — which is exactly how it surfaced.
+
+  Both are now validated BEFORE anything is created: the group charset is a
+  pure string check and the parent either exists or does not. That is cheaper
+  than extending the rollback, and it also stops the index name being echoed
+  to stdout for a box the command then fails on.
+
+- **CLI error messages went to stdout instead of stderr** (#18), so a caller
+  piping stdout and discarding stderr read them as data. `boxyard list-groups`
+  prints one group per line, which made its not-found message indistinguishable
+  from a group named after it — and downstream, that line became a `boxyard new
+  -g` argument and surfaced two layers later as a pydantic ValidationError
+  quoting the error text back as an invalid group name.
+
+  28 sites now pass `err=True`: every `typer.echo` immediately followed by a
+  non-zero exit, across `main` and `multi-sync`. A new test enforces the rule
+  over the source rather than the sites, because a new error path added later
+  is what would drift.
+
 ## [0.5.17] - 2026-08-27
 
 ### ✨ Features
@@ -38,6 +81,26 @@
   machine that does not hold a box cannot become its owner, so a finding about
   one would name a command that fails. A machine sees ~590 boxmetas and holds
   ~120; reporting all of them would be noise nobody reads.
+
+### ⚠️ Behaviour to be aware of
+
+A box created from v0.5.17 is owned by the machine that created it, so
+**cross-machine operations on it now go through ownership** where before they
+did not. Two consequences, both of them the feature working rather than
+regressions, and both applying only to newly created boxes:
+
+- **Deleting a box from a machine that did not create it is refused.** `delete`
+  purges the remote and writes a tombstone, which is exactly the destructive
+  operation the single-writer gate exists for. Take it over first with
+  `boxyard claim --steal -r '<box>'`.
+- **A conflicting push from another machine reports `Read-only` rather than
+  raising a conflict.** That is the quieter outcome by design — the sync path
+  deliberately returns a STATUS instead of an error so the supervisor does not
+  log the same refusal ~72 times a day — and `boxyard doctor` names the ways
+  out.
+
+Existing boxes are untouched: `write_owner` is still absent on all 318
+unclaimed boxes in the yard, and unowned still means unrestricted.
 
 ## [0.5.16] - 2026-08-27
 
