@@ -47,8 +47,17 @@ class Fleet:
             [(self.c1, self.cp1, _), (self.c2, self.cp2, _)],
         ) = create_boxyards(num_boxyards=2)
 
+        # `claim=False`: this fixture's `claim_on_m1` knob is what decides
+        # ownership, and from v0.5.17 `new_box` claims by default — which
+        # would defeat the knob and make every `claim_on_m1=False` case start
+        # owned. The tests below still assert the right property (an unclaimed
+        # box behaves as it did in v0.4.x); they just need the state to be
+        # reachable.
         self.index_name = new_box(
-            config_path=self.cp1, box_name="shared", storage_location=self.sl
+            config_path=self.cp1,
+            box_name="shared",
+            storage_location=self.sl,
+            claim=False,
         )
         if extra_exclude is not None:
             # Appended to each machine's DEFAULT exclude file, which is the
@@ -751,7 +760,9 @@ def _cli(config_path, *args):
 @pytest.mark.integration
 def test_claim_all_included_claims_every_unowned_included_box():
     fleet = Fleet(claim_on_m1=False)
-    second = new_box(config_path=fleet.cp1, box_name="also-mine", storage_location=fleet.sl)
+    second = new_box(
+        config_path=fleet.cp1, box_name="also-mine", storage_location=fleet.sl, claim=False
+    )
     run(sync_box(config_path=fleet.cp1, box_index_name=second, verbose=False))
 
     result = _cli(fleet.cp1, "claim", "--all-included")
@@ -772,7 +783,7 @@ def test_claim_all_included_skips_boxes_in_a_local_storage_location():
     """
     fleet = Fleet(claim_on_m1=False)
     local_box = new_box(
-        config_path=fleet.cp1, box_name="local-only", storage_location="fake"
+        config_path=fleet.cp1, box_name="local-only", storage_location="fake", claim=False
     )
 
     result = _cli(fleet.cp1, "claim", "--all-included")
@@ -791,7 +802,7 @@ def test_claim_all_included_reports_the_boxes_that_refuse_without_stopping():
     """
     fleet = Fleet(include_on_m2=True)  # m1 owns the shared box, m2 has it too
     mine_alone = new_box(
-        config_path=fleet.cp2, box_name="only-on-m2", storage_location=fleet.sl
+        config_path=fleet.cp2, box_name="only-on-m2", storage_location=fleet.sl, claim=False
     )
     run(sync_box(config_path=fleet.cp2, box_index_name=mine_alone, verbose=False))
 
