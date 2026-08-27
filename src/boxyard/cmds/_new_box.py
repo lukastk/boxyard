@@ -67,6 +67,7 @@ def new_box(
     verbose: bool = False,
     git_clone_url: str | None = None,
     sync_first: bool | None = None,
+    claim: bool = True,
 ):
     """
     Create a new boxyard box.
@@ -84,6 +85,8 @@ def new_box(
         git_clone_url: Git URL (SSH or HTTPS) to clone as the new box.
         sync_first: If True, sync all boxmetas before creating to check for ID collisions
                    on remote. If None, uses config.sync_before_new_box setting.
+        claim: Whether to make this machine the box's write owner. Pass False
+               when creating a box here that will be worked on elsewhere.
 
     Returns:
         The index name of the new box.
@@ -202,6 +205,41 @@ def new_box(
         config, existing_ids, creation_timestamp=fixed_timestamp
     )
     
+    # Claim the box for this machine as it is created.
+    #
+    # The machine creating a box is the machine that will work on it -- that is
+    # what creating one MEANS -- and a box nobody has claimed is a box two machines
+    # can still diverge on, which is the problem ownership exists to remove.
+    # `include` already nudges about exactly this; creation is a stronger signal
+    # than inclusion and was saying nothing at all.
+    #
+    # The "unowned by default" rule was a MIGRATION guarantee: v0.5.2 promised that
+    # "nothing changes for the 583 boxes in the yard until someone claims them". A
+    # box created afterwards has no v0.4.x behaviour to preserve, so the guarantee
+    # does not reach it.
+    #
+    # Set locally, with NO network call, which is why this does not turn `boxyard
+    # new` into an online command. `claim_box` reads the remote back to verify
+    # because two machines can claim the same EXISTING box at once -- measured at 5
+    # trials in 6 -- but a box created a moment ago cannot be contested: no other
+    # machine knows its id yet. All of claim's machinery is for a race that cannot
+    # happen here.
+    _write_owner = None
+    if claim:
+        if config.machine_name:
+            _write_owner = config.machine_name
+        else:
+            # Not fatal: a machine with no `machine_name` is an expected state (the
+            # myrig template deliberately emits no key for a machine that is not in
+            # its machines list), and refusing to create a box over an ownership
+            # setting would be wildly out of proportion. Said out loud rather than
+            # skipped silently, and `boxyard doctor` reports both the missing name
+            # and the resulting unowned box.
+            print(
+                "Created without a write owner: this machine has no `machine_name` "
+                "set, so it cannot claim a box. See `boxyard doctor`."
+            )
+    
     box_meta = BoxMeta(
         creation_timestamp_utc=creation_timestamp,
         box_subid=box_subid,
@@ -209,6 +247,7 @@ def new_box(
         storage_location=storage_location,
         creator_hostname=creator_hostname,
         groups=config.default_box_groups,
+        write_owner=_write_owner,
     )
     from boxyard._models import BoxPart
     

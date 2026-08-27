@@ -373,3 +373,52 @@ def test_no_finding_when_the_base_matches(temp_boxyard):
     )
 
     assert _findings(_doctor(config_path), "unpushed-meta-edit") == []
+
+# %% [markdown]
+# ## `unowned-box`
+#
+# A box included here that no machine has claimed. Unowned means unrestricted,
+# so nothing is being withheld — and also that two machines can push it and
+# diverge, which is the problem ownership exists to remove. Until this check
+# the only thing that ever said so was a one-line nudge when you happened to
+# run `include`.
+#
+# Scoped to boxes INCLUDED here for the same reason `claim` refuses a box that
+# is not: a machine that does not hold a box cannot become its owner, so a
+# finding about one would name a command that fails.
+
+# %%
+#|export
+@pytest.mark.integration
+def test_unowned_box_reported(temp_boxyard):
+    _, _, _, config_path, _ = temp_boxyard
+    index_name = new_box(config_path=config_path, box_name="ownerless", claim=False)
+
+    findings = _findings(_doctor(config_path), "unowned-box")
+    assert len(findings) == 1, findings
+    assert index_name in findings[0]["message"]
+    assert f"claim -r '{index_name}'" in findings[0]["hint"]
+
+
+@pytest.mark.integration
+def test_a_claimed_box_is_not_reported(temp_boxyard):
+    _, _, _, config_path, _ = temp_boxyard
+    new_box(config_path=config_path, box_name="owned")
+
+    # `new` claims by default from v0.5.17, which is what closes the source of
+    # these findings rather than merely reporting them.
+    assert _findings(_doctor(config_path), "unowned-box") == []
+
+
+@pytest.mark.integration
+def test_an_unowned_box_not_held_here_is_not_reported(temp_boxyard):
+    """`claim` refuses a box that is not included, so reporting it would name a
+    command that fails — and a machine sees ~590 boxmetas while holding ~120."""
+    import shutil
+
+    _, _, _, config_path, _ = temp_boxyard
+    index_name = new_box(config_path=config_path, box_name="elsewhere", claim=False)
+    config = get_config(config_path)
+    shutil.rmtree(config.user_boxes_path / index_name)
+
+    assert _findings(_doctor(config_path), "unowned-box") == []

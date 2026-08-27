@@ -387,6 +387,11 @@ def cli_new(
     initialise_git: bool = Option(
         True, help="Initialise a git box in the new box."
     ),
+    claim: bool = Option(
+        True,
+        help="Make this machine the box's write owner. Use --no-claim when "
+        "creating a box here that will be worked on elsewhere.",
+    ),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
 ):
     """
@@ -434,6 +439,7 @@ def cli_new(
         creation_timestamp_utc=creation_timestamp_utc,
         verbose=False,
         git_clone_url=git_clone_url,
+        claim=claim,
     )
     typer.echo(box_index_name)
 

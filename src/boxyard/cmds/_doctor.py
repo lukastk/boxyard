@@ -29,6 +29,7 @@ DOCTOR_CHECK_NAMES = [
     "write-denied",
     "stale-owner",
     "unpushed-meta-edit",
+    "unowned-box",
 ]
 
 # Subid format used by boxes created before the current config conventions.
@@ -923,6 +924,20 @@ async def run_doctor(
             f"-r '{bm.index_name}' --sync-choices meta`.",
             index_name=bm.index_name,
             changed_fields=_changed,
+            storage_location=bm.storage_location,
+        )
+    for bm in box_metas:
+        if bm.write_owner is not None:
+            continue
+        if not bm.check_included(config):
+            continue
+        _add_finding(
+            "unowned-box",
+            f"Box '{bm.index_name}' is included here but no machine has claimed it",
+            f"Nothing is blocked — unowned means unrestricted — but two machines "
+            f"can push it and diverge. If this is where you work on it: `boxyard "
+            f"claim -r '{bm.index_name}'`.",
+            index_name=bm.index_name,
             storage_location=bm.storage_location,
         )
     num_findings = sum(len(check["findings"]) for check in checks.values())

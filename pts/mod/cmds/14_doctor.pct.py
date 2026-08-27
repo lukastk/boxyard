@@ -78,6 +78,13 @@
 #     the pending edit visible BEFORE something lands on it. Needs the merge
 #     base (`BoxMeta.get_local_meta_base_path`), so it says nothing about a box
 #     that has not synced its META since v0.5.14.
+# 22. **unowned-box** — a box INCLUDED here that no machine has claimed. Unowned
+#     means unrestricted, so nothing is being withheld — but it is also a box
+#     two machines can still diverge on, which is the problem ownership exists
+#     to remove, and until this check nothing said so except a one-line nudge
+#     when you happened to `include` one. Scoped to boxes held here because
+#     `claim` refuses a box that is not, so every finding names a command that
+#     will actually work.
 #
 # Doctor never mutates or auto-fixes anything.
 
@@ -125,6 +132,7 @@ DOCTOR_CHECK_NAMES = [
     "write-denied",
     "stale-owner",
     "unpushed-meta-edit",
+    "unowned-box",
 ]
 
 # %% [markdown]
@@ -1461,6 +1469,45 @@ for bm in box_metas:
         f"-r '{bm.index_name}' --sync-choices meta`.",
         index_name=bm.index_name,
         changed_fields=_changed,
+        storage_location=bm.storage_location,
+    )
+
+# %% [markdown]
+# ## Check: `unowned-box`
+#
+# A box included here that no machine has claimed.
+#
+# Unowned means unrestricted, so nothing is being withheld. What it also means
+# is that two machines can push the same box and diverge — the exact problem
+# ownership exists to remove — and nothing surfaced it: `include` prints a
+# one-line nudge, and if you were not running `include` you never heard about
+# it again.
+#
+# That gap had a measurable shape. `new_box` never set `write_owner`, so every
+# box created since ownership landed was born unowned; on mymain on 2026-08-27
+# the ONLY unowned boxes held there were the three created since the claim
+# sweep. `boxyard new` claims from v0.5.17, which closes the source; this
+# reports the ones already made.
+#
+# Scoped to boxes INCLUDED here, for the same reason `claim` refuses a box that
+# is not: a machine that does not hold a box cannot become its owner, so a
+# finding about one would name a command that fails. This machine sees ~590
+# boxmetas and holds ~120; reporting all of them would be noise nobody reads.
+
+# %%
+#|export
+for bm in box_metas:
+    if bm.write_owner is not None:
+        continue
+    if not bm.check_included(config):
+        continue
+    _add_finding(
+        "unowned-box",
+        f"Box '{bm.index_name}' is included here but no machine has claimed it",
+        f"Nothing is blocked — unowned means unrestricted — but two machines "
+        f"can push it and diverge. If this is where you work on it: `boxyard "
+        f"claim -r '{bm.index_name}'`.",
+        index_name=bm.index_name,
         storage_location=bm.storage_location,
     )
 
