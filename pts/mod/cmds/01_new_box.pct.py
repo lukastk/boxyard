@@ -319,9 +319,16 @@ if claim:
         # setting would be wildly out of proportion. Said out loud rather than
         # skipped silently, and `boxyard doctor` reports both the missing name
         # and the resulting unowned box.
+        # STDERR. `boxyard new` prints the index name on stdout and callers
+        # parse it -- `cd $(boxyard new ...)` -- so a notice on stdout is read
+        # as part of the answer. That is the same defect as issue #18, and the
+        # integration suite caught this one the moment it was introduced:
+        # `test_new_parent_accepts_every_documented_form` reads the index name
+        # off stdout and got this line instead.
         print(
             "Created without a write owner: this machine has no `machine_name` "
-            "set, so it cannot claim a box. See `boxyard doctor`."
+            "set, so it cannot claim a box. See `boxyard doctor`.",
+            file=sys.stderr,
         )
 
 box_meta = BoxMeta(
