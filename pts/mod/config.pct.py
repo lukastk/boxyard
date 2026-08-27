@@ -144,6 +144,20 @@ class Config(const.StrictModel):
     # New box creation settings
     sync_before_new_box: bool = False  # If True, sync boxmetas before creating new box to check for ID collisions on remote
 
+    # Conflict resolution
+    #
+    # When True, a boxmeta that BOTH sides have edited is merged against the
+    # copy they last agreed on (`meta.base.toml`) instead of refusing. `groups`
+    # and `parents` merge as sets; a scalar both sides changed differently is
+    # still a refusal for a human to settle.
+    #
+    # OFF by default, and deliberately so. Resolving the merge means
+    # force-pushing the result over the remote boxmeta -- safe, because the
+    # merge CONTAINS what the remote had, but still a write that today's code
+    # would refuse to make. That is a decision to take per fleet rather than
+    # one that arrives with an upgrade.
+    merge_diverged_boxmetas: bool = False
+
     # Forward-compat passthrough: keys found in config.toml that this version
     # of boxyard does not know. `get_config` collects them here instead of
     # letting `extra="forbid"` reject the file.
@@ -450,6 +464,7 @@ def _get_default_config_dict(config_path=None, data_path=None) -> Config:
         max_concurrent_rclone_ops=const.DEFAULT_MAX_CONCURRENT_RCLONE_OPS,
         single_parent=False,
         sync_before_new_box=False,
+        merge_diverged_boxmetas=False,
     )
     return config_dict
 

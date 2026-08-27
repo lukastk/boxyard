@@ -4,7 +4,17 @@ from pathlib import Path
 import asyncio
 
 from .._utils.sync_helper import sync_helper, SyncSetting, SyncDirection
-from .._models import SyncStatus, BoxPart, BoxMeta, SyncCondition, get_sync_status, record_meta_base
+from .._models import (
+    SyncStatus,
+    BoxPart,
+    BoxMeta,
+    SyncCondition,
+    MetaMergeConflict,
+    get_sync_status,
+    merge_box_metas,
+    read_meta_base,
+    record_meta_base,
+)
 from .._ownership import may_push, push_would_transfer, write_denied_message
 from ..config import get_config, StorageType
 from .._utils import (
@@ -16,6 +26,130 @@ from .._utils.locking import BoxyardLockManager, LockAcquisitionError, BOX_SYNC_
 from .. import const
 from .._tombstones import is_tombstoned, get_tombstone
 from .._remote_index import find_remote_box_by_id, update_remote_index_cache
+
+async def _try_merge_diverged_boxmeta(
+    *,
+    config,
+    box_meta: BoxMeta,
+    remote_index_name: str,
+    local_path: Path,
+    local_sync_record_path: Path,
+    remote_path: Path,
+    remote_sync_record_path: Path,
+    local_sync_backups_path: Path,
+    remote_sync_backups_path: Path,
+    verbose: bool = False,
+) -> bool:
+    """
+    Reconcile a boxmeta that BOTH sides have edited, before the sync sees it.
+
+    Returns True when the merge was written and pushed, False when it declined
+    -- and DECLINING IS THE DEFAULT SHAPE of this function. It bails out, in
+    order, when: the setting is off; the status is not a conflict; there is no
+    merge base; the remote copy cannot be read; the two sides changed the same
+    scalar differently. Every one of those leaves the divergence exactly as it
+    was, so the refusal that follows is unchanged for anything this cannot
+    settle. Nothing here is a fallback that papers over a failure.
+
+    On success it FORCE-PUSHES the merged boxmeta. That is a write today's code
+    would refuse to make, and it is justified by what a merge is: the result
+    CONTAINS the remote's content as well as this machine's, so the push adds
+    and never discards. It is also why `merge_diverged_boxmetas` is off by
+    default.
+    """
+    if not getattr(config, "merge_diverged_boxmetas", False):
+        return False
+
+    _status = await get_sync_status(
+        rclone_config_path=config.rclone_config_path,
+        local_path=local_path,
+        local_sync_record_path=local_sync_record_path,
+        remote=box_meta.storage_location,
+        remote_path=remote_path,
+        remote_sync_record_path=remote_sync_record_path,
+    )
+    if _status.sync_condition != SyncCondition.CONFLICT:
+        return False
+
+    _base = read_meta_base(config, box_meta)
+    if _base is None:
+        # A box that has not synced its META since the base was introduced.
+        # There is nothing to compute a delta against, and guessing one is the
+        # thing this whole design exists to avoid.
+        if verbose:
+            print(
+                "Boxmeta has diverged and there is no merge base to reconcile it "
+                "against; leaving it for `boxyard doctor`."
+            )
+        return False
+
+    from .._utils import rclone_cat
+
+    _exists, _raw = await rclone_cat(
+        rclone_config_path=config.rclone_config_path,
+        source=box_meta.storage_location,
+        source_path=remote_path.as_posix(),
+    )
+    if not _exists:
+        return False
+
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as _tmp:
+        _tmp.write(_raw)
+        _remote_copy = Path(_tmp.name)
+    try:
+        _remote_meta = BoxMeta.load_from_path(
+            _remote_copy,
+            creation_timestamp_utc=box_meta.creation_timestamp_utc,
+            box_subid=box_meta.box_subid,
+            name=box_meta.name,
+            storage_location=box_meta.storage_location,
+        )
+    except Exception as e:
+        if verbose:
+            print(f"Could not read the remote boxmeta to merge it: {e}")
+        return False
+    finally:
+        _remote_copy.unlink(missing_ok=True)
+
+    # Re-read the LOCAL boxmeta from disk rather than trusting the registry
+    # snapshot, for the same reason `modify_boxmeta` does: the cache is a
+    # snapshot of the last refresh, and anything that reached boxmeta.toml
+    # since would be silently dropped.
+    _local_meta = BoxMeta.load(config, box_meta.storage_location, box_meta.index_name)
+
+    try:
+        _merged = merge_box_metas(_base, _local_meta, _remote_meta)
+    except MetaMergeConflict as e:
+        # The one case a human still has to settle. Say which field, and leave
+        # everything alone.
+        print(
+            f"Boxmeta of '{box_meta.index_name}' has diverged and cannot be "
+            f"merged automatically: both sides changed {', '.join(e.fields)}. "
+            f"`boxyard doctor` names the ways out."
+        )
+        return False
+
+    _merged.save(config)
+    if verbose:
+        print("Merged the diverged boxmeta; pushing the result.")
+
+    await sync_helper(
+        rclone_config_path=config.rclone_config_path,
+        sync_direction=SyncDirection.PUSH,
+        sync_setting=SyncSetting.FORCE,
+        local_path=local_path,
+        local_sync_record_path=local_sync_record_path,
+        remote=box_meta.storage_location,
+        remote_path=remote_path,
+        remote_sync_record_path=remote_sync_record_path,
+        local_sync_backups_path=local_sync_backups_path,
+        remote_sync_backups_path=remote_sync_backups_path,
+        verbose=verbose,
+    )
+    record_meta_base(config, box_meta)
+    return True
 
 async def sync_box(
     config_path: Path,
@@ -206,6 +340,29 @@ async def sync_box(
         if sync_part in sync_choices or BoxPart.DATA in sync_choices:
             if verbose:
                 print(f"Syncing {sync_part.value}.")
+    
+            # If both sides have edited the boxmeta, try to reconcile them before
+            # the sync sees it. Declines -- no base, no remote copy, a scalar both
+            # sides changed differently -- leave the divergence exactly as it is,
+            # so the refusal below is unchanged for every case this cannot settle.
+            _merge_meta_paths = dict(
+                local_path=box_meta.get_local_part_path(config, BoxPart.META),
+                local_sync_record_path=box_meta.get_local_sync_record_path(config, sync_part),
+                remote_path=_get_remote_part_path_for_index(remote_index_name, BoxPart.META),
+                remote_sync_record_path=_get_remote_sync_record_path_for_index(
+                    remote_index_name, sync_part
+                ),
+            )
+            await _try_merge_diverged_boxmeta(
+                config=config,
+                box_meta=box_meta,
+                remote_index_name=remote_index_name,
+                local_sync_backups_path=local_sync_backups_path,
+                remote_sync_backups_path=remote_sync_backups_path,
+                verbose=verbose,
+                **_merge_meta_paths,
+            )
+    
             _meta_sync_result = await sync_helper(
                 rclone_config_path=config.rclone_config_path,
                 sync_direction=sync_direction,

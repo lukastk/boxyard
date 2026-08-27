@@ -943,6 +943,147 @@ def create_user_box_group_symlinks(
         _remove_empty_folders(path)
 
 # %% [markdown]
+# ## Merging two boxmetas that both moved
+
+# %%
+#|export
+class MetaMergeConflict(Exception):
+    """The two sides changed the same thing to different values."""
+
+    def __init__(self, fields: list[str]):
+        self.fields = fields
+        super().__init__(
+            "cannot merge: both sides changed " + ", ".join(fields) + " to different values"
+        )
+
+
+def _merge_set_field(base: list[str], local: list[str], remote: list[str]) -> list[str]:
+    """
+    Three-way merge of a field that behaves like a SET (`groups`, `parents`).
+
+    Each side's intent is read as a delta against the base -- what it ADDED and
+    what it REMOVED -- rather than as a value to choose between. So a machine
+    that added `archived` and a machine that added `write_owner`'s worth of
+    nothing both get their way, which is the entire point: last-writer-wins
+    silently discards one of them.
+
+    A removal beats an addition. If one side deleted a group the other side
+    still has, the deletion is the newer intent about that specific entry --
+    the other side simply never saw it change. The reverse rule would make a
+    group impossible to remove while any machine was behind.
+
+    ORDER has to be a function of the content alone, never of which side
+    happens to be "local". Surviving base entries keep their base order -- so an
+    untouched boxmeta is not churned -- and the additions follow in SORTED
+    order, which both machines compute identically.
+
+    That sort is not tidiness. Ordering the additions local-first put 80 of the
+    512 possible three-group merges in a different order on each machine: the
+    same set, different bytes, so each side read the other's push as a change
+    and pushed back. Two machines would have traded the same boxmeta every 20
+    minutes, forever.
+    """
+    base_set, local_set, remote_set = set(base), set(local), set(remote)
+    removed = (base_set - local_set) | (base_set - remote_set)
+    added = (local_set - base_set) | (remote_set - base_set)
+
+    out: list[str] = []
+    for entry in base:
+        if entry not in removed and entry not in out:
+            out.append(entry)
+    for entry in sorted(added - removed):
+        if entry not in out:
+            out.append(entry)
+    return out
+
+
+def _merge_scalar_field(
+    name: str, base, local, remote, conflicts: list[str]
+):
+    """
+    Three-way merge of a single value (`write_owner`, `creator_hostname`).
+
+    One side changed it -> take that side. Neither changed it -> unchanged.
+    BOTH changed it, to different values -> a real conflict, recorded and left
+    for a human. That last case is the one thing a merge must not guess at: for
+    `write_owner` it means two machines each believe they own the box, and
+    picking one silently would hand a box to a machine that does not think it
+    has it.
+    """
+    if local == remote:
+        return local
+    if local == base:
+        return remote
+    if remote == base:
+        return local
+    conflicts.append(name)
+    return base
+
+
+def merge_box_metas(base: "BoxMeta", local: "BoxMeta", remote: "BoxMeta") -> "BoxMeta":
+    """
+    Merge a boxmeta that both sides have edited, against the state they last
+    agreed on.
+
+    Raises `MetaMergeConflict` when the two sides changed the same scalar to
+    different values. That is the only case a human still has to settle, and it
+    leaves sync doing exactly what it does today.
+
+    The merge is CONVERGENT rather than symmetric: machine A merges its local
+    against the remote, pushes, and machine B then merges its own local against
+    what A pushed. Each pass takes the union of the additions, so the fleet
+    arrives at the same boxmeta without any machine seeing the others' bases.
+    """
+    conflicts: list[str] = []
+
+    # The identity fields are not in the file -- they come from the index name
+    # and the storage location -- so a disagreement here means the three
+    # boxmetas are not describing the same box, which is a bug rather than an
+    # edit to reconcile.
+    for _field in ("creation_timestamp_utc", "box_subid", "name"):
+        if not (getattr(base, _field) == getattr(local, _field) == getattr(remote, _field)):
+            raise ValueError(
+                f"cannot merge boxmetas describing different boxes: {_field} is "
+                f"{getattr(base, _field)!r} / {getattr(local, _field)!r} / "
+                f"{getattr(remote, _field)!r}"
+            )
+
+    merged_unknown = dict(base.unknown_keys)
+    for _key in set(base.unknown_keys) | set(local.unknown_keys) | set(remote.unknown_keys):
+        _value = _merge_scalar_field(
+            f"unknown_keys.{_key}",
+            base.unknown_keys.get(_key),
+            local.unknown_keys.get(_key),
+            remote.unknown_keys.get(_key),
+            conflicts,
+        )
+        if _value is None:
+            merged_unknown.pop(_key, None)
+        else:
+            merged_unknown[_key] = _value
+
+    merged = local.model_copy(
+        update={
+            "groups": _merge_set_field(base.groups, local.groups, remote.groups),
+            "parents": _merge_set_field(base.parents, local.parents, remote.parents),
+            "write_owner": _merge_scalar_field(
+                "write_owner", base.write_owner, local.write_owner, remote.write_owner, conflicts
+            ),
+            "creator_hostname": _merge_scalar_field(
+                "creator_hostname",
+                base.creator_hostname,
+                local.creator_hostname,
+                remote.creator_hostname,
+                conflicts,
+            ),
+            "unknown_keys": merged_unknown,
+        }
+    )
+    if conflicts:
+        raise MetaMergeConflict(sorted(conflicts))
+    return merged
+
+# %% [markdown]
 # ## Recording the META merge base
 
 # %%
