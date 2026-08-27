@@ -70,7 +70,11 @@ def _rollback_new_box(
 
     if moved_from_path is not None and box_data_path.exists():
         # `from_path` was moved into the box — put it back where it came from.
-        box_data_path.rename(moved_from_path)
+        # Also `shutil.move`. Safe by construction TODAY -- this only runs
+        # after a forward move succeeded, so both ends were on one filesystem
+        # -- but the forward move can now cross devices, which makes this
+        # reachable across them too.
+        shutil.move(str(box_data_path), str(moved_from_path))
     elif box_data_path.exists():
         shutil.rmtree(box_data_path)
     if box_path.exists():
@@ -380,7 +384,21 @@ try:
                 from_path, box_data_path
             )  # TESTREF: test_new_box_copy_from_path
         else:
-            from_path.rename(box_data_path)
+            # `shutil.move`, not `Path.rename`: rename is `os.rename` and
+            # cannot cross a filesystem boundary, so staging a tree anywhere
+            # that is not on the same filesystem as `user_boxes_path` failed
+            # outright with `Invalid cross-device link`. That made the same
+            # command work or not depending on how the machine happens to
+            # mount /tmp -- it worked on mymain and failed on ideapad, whose
+            # /tmp is tmpfs. `shutil.move` renames when it can and falls back
+            # to copy+unlink when it cannot, so the fast path is unchanged.
+            #
+            # `--copy` is not a workaround: it leaves the source behind and
+            # pays a second full copy, which is the cost `--from`'s move
+            # exists to avoid.
+            import shutil
+
+            shutil.move(str(from_path), str(box_data_path))
             _moved_from_path = from_path
     else:
         box_data_path.mkdir(parents=True, exist_ok=True)

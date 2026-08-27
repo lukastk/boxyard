@@ -149,7 +149,7 @@ if storage_locations is None and box_index_names is None:
 if storage_locations is not None and any(
     sl not in config.storage_locations for sl in storage_locations
 ):
-    typer.echo(f"Invalid storage location: {storage_locations}")
+    typer.echo(f"Invalid storage location: {storage_locations}", err=True)
     raise typer.Exit(code=1)
 
 if max_concurrent_rclone_ops is None:
@@ -170,7 +170,7 @@ else:
         box_index_name not in boxyard_meta.by_index_name
         for box_index_name in box_index_names
     ):
-        typer.echo(f"Non-existent box: {box_index_names}")
+        typer.echo(f"Non-existent box: {box_index_names}", err=True)
         raise typer.Exit(code=1)
     box_metas = [
         boxyard_meta.by_index_name[box_index_name]

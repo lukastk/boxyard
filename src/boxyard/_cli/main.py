@@ -114,6 +114,42 @@ class NameMatchMode(str, Enum):
     SUBSEQUENCE = "subsequence"
 
 
+def _resolve_parent_box_id(parent: str) -> str:
+    """
+    Resolve `--parent` to a box id, or exit 1 saying it was not found.
+
+    `--parent` is documented as taking an "index name, id, or name", and it
+    only ever honoured the NAME: the value went in as `box_name`, which matches
+    against `box_meta.name`, and an index name is never a substring of the bare
+    name it ends with. So `--parent 20260601_ab12cd__thing` reported "Box not
+    found."
+
+    The two EXACT forms are tried first, then the name match. The order is
+    unambiguous because an index name, a box id and a name have distinct
+    shapes, and the first two are looked up by equality rather than substring.
+
+    Called BEFORE the box is created, so a missing parent fails with nothing
+    made.
+    """
+    from .._models import get_boxyard_meta
+    from ..config import get_config as _get_config
+
+    _bm = get_boxyard_meta(_get_config(app_state["config_path"]))
+    if parent in _bm.by_index_name:
+        return _bm.by_index_name[parent].box_id
+    if parent in _bm.by_id:
+        return _bm.by_id[parent].box_id
+    parent_index = _get_box_index_name(
+        box_name=parent, box_id=None, box_index_name=None,
+        name_match_mode=None, name_match_case=False,
+    )
+    parent_meta = _bm.by_index_name.get(parent_index)
+    if parent_meta is None:
+        typer.echo(f"Parent box '{parent}' not found.", err=True)
+        raise typer.Exit(code=1)
+    return parent_meta.box_id
+
+
 def _get_box_index_name(
     box_name: str | None,
     box_id: str | None,
@@ -353,7 +389,7 @@ def cli_new(
         box_name = _extract_box_name_from_git_url(git_clone_url)
 
     if box_name is None:
-        typer.echo("No box name provided.")
+        typer.echo("No box name provided.", err=True)
         raise typer.Exit(code=1)
 
     if creation_timestamp_utc is not None:
@@ -370,8 +406,31 @@ def cli_new(
                     creation_timestamp_utc, const.BOX_TIMESTAMP_FORMAT_DATE_ONLY
                 )
             except ValueError:
-                typer.echo(f"Invalid creation timestamp: {creation_timestamp_utc}")
+                typer.echo(f"Invalid creation timestamp: {creation_timestamp_utc}", err=True)
                 raise typer.Exit(code=1)
+
+    # Validate --group and --parent BEFORE creating anything.
+    #
+    # These used to be applied AFTER `new_box` returned, outside its
+    # try/except + `_rollback_new_box`. So a bad group name or a missing parent
+    # exited 1 with the box already fully created and registered, and a caller
+    # that reads a non-zero exit as "nothing happened" accumulated orphans.
+    # That is not hypothetical: a cockpit command built its `-g` list from
+    # another command's output, one entry was an error string rather than a
+    # group name, and the failed run left a real box behind.
+    #
+    # Both are knowable up front -- the group charset is a pure string check
+    # and the parent either exists or does not -- so validating here is
+    # cheaper than extending the rollback, and it also stops the index name
+    # being echoed for a box the command then fails on.
+    from .._models import BoxMeta as _BoxMeta
+
+    for _group in groups or []:
+        _BoxMeta.validate_group_name(_group)
+
+    _parent_box_id = None
+    if parent:
+        _parent_box_id = _resolve_parent_box_id(parent)
 
     box_index_name = _call_with_lock_handling(
         new_box,
@@ -402,41 +461,13 @@ def cli_new(
             },
         )
 
-    if parent:
-        from .._models import get_boxyard_meta
-        from ..config import get_config as _get_config
-
-        _config = _get_config(app_state["config_path"])
-        _bm = get_boxyard_meta(_config)
-        # `--parent` is documented as taking an "index name, id, or name", and
-        # it only ever honoured the NAME: the value went in as `box_name`, which
-        # matches against `box_meta.name`, and an index name is never a
-        # substring of the bare name it ends with. So `--parent
-        # 20260601_ab12cd__thing` reported "Box not found."
-        #
-        # Try the two EXACT forms first, then fall back to the name match. The
-        # order is unambiguous because an index name, a box id and a name have
-        # distinct shapes, and the first two are looked up by equality rather
-        # than by substring.
-        if parent in _bm.by_index_name:
-            parent_meta = _bm.by_index_name[parent]
-        elif parent in _bm.by_id:
-            parent_meta = _bm.by_id[parent]
-        else:
-            parent_index = _get_box_index_name(
-                box_name=parent, box_id=None, box_index_name=None,
-                name_match_mode=None, name_match_case=False,
-            )
-            parent_meta = _bm.by_index_name.get(parent_index)
-        if parent_meta is None:
-            typer.echo(f"Parent box '{parent}' not found.", err=True)
-            raise typer.Exit(code=1)
+    if _parent_box_id is not None:
         from ..cmds import modify_boxmeta as _modify_bm
 
         _modify_bm(
             config_path=app_state["config_path"],
             box_index_name=box_index_name,
-            modifications={"parents": [parent_meta.box_id]},
+            modifications={"parents": [_parent_box_id]},
         )
 
     # `new` was the ONLY command that declared `--refresh-user-symlinks` and
@@ -697,7 +728,7 @@ def cli_add_to_group(
 
     boxyard_meta = get_boxyard_meta(get_config(app_state["config_path"]))
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
     box_meta = boxyard_meta.by_index_name[box_index_name]
     new_groups = list(box_meta.groups)
@@ -811,7 +842,7 @@ def cli_remove_from_group(
 
     boxyard_meta = get_boxyard_meta(get_config(app_state["config_path"]))
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
     box_meta = boxyard_meta.by_index_name[box_index_name]
     to_remove = set()
@@ -923,10 +954,10 @@ def cli_add_parent(
     boxyard_meta = get_boxyard_meta(config)
 
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
     if parent_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Parent box with index name `{parent_index_name}` not found.")
+        typer.echo(f"Parent box with index name `{parent_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
 
     box_meta = boxyard_meta.by_index_name[box_index_name]
@@ -1027,7 +1058,7 @@ def cli_remove_parent(
     boxyard_meta = get_boxyard_meta(config)
 
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
 
     box_meta = boxyard_meta.by_index_name[box_index_name]
@@ -1050,7 +1081,7 @@ def cli_remove_parent(
         parent_label = parent_index_name
 
     if target_parent_id is None or target_parent_id not in box_meta.parents:
-        typer.echo(f"Box `{box_index_name}` does not have parent `{parent_label}`.")
+        typer.echo(f"Box `{box_index_name}` does not have parent `{parent_label}`.", err=True)
         raise typer.Exit(code=1)
     else:
         modify_boxmeta(
@@ -1356,7 +1387,7 @@ def cli_include(
     )
 
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
 
     _run_with_lock_handling(
@@ -1569,7 +1600,7 @@ def cli_exclude(
     )
 
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
 
     _run_with_lock_handling(
@@ -1638,7 +1669,7 @@ def cli_delete(
     config = get_config(app_state["config_path"])
     boxyard_meta = get_boxyard_meta(config)
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
 
     box_meta = boxyard_meta.by_index_name[box_index_name]
@@ -1774,7 +1805,7 @@ def cli_box_status(
 
     boxyard_meta = get_boxyard_meta(get_config(app_state["config_path"]))
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
 
     sync_status_data = asyncio.run(
@@ -1823,7 +1854,7 @@ def cli_yard_status(
     if storage_locations is not None and any(
         sl not in config.storage_locations for sl in storage_locations
     ):
-        typer.echo(f"Invalid storage location: {storage_locations}")
+        typer.echo(f"Invalid storage location: {storage_locations}", err=True)
         raise typer.Exit(code=1)
 
     if max_concurrent_rclone_ops is None:
@@ -1957,7 +1988,7 @@ def cli_list(
     if storage_locations is not None and any(
         sl not in config.storage_locations for sl in storage_locations
     ):
-        typer.echo(f"Invalid storage location: {storage_locations}")
+        typer.echo(f"Invalid storage location: {storage_locations}", err=True)
         raise typer.Exit(code=1)
 
     all_boxyard_meta = get_boxyard_meta(config)
@@ -2146,11 +2177,11 @@ def cli_list_groups(
     config = get_config(app_state["config_path"])
     boxyard_meta = get_boxyard_meta(config)
     if box_index_name is not None and box_path is not None:
-        typer.echo("Both --box and --box-path cannot be provided.")
+        typer.echo("Both --box and --box-path cannot be provided.", err=True)
         raise typer.Exit(code=1)
 
     if list_all and (box_path is not None or box_index_name is not None):
-        typer.echo("Cannot provide both --box and --box-path when using --all.")
+        typer.echo("Cannot provide both --box and --box-path when using --all.", err=True)
         raise typer.Exit(code=1)
 
     if list_all:
@@ -2177,15 +2208,15 @@ def cli_list_groups(
         if box_index_name is None:
             typer.echo(
                 "Could not determine the box index name from the provided box path."
-            )
+            , err=True)
             raise typer.Exit(code=1)
 
     if box_index_name is None:
-        typer.echo("Must provide box full name.")
+        typer.echo("Must provide box full name.", err=True)
         raise typer.Exit(code=1)
 
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
     box_meta = boxyard_meta.by_index_name[box_index_name]
     box_groups = box_meta.groups
@@ -2297,7 +2328,7 @@ def cli_path(
     )
 
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
     box_meta = boxyard_meta.by_index_name[box_index_name]
 
@@ -2324,7 +2355,7 @@ def cli_path(
             box_meta.get_local_sync_record_path(config, BoxPart.CONF).as_posix()
         )
     else:
-        typer.echo(f"Invalid path option: {path_option}")
+        typer.echo(f"Invalid path option: {path_option}", err=True)
         raise typer.Exit(code=1)
 
 # %% pts/mod/_cli/main.pct.py 54
@@ -2410,7 +2441,7 @@ def cli_rename(
 
     boxyard_meta = get_boxyard_meta(get_config(app_state["config_path"]))
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
 
     new_index_name = _run_with_lock_handling(
@@ -2495,7 +2526,7 @@ def cli_sync_name(
 
     boxyard_meta = get_boxyard_meta(get_config(app_state["config_path"]))
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
 
     result_index_name = _run_with_lock_handling(
@@ -2578,14 +2609,14 @@ def cli_copy(
 
     boxyard_meta = get_boxyard_meta(get_config(app_state["config_path"]))
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
 
     if dest_path is None:
         box_meta = boxyard_meta.by_index_name[box_index_name]
         dest_path = Path(box_meta.name)
         if dest_path.exists():
-            typer.echo(f"Destination path `{dest_path}` already exists. Use --overwrite to overwrite.")
+            typer.echo(f"Destination path `{dest_path}` already exists. Use --overwrite to overwrite.", err=True)
             raise typer.Exit(code=1)
 
     result_path = asyncio.run(
@@ -2661,7 +2692,7 @@ def cli_force_push(
 
     boxyard_meta = get_boxyard_meta(get_config(app_state["config_path"]))
     if box_index_name not in boxyard_meta.by_index_name:
-        typer.echo(f"Box with index name `{box_index_name}` not found.")
+        typer.echo(f"Box with index name `{box_index_name}` not found.", err=True)
         raise typer.Exit(code=1)
 
     _run_with_lock_handling(
