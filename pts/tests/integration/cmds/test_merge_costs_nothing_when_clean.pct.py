@@ -48,17 +48,26 @@ from boxyard.config import get_config
 #|export
 @pytest.fixture
 def count_rclone(monkeypatch):
-    """Count every rclone invocation the sync makes."""
-    import boxyard._utils.base as _base
+    """Count every rclone invocation the sync makes.
+
+    Patched on `_utils.rclone`, NOT on `_utils.base` where the function is
+    defined. Every rclone helper does `from boxyard._utils import
+    run_cmd_async` at import time, so the name it calls lives in ITS namespace;
+    patching the definition site rebinds something nothing looks up. The first
+    version of this fixture did that, passed when the file was run alone, and
+    was caught by its own vacuity guard in the full suite -- which is the only
+    reason it is not still counting nothing.
+    """
+    import boxyard._utils.rclone as _rclone
 
     calls = []
-    original = _base.run_cmd_async
+    original = _rclone.run_cmd_async
 
     async def counting(cmd, *a, **k):
         calls.append(cmd)
         return await original(cmd, *a, **k)
 
-    monkeypatch.setattr(_base, "run_cmd_async", counting)
+    monkeypatch.setattr(_rclone, "run_cmd_async", counting)
     return calls
 
 
