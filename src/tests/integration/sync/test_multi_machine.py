@@ -30,8 +30,17 @@ async def _test_multi_machine_sync():
     
     
     async def _task(i):
+        # `claim=False`: machine 2 makes a conflicting change below and the test
+        # expects SyncUnsafe. From v0.5.17 `new_box` claims for the CREATING
+        # machine, so machine 2's push would be WRITE_DENIED instead — a returned
+        # STATUS rather than an exception, deliberately, so the supervisor does not
+        # log the same refusal 72 times a day. Correct behaviour, but it
+        # short-circuits the conflict this test is about.
         box_index_name = new_box(
-            config_path=config_path1, box_name=f"test_box_{i}", storage_location=sl_name
+            config_path=config_path1,
+            box_name=f"test_box_{i}",
+            storage_location=sl_name,
+            claim=False,
         )
         await sync_box(config_path=config_path1, box_index_name=box_index_name)
         box_index_names.append(box_index_name)

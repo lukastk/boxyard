@@ -27,8 +27,13 @@ async def _test_tombstone_lookups_are_batched():
         new_box(config_path=config_path1, box_name=f"live-{i}", storage_location=sl_name)
         for i in range(3)
     ]
+    # `claim=False`: machine 2 deletes this box below, and `delete` is
+    # ownership-gated (it purges the remote and writes a tombstone). From v0.5.17
+    # `new_box` claims for the CREATING machine, so machine 2's delete would be
+    # refused — correctly, but this test is about tombstone BATCHING and should not
+    # be gated on an unrelated feature.
     doomed_name = new_box(
-        config_path=config_path1, box_name="doomed", storage_location=sl_name
+        config_path=config_path1, box_name="doomed", storage_location=sl_name, claim=False
     )
     for name in [*live_names, doomed_name]:
         await sync_box(config_path=config_path1, box_index_name=name)

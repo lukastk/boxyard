@@ -82,6 +82,26 @@
   one would name a command that fails. A machine sees ~590 boxmetas and holds
   ~120; reporting all of them would be noise nobody reads.
 
+### ⚠️ Behaviour to be aware of
+
+A box created from v0.5.17 is owned by the machine that created it, so
+**cross-machine operations on it now go through ownership** where before they
+did not. Two consequences, both of them the feature working rather than
+regressions, and both applying only to newly created boxes:
+
+- **Deleting a box from a machine that did not create it is refused.** `delete`
+  purges the remote and writes a tombstone, which is exactly the destructive
+  operation the single-writer gate exists for. Take it over first with
+  `boxyard claim --steal -r '<box>'`.
+- **A conflicting push from another machine reports `Read-only` rather than
+  raising a conflict.** That is the quieter outcome by design — the sync path
+  deliberately returns a STATUS instead of an error so the supervisor does not
+  log the same refusal ~72 times a day — and `boxyard doctor` names the ways
+  out.
+
+Existing boxes are untouched: `write_owner` is still absent on all 318
+unclaimed boxes in the yard, and unowned still means unrestricted.
+
 ## [0.5.16] - 2026-08-27
 
 ### 🐛 Bug Fixes
