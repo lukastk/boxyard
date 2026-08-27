@@ -1,3 +1,31 @@
+## [0.5.16] - 2026-08-27
+
+### 🐛 Bug Fixes
+
+- **`merge_diverged_boxmetas` made every sync pass more expensive, whether or
+  not anything had diverged.** The merge asked, before each META sync, whether
+  it was needed — and that question is `get_sync_status`, which makes TWO
+  remote calls. With the setting on, a 590-box yard would have made **1,180
+  extra round trips every 20 minutes** for boxes with nothing wrong with them.
+
+  That is the shape that has already bitten this project once. From
+  `multi-sync`:
+
+  > Fetch the tombstones ONCE, not once per box. Asked per box that is one SFTP
+  > connection each — 587 per pass, per machine, every 20 minutes, which
+  > saturated the storage box's connection limit and was failing ~8 boxes per
+  > pass on three machines.
+
+  The merge is now attempted from the sync's FAILURE path: `sync_helper` runs
+  first, and only a box that actually refuses pays for the reconciliation. A
+  clean box costs exactly what it did with the setting off.
+
+  Caught before the setting was ever switched on, by reading what it would cost
+  rather than by running it.
+
+  `test_merge_costs_nothing_when_clean.py` pins it: the same sync, with the
+  setting on and off, must make the same number of rclone invocations.
+
 ## [0.5.15] - 2026-08-26
 
 ### ✨ Features
