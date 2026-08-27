@@ -1,3 +1,44 @@
+## [0.5.17] - 2026-08-27
+
+### ✨ Features
+
+- **`boxyard new` now claims the box for the machine that created it.**
+
+  `new_box` never touched `write_owner`, so every box created since ownership
+  landed in v0.5.2 was born UNOWNED — the exact state the feature exists to
+  remove. It showed: on mymain, the only unowned boxes held there were the
+  three created since the claim sweep.
+
+  The "unowned by default" rule was a MIGRATION guarantee. v0.5.2 promised
+  "nothing changes for the 583 boxes in the yard until someone claims them",
+  which is about boxes that already existed; a box created afterwards has no
+  v0.4.x behaviour to preserve. `include` already nudged about an unowned box,
+  and creation is a stronger signal than inclusion — it was the one saying
+  nothing.
+
+  It costs **no network call**, which is what keeps `boxyard new` offline.
+  `claim_box` reads the remote back to verify because two machines can claim
+  the same EXISTING box at once (measured at 5 trials in 6); a box created a
+  moment ago cannot be contested, because no other machine knows its id yet.
+  All of claim's machinery is for a race that cannot happen here.
+
+  `--no-claim` opts out, for a box created here that will be worked on
+  elsewhere. With no `machine_name` the box is still created — a machine
+  without one is an expected state, and refusing to create a box over an
+  ownership setting would be out of proportion — but it says so rather than
+  going quiet. `BOXYARD_MACHINE_NAME` already overrides the config key, so
+  there is no need for a per-command flag.
+
+- **`doctor` reports `unowned-box`** — a box included here that no machine has
+  claimed.
+
+  Nothing surfaced this before: `include` prints a one-line nudge, and if you
+  were not running `include` you never heard about it again. Scoped to boxes
+  INCLUDED here, for the same reason `claim` refuses a box that is not — a
+  machine that does not hold a box cannot become its owner, so a finding about
+  one would name a command that fails. A machine sees ~590 boxmetas and holds
+  ~120; reporting all of them would be noise nobody reads.
+
 ## [0.5.16] - 2026-08-27
 
 ### 🐛 Bug Fixes
