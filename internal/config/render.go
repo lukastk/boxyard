@@ -47,6 +47,7 @@ func RenderDefault(configPath, dataPath string) string {
 	kv("max_concurrent_rclone_ops", fmt.Sprintf("%d", boxconst.DefaultMaxConcurrentRclone))
 	kv("single_parent", "false")
 	kv("sync_before_new_box", "false")
+	kv("merge_diverged_boxmetas", "false")
 
 	// The one storage location a fresh boxyard gets: a LOCAL one, so the tool
 	// is usable before any remote is configured.

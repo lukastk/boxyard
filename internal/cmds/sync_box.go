@@ -214,6 +214,15 @@ func SyncBox(ctx context.Context, cfg *config.Config, s SyncStore, p syncengine.
 		if err != nil {
 			return nil, err
 		}
+
+		// If both sides have edited the boxmeta, try to reconcile them before
+		// the sync sees it. Declines — no base, no remote copy, a scalar both
+		// sides changed differently — leave the divergence exactly as it is,
+		// so the refusal below is unchanged for every case this cannot settle.
+		if err := tryMergeDivergedBoxmeta(ctx, cfg, s, bm, req, printf); err != nil {
+			return nil, err
+		}
+
 		status, synced, err := syncengine.Run(ctx, s, p, req)
 		if err != nil {
 			return nil, err

@@ -214,6 +214,18 @@ type Config struct {
 	SingleParent     bool   `toml:"single_parent"`
 	SyncBeforeNewBox bool   `toml:"sync_before_new_box"`
 
+	// MergeDivergedBoxmetas turns on the three-way merge for a boxmeta BOTH
+	// sides have edited, against the copy they last agreed on. `groups` and
+	// `parents` merge as sets; a scalar both sides changed differently is
+	// still a refusal for a human to settle.
+	//
+	// OFF by default, and deliberately so. Resolving a merge means
+	// force-pushing the result over the remote boxmeta — safe, because the
+	// merge CONTAINS what the remote had, but still a write today's code would
+	// refuse to make. That is a decision to take per fleet rather than one
+	// that arrives with an upgrade.
+	MergeDivergedBoxmetas bool `toml:"merge_diverged_boxmetas"`
+
 	// UnknownKeys holds keys a NEWER boxyard wrote, by dotted path (e.g.
 	// "storage_locations.hetzner-box.some_key"). Never written back — boxyard
 	// only ever creates config.toml, at init — so these exist purely to be
