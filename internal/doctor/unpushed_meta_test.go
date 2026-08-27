@@ -116,3 +116,47 @@ func TestDoctorNamesEveryChangedField(t *testing.T) {
 		}
 	}
 }
+
+// `unowned-box`: a box included here that no machine has claimed. Nothing
+// surfaced this before — `include` prints a one-line nudge and that was all.
+// Scoped to boxes INCLUDED here for the same reason `claim` refuses a box that
+// is not: a machine that does not hold a box cannot become its owner, so a
+// finding about one would name a command that fails.
+
+func TestDoctorReportsAnUnownedBox(t *testing.T) {
+	cfg := doctorYard(t)
+	bm := registerBox(t, cfg, "20260822_eeeee__ownerless", metaWork)
+
+	f := findings(runDoctor(t, cfg), "unowned-box")
+	if len(f) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(f), f)
+	}
+	if !strings.Contains(f[0].Hint, "claim -r '"+bm.IndexName()+"'") {
+		t.Errorf("the hint does not name the command that fixes it: %s", f[0].Hint)
+	}
+}
+
+func TestDoctorDoesNotReportAClaimedBox(t *testing.T) {
+	cfg := doctorYard(t)
+	registerBox(t, cfg, "20260822_fffff__owned",
+		"creator_hostname = \"test\"\nparents = []\ngroups = []\nwrite_owner = \"testmachine\"\n")
+
+	if f := findings(runDoctor(t, cfg), "unowned-box"); len(f) != 0 {
+		t.Errorf("a claimed box was reported: %+v", f)
+	}
+}
+
+func TestDoctorDoesNotReportAnUnownedBoxNotHeldHere(t *testing.T) {
+	cfg := doctorYard(t)
+	bm := registerBox(t, cfg, "20260822_ggggg__elsewhere", metaWork)
+	// Registered but not checked out — the shape of the ~470 boxes a machine
+	// knows about and does not hold. `claim` refuses these, so a finding would
+	// name a command that fails.
+	if err := os.RemoveAll(filepath.Join(cfg.UserBoxesPath, bm.IndexName())); err != nil {
+		t.Fatal(err)
+	}
+
+	if f := findings(runDoctor(t, cfg), "unowned-box"); len(f) != 0 {
+		t.Errorf("a box not held here was reported: %+v", f)
+	}
+}

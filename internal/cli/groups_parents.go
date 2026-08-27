@@ -295,7 +295,7 @@ func newRemoveParentCommand() *cobra.Command {
 				// The asymmetry is the Python's, and it is the contract: asking
 				// to remove something that is not there is treated as a
 				// mistake, asking to add something already there is not.
-				fmt.Printf("Box `%s` does not have parent `%s`.\n", bm.IndexName(), label)
+				fmt.Fprintf(os.Stderr, "Box `%s` does not have parent `%s`.\n", bm.IndexName(), label)
 				os.Exit(1)
 			}
 			parents := removeString(append([]string{}, bm.Parents...), targetID)
@@ -363,7 +363,7 @@ func loadTarget(sel *boxSelectorFlags) (*config.Config, *models.BoxMeta, error) 
 	}
 	bm, ok := meta.ByIndexName()[indexName]
 	if !ok {
-		fmt.Printf("Box with index name `%s` not found.\n", indexName)
+		fmt.Fprintf(os.Stderr, "Box with index name `%s` not found.\n", indexName)
 		os.Exit(1)
 	}
 	return cfg, bm, nil

@@ -448,3 +448,36 @@ func checkUnpushedMetaEdits(cfg *config.Config, report *Report, sc *scan) error 
 	}
 	return nil
 }
+
+// checkUnownedBoxes reports a box included here that no machine has claimed.
+//
+// Unowned means unrestricted, so nothing is being withheld. What it also means
+// is that two machines can push the same box and diverge — the exact problem
+// ownership exists to remove — and nothing surfaced it: `include` prints a
+// one-line nudge, and if you were not running `include` you never heard about
+// it again.
+//
+// That gap had a measurable shape. `new_box` never set WriteOwner, so every
+// box created since ownership landed was born unowned; on mymain the ONLY
+// unowned boxes held there were the three created since the claim sweep.
+// `boxyard new` claims from v0.5.17, which closes the source; this reports the
+// ones already made.
+//
+// Scoped to boxes INCLUDED here, for the same reason `claim` refuses a box
+// that is not: a machine that does not hold a box cannot become its owner, so
+// a finding about one would name a command that fails. A machine sees ~590
+// boxmetas and holds ~120; reporting all of them would be noise nobody reads.
+func checkUnownedBoxes(cfg *config.Config, report *Report, sc *scan) {
+	for _, bm := range sc.boxMetas {
+		if bm.WriteOwner != "" || !bm.CheckIncluded(cfg) {
+			continue
+		}
+		report.add("unowned-box",
+			fmt.Sprintf("Box '%s' is included here but no machine has claimed it", bm.IndexName()),
+			fmt.Sprintf("Nothing is blocked — unowned means unrestricted — but two machines "+
+				"can push it and diverge. If this is where you work on it: `boxyard claim -r '%s'`.",
+				bm.IndexName()),
+			Field{"index_name", bm.IndexName()},
+			Field{"storage_location", bm.StorageLocation})
+	}
+}

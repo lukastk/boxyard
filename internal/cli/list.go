@@ -114,7 +114,7 @@ func newListCommand() *cobra.Command {
 			}
 			for _, sl := range storageLocations {
 				if _, ok := cfg.StorageLocations[sl]; !ok {
-					fmt.Printf("Invalid storage location: %v\n", storageLocations)
+					fmt.Fprintf(os.Stderr, "Invalid storage location: %v\n", storageLocations)
 					os.Exit(1)
 				}
 			}
@@ -297,11 +297,11 @@ func newListGroupsCommand() *cobra.Command {
 			}
 
 			if boxIndexName != "" && boxPath != "" {
-				fmt.Println("Both --box and --box-path cannot be provided.")
+				fmt.Fprintln(os.Stderr, "Both --box and --box-path cannot be provided.")
 				os.Exit(1)
 			}
 			if listAll && (boxPath != "" || boxIndexName != "") {
-				fmt.Println("Cannot provide both --box and --box-path when using --all.")
+				fmt.Fprintln(os.Stderr, "Cannot provide both --box and --box-path when using --all.")
 				os.Exit(1)
 			}
 
@@ -333,14 +333,14 @@ func newListGroupsCommand() *cobra.Command {
 					return err
 				}
 				if boxIndexName == "" {
-					fmt.Println("Could not determine the box index name from the provided box path.")
+					fmt.Fprintln(os.Stderr, "Could not determine the box index name from the provided box path.")
 					os.Exit(1)
 				}
 			}
 
 			bm, ok := meta.ByIndexName()[boxIndexName]
 			if !ok {
-				fmt.Printf("Box with index name `%s` not found.\n", boxIndexName)
+				fmt.Fprintf(os.Stderr, "Box with index name `%s` not found.\n", boxIndexName)
 				os.Exit(1)
 			}
 			groups := append([]string{}, bm.Groups...)

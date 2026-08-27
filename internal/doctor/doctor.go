@@ -51,6 +51,7 @@ var CheckNames = []string{
 	"write-denied",
 	"stale-owner",
 	"unpushed-meta-edit",
+	"unowned-box",
 }
 
 // Finding is one problem, with a hint that names the fix.
@@ -139,6 +140,7 @@ func Run(ctx context.Context, cfg *config.Config, s RemoteStore, opts Options) (
 	if err := checkUnpushedMetaEdits(cfg, report, sc); err != nil {
 		return nil, err
 	}
+	checkUnownedBoxes(cfg, report, sc)
 
 	for _, c := range report.Checks {
 		report.NumFindings += len(c.Findings)

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/lukastk/boxyard/internal/config"
@@ -37,6 +38,10 @@ type NewBoxOptions struct {
 	CreationTimestampUTC *time.Time
 	// InitialiseGit runs `git init` in the new box's DATA.
 	InitialiseGit bool
+	// Claim makes this machine the box's write owner. Nil means the default,
+	// which is to claim — a pointer so a caller can say "no" without the zero
+	// value silently meaning it.
+	Claim *bool
 	// GitCloneURL clones a repository as the new box's DATA.
 	GitCloneURL string
 	Verbose     bool
@@ -198,6 +203,42 @@ func NewBox(ctx context.Context, cfg *config.Config, s MetaSyncStore, opts NewBo
 		return "", err
 	}
 
+	// Claim the box for this machine as it is created.
+	//
+	// The machine creating a box is the machine that will work on it — that is
+	// what creating one MEANS — and a box nobody has claimed is a box two
+	// machines can still diverge on, which is the problem ownership exists to
+	// remove. `include` already nudges about exactly this; creation is a
+	// stronger signal than inclusion and was saying nothing at all.
+	//
+	// The "unowned by default" rule was a MIGRATION guarantee: v0.5.2 promised
+	// that "nothing changes for the 583 boxes in the yard until someone claims
+	// them". A box created afterwards has no v0.4.x behaviour to preserve.
+	//
+	// Set locally, with NO remote call, which is what keeps `boxyard new`
+	// offline. ClaimBox reads the remote back to verify because two machines
+	// can claim the same EXISTING box at once; a box created a moment ago
+	// cannot be contested, because no other machine knows its id yet.
+	claim := opts.Claim == nil || *opts.Claim
+	writeOwner := ""
+	if claim {
+		if cfg.MachineName != "" {
+			writeOwner = cfg.MachineName
+		} else {
+			// Not fatal: a machine with no machine_name is an expected state,
+			// and refusing to create a box over an ownership setting would be
+			// out of proportion. Said out loud rather than skipped silently,
+			// and doctor reports both the missing name and the unowned box.
+			// Unconditional (printf is gated on --verbose, which the CLI never
+			// sets, and a notice nobody sees is the silent skip it exists to
+			// avoid) but on STDERR: `boxyard new` prints the index name on
+			// stdout and callers parse it — `cd $(boxyard new ...)` — so a
+			// notice there is read as part of the answer.
+			fmt.Fprintln(os.Stderr, "Created without a write owner: this machine has no "+
+				"`machine_name` set, so it cannot claim a box. See `boxyard doctor`.")
+		}
+	}
+
 	boxMeta := &models.BoxMeta{
 		CreationTimestampUTC: creationTimestamp,
 		BoxSubid:             boxSubid,
@@ -206,6 +247,7 @@ func NewBox(ctx context.Context, cfg *config.Config, s MetaSyncStore, opts NewBo
 		CreatorHostname:      creatorHostname,
 		Groups:               append([]string{}, cfg.DefaultBoxGroups...),
 		Parents:              []string{},
+		WriteOwner:           writeOwner,
 	}
 
 	boxPath := boxMeta.LocalPath(cfg)
@@ -245,7 +287,7 @@ func NewBox(ctx context.Context, cfg *config.Config, s MetaSyncStore, opts NewBo
 					return err
 				}
 			} else {
-				if err := os.Rename(fromPath, boxDataPath); err != nil {
+				if err := movePath(fromPath, boxDataPath); err != nil {
 					return err
 				}
 				movedFromPath = fromPath
@@ -348,7 +390,7 @@ func gitInit(dir string) {
 func rollbackNewBox(boxPath, boxDataPath, movedFromPath string) error {
 	if movedFromPath != "" && pathExists(boxDataPath) {
 		// `from_path` was moved into the box — put it back where it came from.
-		if err := os.Rename(boxDataPath, movedFromPath); err != nil {
+		if err := movePath(boxDataPath, movedFromPath); err != nil {
 			return err
 		}
 	} else if pathExists(boxDataPath) {
@@ -369,6 +411,36 @@ func rollbackNewBox(boxPath, boxDataPath, movedFromPath string) error {
 // Symlinks are recreated as symlinks (copytree's default), file modes are
 // preserved, and anything that is neither a regular file, a directory nor a
 // symlink is a loud error rather than a silent omission.
+// movePath moves a tree, ACROSS filesystems when it has to.
+//
+// os.Rename alone cannot cross a filesystem boundary, so staging a tree
+// anywhere not on the same filesystem as user_boxes_path — /tmp where it is
+// tmpfs, /dev/shm, an external disk — failed outright with EXDEV. The same
+// command worked on mymain and failed on ideapad purely because of how each
+// mounts /tmp.
+//
+// Rename first, so the fast path is unchanged and the common case is still one
+// atomic syscall; copy-then-remove only when the kernel says the two ends are
+// on different devices. Any OTHER rename error is returned as-is rather than
+// papered over by a copy.
+func movePath(src, dst string) error {
+	err := os.Rename(src, dst)
+	if err == nil {
+		return nil
+	}
+	var linkErr *os.LinkError
+	if !errors.As(err, &linkErr) || !errors.Is(linkErr.Err, syscall.EXDEV) {
+		return err
+	}
+	if err := copyTree(src, dst); err != nil {
+		return err
+	}
+	// Only after the copy is known good: removing first would risk the
+	// source on a failure, and `--from` without `--copy` is the caller's
+	// only copy of that data.
+	return os.RemoveAll(src)
+}
+
 func copyTree(src, dst string) error {
 	info, err := os.Lstat(src)
 	if err != nil {

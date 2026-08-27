@@ -40,7 +40,7 @@ func newYardStatusCommand() *cobra.Command {
 			}
 			for _, sl := range storageLocations {
 				if _, ok := cfg.StorageLocations[sl]; !ok {
-					fmt.Printf("Invalid storage location: [%s]\n", strings.Join(storageLocations, " "))
+					fmt.Fprintf(os.Stderr, "Invalid storage location: [%s]\n", strings.Join(storageLocations, " "))
 					os.Exit(1)
 				}
 			}

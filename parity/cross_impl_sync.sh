@@ -65,7 +65,12 @@ A="$ROOT/A/config/config.toml"
 B="$ROOT/B/config/config.toml"
 
 echo "== Go: create a box in yard A"
-idx=$("$GOBIN" --config "$A" new -n shared-box --no-initialise-git)
+# `--no-claim`: this script tests BIDIRECTIONAL sync between the two
+# implementations, and from v0.5.17 `new` claims for the creating machine — so
+# yard A would own the box and yard B's push below would be correctly refused
+# as read-only, which is a different feature entirely. Ownership has its own
+# section further down, where it is the subject rather than an obstacle.
+idx=$("$GOBIN" --config "$A" new -n shared-box --no-initialise-git --no-claim)
 echo "   $idx"
 mkdir -p "$ROOT/A/boxes/$idx/sub"
 printf 'hello from go\n' > "$ROOT/A/boxes/$idx/sub/note.txt"

@@ -96,7 +96,7 @@ func newIncludeCommand() *cobra.Command {
 				return handleResolveError(err)
 			}
 			if _, ok := meta.ByIndexName()[indexName]; !ok {
-				fmt.Printf("Box with index name `%s` not found.\n", indexName)
+				fmt.Fprintf(os.Stderr, "Box with index name `%s` not found.\n", indexName)
 				os.Exit(1)
 			}
 
@@ -249,7 +249,7 @@ func newExcludeCommand() *cobra.Command {
 				return handleResolveError(err)
 			}
 			if _, ok := meta.ByIndexName()[indexName]; !ok {
-				fmt.Printf("Box with index name `%s` not found.\n", indexName)
+				fmt.Fprintf(os.Stderr, "Box with index name `%s` not found.\n", indexName)
 				os.Exit(1)
 			}
 

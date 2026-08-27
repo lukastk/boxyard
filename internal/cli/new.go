@@ -12,6 +12,7 @@ import (
 	"github.com/lukastk/boxyard/internal/cmds"
 	"github.com/lukastk/boxyard/internal/config"
 	"github.com/lukastk/boxyard/internal/models"
+	"github.com/lukastk/boxyard/internal/naming"
 	"github.com/lukastk/boxyard/internal/symlinks"
 	"github.com/spf13/cobra"
 )
@@ -29,6 +30,8 @@ func newNewCommand() *cobra.Command {
 		parent               string
 		initialiseGit        bool
 		noInitialiseGit      bool
+		claim                bool
+		noClaim              bool
 		refreshUserSymlinks  bool
 		noRefreshSymlinks    bool
 	)
@@ -39,6 +42,9 @@ func newNewCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if noInitialiseGit {
 				initialiseGit = false
+			}
+			if noClaim {
+				claim = false
 			}
 			if noRefreshSymlinks {
 				refreshUserSymlinks = false
@@ -59,7 +65,7 @@ func newNewCommand() *cobra.Command {
 				boxName = cmds.ExtractBoxNameFromGitURL(gitCloneURL)
 			}
 			if boxName == "" {
-				fmt.Println("No box name provided.")
+				fmt.Fprintln(os.Stderr, "No box name provided.")
 				os.Exit(1)
 			}
 
@@ -67,10 +73,33 @@ func newNewCommand() *cobra.Command {
 			if creationTimestampUTC != "" {
 				parsed, err := parseCreationTimestamp(creationTimestampUTC)
 				if err != nil {
-					fmt.Printf("Invalid creation timestamp: %s\n", creationTimestampUTC)
+					fmt.Fprintf(os.Stderr, "Invalid creation timestamp: %s\n", creationTimestampUTC)
 					os.Exit(1)
 				}
 				timestamp = &parsed
+			}
+
+			// Validate --group and --parent BEFORE creating anything.
+			//
+			// These used to be applied AFTER NewBox returned, outside its
+			// rollback, so a bad group name or a missing parent exited 1 with
+			// the box already fully created and registered — and a caller
+			// treating a non-zero exit as "nothing happened" accumulated
+			// orphans. Both are knowable up front, so validating here is
+			// cheaper than extending the rollback, and it stops the index name
+			// being printed for a box the command then fails on.
+			for _, g := range groups {
+				if err := naming.ValidateGroupName(g); err != nil {
+					return err
+				}
+			}
+			parentID := ""
+			if parent != "" {
+				parentID, err = resolveParentBoxID(cfg, parent)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
 			}
 
 			// A store is only needed when `sync_before_new_box` is on, but
@@ -89,6 +118,7 @@ func newNewCommand() *cobra.Command {
 				CreationTimestampUTC: timestamp,
 				InitialiseGit:        initialiseGit,
 				GitCloneURL:          gitCloneURL,
+				Claim:                &claim,
 				Verbose:              false,
 			})
 			if err != nil {
@@ -96,10 +126,10 @@ func newNewCommand() *cobra.Command {
 			}
 			fmt.Println(indexName)
 
-			// Groups and the parent are applied AFTER creation, as in the
-			// Python: `new_box` writes the boxmeta, and modify_boxmeta is what
-			// enforces the group and parent rules (virtual groups, unique
-			// names, cycles, single_parent).
+			// Applied after creation still: modify_boxmeta is what enforces
+			// the rules that need the box to exist (virtual groups, unique
+			// names, cycles, single_parent). What moved above is only the
+			// validation that does NOT.
 			if len(groups) > 0 {
 				merged := append(append([]string{}, cfg.DefaultBoxGroups...), groups...)
 				if _, err := cmds.ModifyBoxMeta(cfg, indexName, cmds.BoxMetaModifications{
@@ -109,12 +139,7 @@ func newNewCommand() *cobra.Command {
 				}
 			}
 
-			if parent != "" {
-				parentID, err := resolveParentBoxID(cfg, parent)
-				if err != nil {
-					fmt.Fprintln(os.Stderr, err)
-					os.Exit(1)
-				}
+			if parentID != "" {
 				if _, err := cmds.ModifyBoxMeta(cfg, indexName, cmds.BoxMetaModifications{
 					Parents: &[]string{parentID},
 				}); err != nil {
@@ -147,6 +172,8 @@ func newNewCommand() *cobra.Command {
 	// the negative form is what myrig's helpers pass, so both are registered.
 	f.BoolVar(&initialiseGit, "initialise-git", true, "Initialise a git box in the new box.")
 	f.BoolVar(&noInitialiseGit, "no-initialise-git", false, "Do not initialise a git box in the new box.")
+	f.BoolVar(&claim, "claim", true, "Make this machine the box's write owner.")
+	f.BoolVar(&noClaim, "no-claim", false, "Create the box without claiming it, for one that will be worked on elsewhere.")
 	f.BoolVar(&refreshUserSymlinks, "refresh-user-symlinks", true, "Refresh the user symlinks.")
 	f.BoolVar(&noRefreshSymlinks, "no-refresh-user-symlinks", false, "Do not refresh the user symlinks.")
 	return cmd

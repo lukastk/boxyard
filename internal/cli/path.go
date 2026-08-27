@@ -61,7 +61,7 @@ func newPathCommand() *cobra.Command {
 			}
 			bm, ok := meta.ByIndexName()[indexName]
 			if !ok {
-				fmt.Printf("Box with index name `%s` not found.\n", indexName)
+				fmt.Fprintf(os.Stderr, "Box with index name `%s` not found.\n", indexName)
 				os.Exit(1)
 			}
 

@@ -98,7 +98,7 @@ func newMultiSyncCommand() *cobra.Command {
 			}
 			for _, sl := range storageLocations {
 				if _, ok := cfg.StorageLocations[sl]; !ok {
-					fmt.Printf("Invalid storage location: [%s]\n", strings.Join(storageLocations, " "))
+					fmt.Fprintf(os.Stderr, "Invalid storage location: [%s]\n", strings.Join(storageLocations, " "))
 					os.Exit(1)
 				}
 			}
@@ -246,7 +246,7 @@ func selectMultiSyncBoxes(meta *models.BoxyardMeta, storageLocations, boxIndexNa
 	for _, name := range boxIndexNames {
 		bm, ok := byIndex[name]
 		if !ok {
-			fmt.Printf("Non-existent box: [%s]\n", strings.Join(boxIndexNames, " "))
+			fmt.Fprintf(os.Stderr, "Non-existent box: [%s]\n", strings.Join(boxIndexNames, " "))
 			os.Exit(1)
 		}
 		out = append(out, bm)
