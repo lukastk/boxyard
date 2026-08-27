@@ -272,6 +272,40 @@ the open questions at the end.
   byte-identical against the installed Python on the real yard at widths 200,
   120, 80, 60, 40, 25 and 12.
 
+## META conflict resolution (2026-08-26/27)
+
+Answering the `feat/write-owner-claim` thread's proposals — the analysis is in
+`_dev/META-CONFLICT-DESIGN-NOTE.md`, the verdict was "three-way merge yes,
+separate ownership file no", and it shipped in three deliberate steps rather
+than one:
+
+1. **v0.5.14 — the base.** Every successful META sync snapshots the boxmeta
+   local and remote just agreed on, beside the LOCAL sync record. No network.
+   Ordering matters: a base written today can only help a conflict that arises
+   tomorrow, so this had to reach the fleet before merging against it meant
+   anything.
+2. **v0.5.14 — `doctor`'s `unpushed-meta-edit`.** Catches a pending edit
+   BEFORE another machine's push turns it into a divergence, on the machine
+   that caused it.
+3. **v0.5.15 — the merge**, off by default behind `merge_diverged_boxmetas`.
+   Resolving one means force-pushing the result, which is safe (the merge
+   CONTAINS what the remote had) but is still a write today's code refuses to
+   make.
+
+The bug worth remembering: ordering the merged additions local-first did not
+CONVERGE. Two machines produced the same set of groups in a different order —
+80 of the 512 possible three-group merges — so each read the other's push as a
+change and pushed back, which would have traded the same boxmeta every 20
+minutes forever. The property test that should have caught it compared both
+sides with `sorted()`; the assertion was the thing hiding the bug. Additions
+are emitted sorted now, and the test compares lists.
+
+The Go merge is differentialled against the Python over 728 triples including
+30 refusals. That comparison earns its keep more than most: during the rollout
+both implementations run across the fleet, and a merge they disagree about does
+not fail loudly — it converges to two different boxmetas that each machine
+keeps pushing at the other.
+
 ## How to verify what is here
 
 ```bash
