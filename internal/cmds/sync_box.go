@@ -215,17 +215,27 @@ func SyncBox(ctx context.Context, cfg *config.Config, s SyncStore, p syncengine.
 			return nil, err
 		}
 
-		// If both sides have edited the boxmeta, try to reconcile them before
-		// the sync sees it. Declines — no base, no remote copy, a scalar both
-		// sides changed differently — leave the divergence exactly as it is,
-		// so the refusal below is unchanged for every case this cannot settle.
-		if err := tryMergeDivergedBoxmeta(ctx, cfg, s, bm, req, printf); err != nil {
-			return nil, err
-		}
-
 		status, synced, err := syncengine.Run(ctx, s, p, req)
 		if err != nil {
-			return nil, err
+			// Reconcile only from the FAILURE path. Asking beforehand whether
+			// a merge is needed costs two remote calls per box per pass, which
+			// is the shape that saturated the storage box's connection limit
+			// once already. Here only a box that has actually diverged pays.
+			//
+			// Declines — no base, no remote copy, a scalar both sides changed
+			// differently — leave the divergence exactly as it was, and the
+			// original error is returned unchanged.
+			merged, mergeErr := tryMergeDivergedBoxmeta(ctx, cfg, s, bm, req, printf)
+			if mergeErr != nil {
+				return nil, mergeErr
+			}
+			if !merged {
+				return nil, err
+			}
+			status, synced, err = syncengine.Run(ctx, s, p, req)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if wanted[enums.PartMeta] {
 			results[enums.PartMeta] = PartResult{Status: status, Synced: synced}

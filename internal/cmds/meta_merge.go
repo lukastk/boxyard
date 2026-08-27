@@ -46,28 +46,28 @@ func tryMergeDivergedBoxmeta(
 	bm *models.BoxMeta,
 	req syncengine.HelperRequest,
 	printf func(string, ...any),
-) error {
+) (bool, error) {
 	if !cfg.MergeDivergedBoxmetas {
-		return nil
+		return false, nil
 	}
 	store, ok := s.(MetaMergeStore)
 	if !ok {
 		// A store that cannot read a remote file cannot merge. Not an error:
-		// the sync proceeds and refuses exactly as it does today.
-		return nil
+		// the sync's own refusal stands, exactly as it does today.
+		return false, nil
 	}
 
-	status, err := syncengine.GetSyncStatus(ctx, s, req.StatusRequest)
-	if err != nil {
-		return err
-	}
-	if status.Condition != syncengine.Conflict {
-		return nil
-	}
-
+	// No status call here. This runs only AFTER syncengine.Run has already
+	// refused, so the status is known to be unsafe and asking again would cost
+	// two remote calls PER BOX PER PASS — 1,180 of them every 20 minutes on
+	// this fleet's largest yard, for boxes with nothing wrong with them. That
+	// is the shape that saturated the storage box's connection limit once
+	// already (see the tombstone fetch in internal/cli/multi_sync.go), and it
+	// is what the design note for this feature argued against when rejecting
+	// the separate-ownership-file proposal.
 	base, err := models.ReadMetaBase(cfg, bm)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if base == nil {
 		// A box that has not synced its META since the base was introduced.
@@ -75,23 +75,23 @@ func tryMergeDivergedBoxmeta(
 		// thing this whole design exists to avoid.
 		printf("Boxmeta has diverged and there is no merge base to reconcile it against; " +
 			"leaving it for `boxyard doctor`.\n")
-		return nil
+		return false, nil
 	}
 
 	exists, raw, err := store.Cat(ctx, req.Remote, req.RemotePath)
 	if err != nil || !exists {
-		return err
+		return false, err
 	}
 
 	tmp, err := os.CreateTemp("", "boxyard-remote-meta-*.toml")
 	if err != nil {
-		return err
+		return false, err
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 	if _, err := tmp.WriteString(raw); err != nil {
 		tmp.Close()
-		return err
+		return false, err
 	}
 	tmp.Close()
 
@@ -104,7 +104,7 @@ func tryMergeDivergedBoxmeta(
 	remoteMeta, err := models.LoadBoxMetaFromPath(tmpName, identity)
 	if err != nil {
 		printf("Could not read the remote boxmeta to merge it: %v\n", err)
-		return nil
+		return false, nil
 	}
 
 	// Re-read the LOCAL boxmeta from disk rather than trusting the registry
@@ -112,7 +112,7 @@ func tryMergeDivergedBoxmeta(
 	// reached boxmeta.toml since would be silently dropped.
 	localMeta, err := models.LoadBoxMeta(cfg, bm.StorageLocation, bm.IndexName())
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	merged, err := models.MergeBoxMetas(base, localMeta, remoteMeta)
@@ -124,13 +124,13 @@ func tryMergeDivergedBoxmeta(
 			fmt.Printf("Boxmeta of '%s' has diverged and cannot be merged automatically: "+
 				"both sides changed %s. `boxyard doctor` names the ways out.\n",
 				bm.IndexName(), joinFields(conflict.Fields))
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 
 	if err := merged.Save(cfg); err != nil {
-		return err
+		return false, err
 	}
 	printf("Merged the diverged boxmeta; pushing the result.\n")
 
@@ -139,9 +139,9 @@ func tryMergeDivergedBoxmeta(
 	pushReq.Direction = &push
 	pushReq.Setting = enums.SyncForce
 	if _, _, err := syncengine.Run(ctx, s, nil, pushReq); err != nil {
-		return err
+		return false, err
 	}
-	return models.RecordMetaBase(cfg, bm)
+	return true, models.RecordMetaBase(cfg, bm)
 }
 
 func joinFields(fields []string) string {
