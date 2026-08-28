@@ -197,6 +197,51 @@ genuinely contradictory policies are asked for.
 - A machine that was off returns with everything overdue. Sync most-overdue
   first; no catch-up storm, since it is one sync either way.
 
+## `compress` is specified but REFUSED
+
+The policy model has a `compress` field because the design refers to it. Nothing
+implements packing, and `compress = true` is therefore **refused at config load**
+by both implementations, naming the key and saying it is not implemented.
+
+This is not caution for its own sake. Accepting the key would produce a config
+that SAYS archived boxes are compressed while every archived box stays a plain
+tree — discoverable only by going and looking at the remote. Of the three honest
+options (implement it, remove the field, refuse the value), refusing is the one
+that is true today. `TODO(cleanup)` in both trees, tied to packing being
+implemented or the field being removed.
+
+### If packing is ever implemented: the migration is the hard part
+
+Asked by Lukas 2026-08-28, and it is the question that should decide whether to
+build this at all.
+
+- **Boxes checked out locally** (120 on mymain, 158 on macbook) are easy: the
+  next push after the policy changes packs them.
+- **Boxes that exist only on the remote are the problem.** 312 of 590 are on no
+  machine. Converting one means downloading the whole tree to SOME machine and
+  re-uploading it as an archive. There is no server-side conversion — rclone can
+  move and rename remotely, but it cannot tar. For an archived box that is pure
+  cost with no local benefit.
+
+Three options, none free:
+
+1. **Lazy** — a box becomes packed only when a machine holding it pushes. No
+   migration, but the remote holds two formats indefinitely and every reader
+   must handle both, forever.
+2. **Eager** — a one-off pass pulling and repacking all 312. Correct, and the
+   single most expensive operation this fleet would ever run.
+3. **Never convert; pack new pushes only.** Honest, and the split is permanent.
+
+A fourth hazard sits on top of all three: during any rollout a machine on an
+older boxyard sees `data.tar.zst` where it expects `data/`. What it does then is
+untested and potentially destructive.
+
+**Assessment:** this strengthens thread 462e4e6b's "do not implement compress"
+conclusion. The migration cost lands almost entirely on the boxes that benefit
+least, and the measured alternative — excluding `.svelte-kit` and `paraglide`,
+plus raising `RCLONE_TPSLIMIT` from 10 to 50 — turns the 10-hour box into a
+~10-minute one with no format change at all.
+
 ## Open
 
 - **`compress`** — whether packing is the right answer at all is still being
