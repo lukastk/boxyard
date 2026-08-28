@@ -387,12 +387,18 @@ class TestUnknownNestedConfigKeys:
         from boxyard.config import (
             BoxGroupConfig,
             StorageConfig,
+            SyncPolicyConfig,
             VirtualBoxGroupConfig,
             _nested_model_tables,
         )
 
+        # `sync_policies` is here because the derivation FOUND it, not because
+        # anyone added it to a list -- which is the property under test. It
+        # arrived with the sync-cadence work and this assertion failing is
+        # exactly how that was noticed.
         assert _nested_model_tables() == {
             "storage_locations": StorageConfig,
             "box_groups": BoxGroupConfig,
             "virtual_box_groups": VirtualBoxGroupConfig,
+            "sync_policies": SyncPolicyConfig,
         }

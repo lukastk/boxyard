@@ -1,0 +1,361 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # Unit tests for `due_boxes` and the check records
+#
+# The scheduler's whole job is deciding what to sync without touching the
+# network. The properties that matter:
+#
+# - **Unknown state means DUE.** A missing, truncated or foreign check record
+#   must schedule the box, never skip it. Losing this file costs work; getting
+#   it wrong the other way silently stops syncing a box.
+# - **A conflicted box still syncs.** Ambiguity is about how OFTEN, never about
+#   whether -- so it is reported AND included.
+# - **Most overdue first**, so a machine that was off catches up sensibly.
+
+# %%
+#|default_exp unit.sync_policy.test_due_boxes
+
+# %%
+#|export
+import json
+from pathlib import Path
+
+import pytest
+
+from boxyard._enums import BoxPart
+from boxyard._sync_policy import (
+    DueResult,
+    check_record_path,
+    due_boxes,
+    read_check_record,
+    remote_looks_unchanged,
+    write_check_record,
+)
+
+from .test_policy_resolution import FLEET_POLICIES, make_box, make_config
+
+
+HOUR = 3600
+NOW = 1_800_000_000.0
+
+
+def config_at(tmp_path: Path, sync_policies=None):
+    return make_config(
+        sync_policies,
+        boxyard_data_path=tmp_path / "boxyard",
+        storage_locations={
+            "remote": {"storage_type": "local", "store_path": str(tmp_path / "store")}
+        },
+    )
+
+
+def mark_checked(config, box, part, when):
+    return write_check_record(config, box.index_name, part, when)
+
+
+# %%
+#|export
+def test_no_cadence_means_always_due(tmp_path):
+    """The opt-in property, at the scheduler level."""
+    config = config_at(tmp_path)  # no policies at all
+    boxes = [make_box(name=f"b{i}") for i in range(3)]
+    result = due_boxes(config, boxes, BoxPart.DATA, NOW)
+    assert len(result.due) == 3
+    assert result.skipped == []
+
+
+def test_never_checked_is_due(tmp_path):
+    config = config_at(tmp_path, FLEET_POLICIES)
+    box = make_box(groups=["proj"])
+    result = due_boxes(config, [box], BoxPart.DATA, NOW)
+    assert result.due == [box.index_name]
+
+
+def test_checked_recently_is_skipped(tmp_path):
+    config = config_at(tmp_path, FLEET_POLICIES)  # default data_interval 6h
+    box = make_box(groups=["proj"])
+    mark_checked(config, box, BoxPart.DATA, NOW - 1 * HOUR)
+    result = due_boxes(config, [box], BoxPart.DATA, NOW)
+    assert result.due == []
+    assert result.skipped == [box.index_name]
+
+
+def test_checked_longer_ago_than_the_interval_is_due(tmp_path):
+    config = config_at(tmp_path, FLEET_POLICIES)
+    box = make_box(groups=["proj"])
+    mark_checked(config, box, BoxPart.DATA, NOW - 7 * HOUR)
+    assert due_boxes(config, [box], BoxPart.DATA, NOW).due == [box.index_name]
+
+
+@pytest.mark.parametrize(
+    "age_seconds,expected_due",
+    [
+        (6 * HOUR - 1, False),   # just inside
+        (6 * HOUR, True),        # exactly at the interval -- due
+        (6 * HOUR + 1, True),    # just past
+    ],
+)
+def test_the_boundary_is_inclusive(tmp_path, age_seconds, expected_due):
+    """
+    `age >= interval`, not `>`. At a 6h cadence and a 15-minute tick, an
+    exclusive boundary would push every box to the NEXT tick, quietly turning
+    a 6h cadence into 6h15m for every box in the yard.
+    """
+    config = config_at(tmp_path, FLEET_POLICIES)
+    box = make_box(groups=["proj"])
+    mark_checked(config, box, BoxPart.DATA, NOW - age_seconds)
+    result = due_boxes(config, [box], BoxPart.DATA, NOW)
+    assert (result.due == [box.index_name]) is expected_due
+
+
+def test_cold_boxes_use_the_cold_cadence(tmp_path):
+    config = config_at(tmp_path, FLEET_POLICIES)  # cold = 7d
+    cold = make_box(groups=["archived"], name="cold-box")
+    warm = make_box(groups=["proj"], name="warm-box")
+    for box in (cold, warm):
+        mark_checked(config, box, BoxPart.DATA, NOW - 24 * HOUR)
+    result = due_boxes(config, [cold, warm], BoxPart.DATA, NOW)
+    assert result.due == [warm.index_name]
+    assert result.skipped == [cold.index_name]
+
+
+def test_meta_and_data_are_scheduled_independently(tmp_path):
+    """Lukas's core requirement: META frequent, DATA rare, on the same box."""
+    config = config_at(tmp_path, FLEET_POLICIES)  # meta 15m, data 6h
+    box = make_box(groups=["proj"])
+    for part in (BoxPart.DATA, BoxPart.META):
+        mark_checked(config, box, part, NOW - 30 * 60)
+    assert due_boxes(config, [box], BoxPart.META, NOW).due == [box.index_name]
+    assert due_boxes(config, [box], BoxPart.DATA, NOW).due == []
+
+
+def test_most_overdue_first(tmp_path):
+    config = config_at(tmp_path, FLEET_POLICIES)
+    a = make_box(groups=["proj"], name="a")
+    b = make_box(groups=["proj"], name="b")
+    c = make_box(groups=["proj"], name="c")
+    mark_checked(config, a, BoxPart.DATA, NOW - 7 * HOUR)
+    mark_checked(config, b, BoxPart.DATA, NOW - 40 * HOUR)
+    mark_checked(config, c, BoxPart.DATA, NOW - 12 * HOUR)
+    result = due_boxes(config, [a, b, c], BoxPart.DATA, NOW)
+    assert result.due == [b.index_name, c.index_name, a.index_name]
+
+
+def test_never_checked_sorts_ahead_of_merely_overdue(tmp_path):
+    config = config_at(tmp_path, FLEET_POLICIES)
+    fresh = make_box(groups=["proj"], name="never-checked")
+    old = make_box(groups=["proj"], name="old")
+    mark_checked(config, old, BoxPart.DATA, NOW - 100 * HOUR)
+    result = due_boxes(config, [fresh, old], BoxPart.DATA, NOW)
+    assert result.due[0] == fresh.index_name
+
+
+def test_a_conflicted_box_is_reported_and_still_due(tmp_path):
+    config = config_at(
+        tmp_path,
+        {
+            "default": {"data_interval": "6h"},
+            "cold": {"data_interval": "7d", "groups": ["archived"]},
+            "hot": {"data_interval": "1h", "groups": ["live"]},
+        },
+    )
+    box = make_box(groups=["archived", "live"])
+    result = due_boxes(config, [box], BoxPart.DATA, NOW)
+    assert result.due == [box.index_name], "a conflicted box must still sync"
+    assert len(result.conflicts) == 1
+    assert result.conflicts[0].dimension == "data_interval"
+
+
+def test_one_conflicted_box_does_not_stop_the_others(tmp_path):
+    config = config_at(
+        tmp_path,
+        {
+            "default": {"data_interval": "6h"},
+            "cold": {"data_interval": "7d", "groups": ["archived"]},
+            "hot": {"data_interval": "1h", "groups": ["live"]},
+        },
+    )
+    bad = make_box(groups=["archived", "live"], name="bad")
+    good = make_box(groups=["proj"], name="good")
+    mark_checked(config, good, BoxPart.DATA, NOW - 7 * HOUR)
+    result = due_boxes(config, [bad, good], BoxPart.DATA, NOW)
+    assert set(result.due) == {bad.index_name, good.index_name}
+
+
+def test_a_non_schedulable_part_is_refused(tmp_path):
+    config = config_at(tmp_path, FLEET_POLICIES)
+    with pytest.raises(ValueError, match="not schedulable"):
+        due_boxes(config, [make_box()], BoxPart.CONF, NOW)
+
+
+# %% [markdown]
+# ## Check records degrade in one direction only
+
+# %%
+#|export
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",                                  # truncated to nothing
+        "{",                                 # truncated mid-write
+        "null",                              # valid JSON, wrong shape
+        "[1, 2, 3]",                         # valid JSON, wrong type
+        '{"last_checked_unix": "soon"}',     # right key, wrong type
+        '{"checked": 1}',                    # foreign shape
+        "\x00\xff not utf-8",                # undecodable
+    ],
+)
+def test_an_unusable_check_record_means_due_not_error(tmp_path, content):
+    config = config_at(tmp_path, FLEET_POLICIES)
+    box = make_box(groups=["proj"])
+    path = check_record_path(config, box.index_name, BoxPart.DATA)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content.encode("utf-8", "surrogateescape"))
+    assert read_check_record(config, box.index_name, BoxPart.DATA) is None
+    assert due_boxes(config, [box], BoxPart.DATA, NOW).due == [box.index_name]
+
+
+def test_check_record_round_trips(tmp_path):
+    config = config_at(tmp_path, FLEET_POLICIES)
+    box = make_box()
+    write_check_record(
+        config, box.index_name, BoxPart.META, NOW,
+        remote_modtime="2026-08-27T21:44:32Z", remote_size=139,
+    )
+    record = read_check_record(config, box.index_name, BoxPart.META)
+    assert record["last_checked_unix"] == NOW
+    assert record["remote_modtime"] == "2026-08-27T21:44:32Z"
+    assert record["remote_size"] == 139
+
+
+def test_write_leaves_no_temp_files_behind(tmp_path):
+    config = config_at(tmp_path, FLEET_POLICIES)
+    box = make_box()
+    for i in range(3):
+        write_check_record(config, box.index_name, BoxPart.DATA, NOW + i)
+    directory = check_record_path(config, box.index_name, BoxPart.DATA).parent
+    assert [p.name for p in directory.iterdir()] == ["data.json"]
+
+
+# %% [markdown]
+# ## The skip filter's comparison
+#
+# `remote_looks_unchanged` is the half of B-prime that decides whether a box
+# can be skipped. Its ONLY unsafe answer is a false "unchanged".
+
+# %%
+#|export
+def test_remote_unchanged_requires_both_fields_to_match():
+    record = {"last_checked_unix": NOW, "remote_modtime": "T1", "remote_size": 10}
+    assert remote_looks_unchanged(record, "T1", 10) is True
+    assert remote_looks_unchanged(record, "T2", 10) is False
+    assert remote_looks_unchanged(record, "T1", 11) is False
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        None,                                                        # never checked
+        {"last_checked_unix": NOW},                                  # older boxyard
+        {"last_checked_unix": NOW, "remote_modtime": "T1", "remote_size": None},
+        {"last_checked_unix": NOW, "remote_modtime": None, "remote_size": 10},
+    ],
+)
+def test_a_record_without_both_fields_is_assumed_changed(record):
+    """An upgrade costs one full pass; it must never silently skip everything."""
+    assert remote_looks_unchanged(record, "T1", 10) is False
+
+
+def test_an_unlisted_remote_is_assumed_changed():
+    record = {"last_checked_unix": NOW, "remote_modtime": "T1", "remote_size": 10}
+    assert remote_looks_unchanged(record, None, 10) is False
+    assert remote_looks_unchanged(record, "T1", None) is False
+
+
+def test_a_preserved_modtime_with_a_different_size_is_still_changed():
+    """
+    The case that broke the design note's first safety argument: rclone DOES
+    preserve ModTime across a push, so ModTime alone cannot be trusted. Size is
+    compared for exactly this reason.
+    """
+    record = {"last_checked_unix": NOW, "remote_modtime": "T1", "remote_size": 139}
+    assert remote_looks_unchanged(record, "T1", 140) is False
+
+
+# %% [markdown]
+# ## The cost property
+#
+# `due_boxes` exists to decide what to sync WITHOUT touching the network. If it
+# ever made a remote call per box it would cost more than the pass it schedules
+# — the exact failure that made the first `merge_diverged_boxmetas` design
+# unshippable (2 calls per box per pass = 1,180 on this yard).
+#
+# The patch targets `boxyard._utils.rclone.run_cmd_async`, the namespace rclone
+# actually calls. A previous cost test in this repo patched `_utils.base` and
+# passed vacuously.
+
+# %%
+#|export
+def test_due_boxes_makes_no_remote_calls(tmp_path, monkeypatch):
+    import boxyard._utils.rclone as rclone_module
+
+    calls = []
+
+    async def _forbidden(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("due_boxes made a remote call")
+
+    monkeypatch.setattr(rclone_module, "run_cmd_async", _forbidden)
+
+    config = config_at(tmp_path, FLEET_POLICIES)
+    boxes = [make_box(groups=["proj"], name=f"box-{i}") for i in range(50)]
+    for box in boxes[:25]:
+        mark_checked(config, box, BoxPart.DATA, NOW - 7 * HOUR)
+
+    result = due_boxes(config, boxes, BoxPart.DATA, NOW)
+
+    assert calls == []
+    # Guard against the test passing because nothing happened at all.
+    assert len(result.due) == 50
+
+
+def test_the_module_does_not_import_rclone_at_all():
+    """
+    A structural guarantee stronger than the monkeypatch: the scheduler cannot
+    make a remote call because it has no way to. If this fails, someone has
+    given `_sync_policy` a network dependency and the cost property is no
+    longer free.
+    """
+    import ast
+
+    import boxyard._sync_policy as module
+
+    tree = ast.parse(Path(module.__file__).read_text())
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+
+    # Checked against IMPORTS, not raw text: a comment explaining why conf/
+    # rides the DATA sync mentions rclone filters, and a text search would fail
+    # on prose while a genuine `import` slipped through in a differently-named
+    # helper. The AST answers the question actually being asked.
+    forbidden = {"subprocess", "asyncio.subprocess"}
+    offenders = {
+        name
+        for name in imported
+        if name in forbidden or "rclone" in name or "requests" in name
+    }
+    assert not offenders, (
+        f"_sync_policy now imports {sorted(offenders)}; the scheduler must stay "
+        f"purely local so its cost stays free"
+    )
