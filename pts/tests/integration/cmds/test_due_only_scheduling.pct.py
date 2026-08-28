@@ -89,7 +89,7 @@ def _run_multi_sync(config_path, *args):
 
 FLEET = {
     "default": {"data_interval": "6h", "meta_interval": "15m", "compress": False},
-    "cold": {"data_interval": "7d", "compress": True, "groups": ["archived", "dormant"]},
+    "cold": {"data_interval": "7d", "compress": False, "groups": ["archived", "dormant"]},
 }
 
 

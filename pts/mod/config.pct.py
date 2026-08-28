@@ -18,7 +18,7 @@ from nblite import nbl_export, show_doc; nbl_export();
 
 # %%
 #|export
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pathlib import Path
 from typing import Any, get_args, get_origin
 import tomllib
@@ -115,6 +115,32 @@ class SyncPolicyConfig(const.StrictModel):
     meta_interval: str | None = None
     compress: bool | None = None
     groups: list[str] = []
+
+    @field_validator("compress")
+    @classmethod
+    def _compress_is_not_implemented(cls, value):
+        """
+        `compress = true` is REFUSED, loudly, because nothing implements it yet.
+
+        The field is specified -- the cadence design depends on the policy model
+        having a place for it -- but no code packs a box. Accepting the key
+        would mean a config that says "archived boxes are compressed" while
+        every archived box stays a plain tree, and the user only finds out by
+        going and looking at the remote. A setting that silently does nothing is
+        the worst of the three options; the other two are implementing it and
+        refusing it, and this is the one that is honest today.
+
+        TODO(cleanup): drop this validator -- when packing is actually
+        implemented, or when the decision not to implement it is final and the
+        field is removed instead.
+        """
+        if value is True:
+            raise ValueError(
+                "compress = true is not implemented yet: no code packs a box, "
+                "so setting it would silently do nothing. Leave it unset or "
+                "false. See _dev/SYNC-CADENCE-DESIGN-NOTE.md."
+            )
+        return value
 
     def interval_seconds(self, part: str, policy_name: str) -> int | None:
         text = self.data_interval if part == "data" else self.meta_interval

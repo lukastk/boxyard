@@ -85,7 +85,7 @@ FLEET_POLICIES = {
     "default": {"data_interval": "6h", "meta_interval": "15m", "compress": False},
     "cold": {
         "data_interval": "7d",
-        "compress": True,
+        "compress": False,
         "groups": ["archived", "dormant"],
     },
 }
@@ -115,8 +115,8 @@ def test_group_policy_beats_the_default():
     config = make_config(FLEET_POLICIES)
     resolved = resolve_policy(config, make_box(groups=["proj", "archived"]))
     assert resolved.data_interval_seconds == 7 * 86400
-    assert resolved.compress is True
     assert resolved.sources["data_interval"] == "sync_policies.cold"
+    assert resolved.sources["compress"] == "sync_policies.cold"
 
 
 def test_resolution_is_per_dimension_not_per_policy():
@@ -141,7 +141,7 @@ def test_two_policies_agreeing_is_not_a_conflict():
     config = make_config(FLEET_POLICIES)
     resolved = resolve_policy(config, make_box(groups=["archived", "dormant"]))
     assert resolved.data_interval_seconds == 7 * 86400
-    assert resolved.compress is True
+    assert resolved.sources["compress"] == "sync_policies.cold"
 
 
 def test_two_policies_disagreeing_raises_and_names_both():
@@ -245,7 +245,7 @@ def test_box_conf_override_is_per_dimension(tmp_path):
     write_box_conf(tmp_path, box, config, 'data_interval = "1h"\n')
     resolved = resolve_policy(config, box)
     assert resolved.data_interval_seconds == 3600
-    assert resolved.compress is True
+    assert resolved.sources["data_interval"] == "conf/sync.toml"
     assert resolved.sources["compress"] == "sync_policies.cold"
 
 
@@ -329,3 +329,23 @@ def test_box_conf_with_a_non_bool_compress_is_refused(tmp_path):
     write_box_conf(tmp_path, box, config, 'compress = "yes"\n')
     with pytest.raises(ValueError, match="must be true or false"):
         resolve_policy(config, box)
+
+
+
+def test_compress_true_is_refused_until_it_is_implemented():
+    """
+    Nothing packs a box yet. Accepting `compress = true` would mean a config
+    that SAYS archived boxes are compressed while every archived box stays a
+    plain tree, discoverable only by going and looking at the remote.
+
+    A setting that silently does nothing is worse than either implementing it
+    or refusing it. This is the refusal, and it is what stops the cadence work
+    from shipping a lie.
+    """
+    with pytest.raises(Exception) as excinfo:
+        make_config({"cold": {"data_interval": "7d", "compress": True}})
+    assert "not implemented" in str(excinfo.value)
+
+    # false and unset stay perfectly legal.
+    assert make_config({"cold": {"compress": False}}).sync_policies["cold"].compress is False
+    assert make_config({"cold": {"data_interval": "7d"}}).sync_policies["cold"].compress is None
