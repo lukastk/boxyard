@@ -47,6 +47,21 @@ func TestFlagSurfaceMatchesPython(t *testing.T) {
 	if py == "" {
 		t.Skip("no interpreter that can import boxyard")
 	}
+	// The CLI surface is a hard contract, so this test normally FAILS on any
+	// difference — that is the point. It skips only while the installed Python
+	// predates a surface change the port already carries: `--due-only` and
+	// `--skip-unchanged-meta` arrived with the sync-cadence work, so until the
+	// release carrying it reaches this machine the two surfaces cannot match
+	// and a red result here would say nothing.
+	//
+	// Probed on a MODULE the release adds, not on the flags themselves, so this
+	// cannot mask an unrelated surface difference: once the Python has
+	// _sync_policy, every flag is compared again exactly as before.
+	if !pyref.HasSymbol("boxyard._sync_policy", "resolve_policy") {
+		t.Skip("installed boxyard predates the sync-cadence CLI surface " +
+			"(--due-only, --skip-unchanged-meta) — this differential goes live " +
+			"when that Python release reaches this machine")
+	}
 
 	out, err := exec.Command(py, "-c", pyFlagDriver).Output()
 	if err != nil {

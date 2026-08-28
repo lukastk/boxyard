@@ -76,10 +76,27 @@ both directions.
 Two safety properties:
 
 - A wrong "changed" verdict merely does the correct sync anyway. Only a wrong
-  "unchanged" could hide something, and that needs a remote write that preserved
-  `ModTime` — which SFTP does not do.
+  "unchanged" could hide something.
 - The DATA pass still performs a full, unfiltered META sync, so it is a backstop
   for anything the filter wrongly skips.
+
+**Why a wrong "unchanged" cannot happen** — note this argument was WRONG in the
+first version of this note and is corrected here. The original claim was that a
+preserved `ModTime` "needs a remote write that preserved ModTime, which SFTP does
+not do". That is false: rclone *does* set modtimes on this SFTP remote — the live
+supervisor log carries `failed to set directory modtime` errors, which only arise
+because it tries. Thread 462e4e6b caught this and confirmed it by round-tripping a
+file stamped `2021-03-04T05:06:07Z` and reading the same value back.
+
+The filter is still safe, for a different reason:
+
+- `BoxMeta.save()` writes through `tmp_path.write_text(...)`, so an edited boxmeta
+  always carries a fresh mtime — an edit cannot preserve the old one.
+- `Size` is compared as well as `ModTime`.
+
+So the only way to present an unchanged `(ModTime, Size)` pair with different
+content is a byte-identical push, which is a no-op by definition. Nothing later
+should lean on the discarded SFTP premise.
 
 ## Scheduling: no new architecture
 

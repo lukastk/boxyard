@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/lukastk/boxyard/internal/boxconst"
@@ -113,6 +114,116 @@ func (s *StorageConfig) normalizeAndValidate(name string) error {
 	return nil
 }
 
+// intervalUnits maps an interval suffix to its length in seconds.
+var intervalUnits = map[byte]int{
+	's': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800,
+}
+
+// ParseInterval turns a cadence like "6h", "90m" or "7d" into whole seconds.
+//
+// `where` names the config location, so a bad value says which key is wrong
+// rather than only that something is.
+//
+// Deliberately strict, matching the Python: no bare numbers (is "6" six seconds
+// or six hours?), no compound forms ("1h30m"), no floats. A cadence that
+// silently means something other than what was written is worse than a
+// refusal, and every real cadence in this design is one unit.
+func ParseInterval(text, where string) (int, error) {
+	raw := strings.TrimSpace(text)
+	if raw == "" {
+		return 0, fmt.Errorf("%s: interval is empty", where)
+	}
+	unit := raw[len(raw)-1]
+	if 'A' <= unit && unit <= 'Z' {
+		unit += 'a' - 'A'
+	}
+	seconds, ok := intervalUnits[unit]
+	if !ok {
+		return 0, fmt.Errorf(
+			"%s: interval %q must end in one of d/h/m/s/w (e.g. '6h', '90m', '7d')",
+			where, text)
+	}
+	number := raw[:len(raw)-1]
+	if number == "" {
+		return 0, fmt.Errorf(
+			"%s: interval %q must be a whole number followed by a unit (e.g. '6h'); got %q before %q",
+			where, text, number, string(unit))
+	}
+	for i := 0; i < len(number); i++ {
+		if number[i] < '0' || number[i] > '9' {
+			return 0, fmt.Errorf(
+				"%s: interval %q must be a whole number followed by a unit (e.g. '6h'); got %q before %q",
+				where, text, number, string(unit))
+		}
+	}
+	n, err := strconv.Atoi(number)
+	if err != nil {
+		return 0, fmt.Errorf("%s: interval %q: %w", where, text, err)
+	}
+	total := n * seconds
+	if total <= 0 {
+		return 0, fmt.Errorf("%s: interval %q must be greater than zero", where, text)
+	}
+	return total, nil
+}
+
+// SyncPolicyConfig is one named sync policy: how often a box's parts are
+// checked, and whether its DATA is stored packed.
+//
+// Every field is OPTIONAL and unset means "not stated at this level" rather
+// than "off" — that is what makes resolution work per DIMENSION, so a box can
+// take its cadence from conf/sync.toml and its Compress from the group policy.
+// Pointers rather than bare values, because Go's zero value cannot distinguish
+// "false" from "not stated" and that distinction is the whole mechanism.
+type SyncPolicyConfig struct {
+	DataInterval string   `toml:"data_interval"`
+	MetaInterval string   `toml:"meta_interval"`
+	Compress     *bool    `toml:"compress"`
+	Groups       []string `toml:"groups"`
+}
+
+// IntervalSeconds returns the parsed cadence for a part, and whether one was
+// stated at all.
+func (p *SyncPolicyConfig) IntervalSeconds(part, policyName string) (int, bool, error) {
+	text := p.DataInterval
+	if part == "meta" {
+		text = p.MetaInterval
+	}
+	if text == "" {
+		return 0, false, nil
+	}
+	seconds, err := ParseInterval(text, fmt.Sprintf("sync_policies.%s.%s_interval", policyName, part))
+	if err != nil {
+		return 0, false, err
+	}
+	return seconds, true, nil
+}
+
+// validate refuses a policy this build cannot honour.
+//
+// `compress = true` is REFUSED, loudly, because nothing implements it yet. The
+// field is specified — the cadence design depends on the policy model having a
+// place for it — but no code packs a box. Accepting the key would mean a config
+// that says "archived boxes are compressed" while every archived box stays a
+// plain tree, discoverable only by going and looking at the remote. A setting
+// that silently does nothing is worse than either implementing it or refusing
+// it; this is the refusal, and it keeps the port in step with the Python, which
+// refuses it in a pydantic validator.
+//
+// TODO(cleanup): drop this check — when packing is actually implemented, or
+// when the decision not to implement it is final and the field is removed.
+// Validate is exported so the differential can compare the refusal against the
+// Python without going through a full config load.
+func (p *SyncPolicyConfig) Validate(name string) error {
+	if p.Compress != nil && *p.Compress {
+		return fmt.Errorf(
+			"sync_policies.%s.compress = true is not implemented yet: no code packs "+
+				"a box, so setting it would silently do nothing. Leave it unset or "+
+				"false. See _dev/SYNC-CADENCE-DESIGN-NOTE.md.", name)
+	}
+	return nil
+}
+
 // BoxGroupConfig configures a real (membership-based) box group.
 type BoxGroupConfig struct {
 	SymlinkName    string            `toml:"symlink_name"`
@@ -196,6 +307,7 @@ type Config struct {
 	StorageLocations       map[string]*StorageConfig         `toml:"storage_locations"`
 	BoxGroups              map[string]*BoxGroupConfig        `toml:"box_groups"`
 	VirtualBoxGroups       map[string]*VirtualBoxGroupConfig `toml:"virtual_box_groups"`
+	SyncPolicies           map[string]*SyncPolicyConfig      `toml:"sync_policies"`
 	DefaultBoxGroups       []string                          `toml:"default_box_groups"`
 	BoxSubidCharacterSet   string                            `toml:"box_subid_character_set"`
 	BoxSubidLength         int                               `toml:"box_subid_length"`
@@ -363,6 +475,11 @@ func (c *Config) Validate() error {
 	if _, ok := c.StorageLocations[c.DefaultStorageLocation]; !ok {
 		return strict.Invalid(t, "default_storage_location",
 			fmt.Sprintf("default_storage_location '%s' not found in storage_locations", c.DefaultStorageLocation))
+	}
+	for name, p := range c.SyncPolicies {
+		if err := p.Validate(name); err != nil {
+			return err
+		}
 	}
 	for name, g := range c.BoxGroups {
 		if err := naming.ValidateGroupName(name); err != nil {

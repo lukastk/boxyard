@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/lukastk/boxyard/internal/boxconst"
 	"github.com/lukastk/boxyard/internal/cmds"
 	"github.com/lukastk/boxyard/internal/config"
 	"github.com/lukastk/boxyard/internal/enums"
@@ -21,6 +23,7 @@ import (
 	"github.com/lukastk/boxyard/internal/runner"
 	"github.com/lukastk/boxyard/internal/storage"
 	"github.com/lukastk/boxyard/internal/syncengine"
+	"github.com/lukastk/boxyard/internal/syncpolicy"
 	"github.com/lukastk/boxyard/internal/tombstones"
 	"github.com/spf13/cobra"
 	"golang.org/x/sys/unix"
@@ -52,6 +55,8 @@ func newMultiSyncCommand() *cobra.Command {
 		noPrintSkipped          bool
 		softInterruption        bool
 		noSoftInterruption      bool
+		dueOnly                 bool
+		skipUnchangedMeta       bool
 	)
 
 	cmd := &cobra.Command{
@@ -118,6 +123,91 @@ func newMultiSyncCommand() *cobra.Command {
 				sortByRecentlyModified(cfg, boxes)
 			}
 
+			// `--due-only` narrows to the boxes whose cadence says so. Applied
+			// AFTER the explicit `--box` list on purpose: naming a box asks for
+			// that box, and a cadence is a default for the unattended loop, not
+			// an override of a person's explicit instruction.
+			if dueOnly {
+				due, err := syncpolicy.DueBoxes(cfg, boxes, enums.PartData, float64(time.Now().Unix()))
+				if err != nil {
+					return err
+				}
+				// A box whose policies disagree is synced anyway -- the
+				// ambiguity is about how OFTEN, never about whether -- but it is
+				// never synced SILENTLY. To stderr, so an unattended loop's
+				// stdout stays parseable.
+				for _, conflict := range due.Conflicts {
+					fmt.Fprintf(os.Stderr, "Sync policy conflict: %s\n", conflict.Error())
+				}
+				order := make(map[string]int, len(due.Due))
+				for i, name := range due.Due {
+					order[name] = i
+				}
+				filtered := make([]*models.BoxMeta, 0, len(due.Due))
+				for _, bm := range boxes {
+					if _, ok := order[bm.IndexName()]; ok {
+						filtered = append(filtered, bm)
+					}
+				}
+				sort.SliceStable(filtered, func(i, j int) bool {
+					return order[filtered[i].IndexName()] < order[filtered[j].IndexName()]
+				})
+				boxes = filtered
+			}
+
+			// One bulk listing answers "did this boxmeta move" for every box at
+			// once. The per-box alternative is the status probe: 2 remote calls
+			// per box, 0.67s each, so ~6.6 min for 590 boxes at concurrency 2 --
+			// against roughly a minute for the listing. Everything that survives
+			// goes through the ordinary sync path.
+			var bulkListing func(context.Context) (map[string]syncpolicy.RemoteStamp, error)
+			if skipUnchangedMeta {
+				listClient, err := rclone.New(cfg.RcloneConfigPath())
+				if err != nil {
+					return err
+				}
+				listStore := storage.New(listClient)
+				bulkListing = func(ctx context.Context) (map[string]syncpolicy.RemoteStamp, error) {
+					listing := map[string]syncpolicy.RemoteStamp{}
+					seen := map[string]bool{}
+					for _, bm := range boxes {
+						if seen[bm.StorageLocation] {
+							continue
+						}
+						seen[bm.StorageLocation] = true
+						slConf, ok := cfg.StorageLocations[bm.StorageLocation]
+						if !ok || slConf.StorageType == config.StorageLocal {
+							continue
+						}
+						entries, _, err := listStore.Lsjson(ctx,
+							rclone.Location{
+								Remote: bm.StorageLocation,
+								Path:   filepath.Join(slConf.StorePath, boxconst.RemoteBoxesRelPath),
+							},
+							rclone.LsjsonOptions{
+								FilesOnly: true,
+								Recursive: true,
+								MaxDepth:  2,
+								Filter:    []string{"+ " + boxconst.BoxMetafileRelPath},
+							})
+						if err != nil {
+							return nil, err
+						}
+						for _, entry := range entries {
+							parts := strings.SplitN(entry.Path, "/", 2)
+							if len(parts) == 0 || parts[0] == "" {
+								continue
+							}
+							modtime, size := entry.ModTime, entry.Size
+							listing[parts[0]] = syncpolicy.RemoteStamp{
+								ModTime: &modtime, Size: &size,
+							}
+						}
+					}
+					return listing, nil
+				}
+			}
+
 			client, err := rclone.New(cfg.RcloneConfigPath())
 			if err != nil {
 				return err
@@ -125,6 +215,25 @@ func newMultiSyncCommand() *cobra.Command {
 			store := storage.New(client)
 			ctx, stop := maybeSoftInterrupt(softInterruption)
 			defer stop()
+
+			if bulkListing != nil {
+				listing, err := bulkListing(ctx)
+				if err != nil {
+					return err
+				}
+				needed, _ := syncpolicy.MetaBoxesNeedingSync(cfg, boxes, listing)
+				keep := make(map[string]bool, len(needed))
+				for _, name := range needed {
+					keep[name] = true
+				}
+				filtered := boxes[:0:0]
+				for _, bm := range boxes {
+					if keep[bm.IndexName()] {
+						filtered = append(filtered, bm)
+					}
+				}
+				boxes = filtered
+			}
 
 			// Fetch the tombstones ONCE, not once per box. Asked per box that
 			// is one SFTP connection each — 587 per pass, per machine, every 20
@@ -226,6 +335,14 @@ func newMultiSyncCommand() *cobra.Command {
 	// `--no-print-skipped` kept its spelling and meaning through that.
 	f.BoolVar(&printSkipped, "print-skipped", false, "Print boxes for which no syncs happened.")
 	f.BoolVar(&noPrintSkipped, "no-print-skipped", false, "Do not print boxes for which no syncs happened.")
+	f.BoolVar(&dueOnly, "due-only", false,
+		"Only sync boxes whose configured cadence says they are due, most overdue first. "+
+			"Requires [sync_policies.*] in config.toml; with none configured every box is due "+
+			"and this changes nothing.")
+	f.BoolVar(&skipUnchangedMeta, "skip-unchanged-meta", false,
+		"Ask the remote ONCE, in bulk, which boxmetas moved, and skip the boxes where neither "+
+			"side changed. Turns a 590-box META pass from ~1,180 remote calls into one listing "+
+			"plus the boxes that actually differ.")
 	f.BoolVar(&softInterruption, "soft-interruption-enabled", true, "Enable soft interruption.")
 	f.BoolVar(&noSoftInterruption, "no-soft-interruption-enabled", false, "Disable soft interruption.")
 	return cmd
