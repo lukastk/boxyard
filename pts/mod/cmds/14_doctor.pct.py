@@ -133,6 +133,8 @@ DOCTOR_CHECK_NAMES = [
     "stale-owner",
     "unpushed-meta-edit",
     "unowned-box",
+    "sync-policy-conflict",
+    "unusable-box-sync-conf",
 ]
 
 # %% [markdown]
@@ -503,6 +505,49 @@ if config.user_boxes_path.is_dir():
 _metas_by_id: dict[str, list[BoxMeta]] = {}
 for bm in box_metas:
     _metas_by_id.setdefault(bm.box_id, []).append(bm)
+
+# %% [markdown]
+# ## `sync-policy-conflict` and `unusable-box-sync-conf`
+#
+# Resolving a box's cadence REFUSES ambiguity rather than joining it, so a box
+# matching two policies that disagree needs a person. `multi-sync` reports the
+# conflict and syncs the box anyway -- the ambiguity is about how often, never
+# about whether -- but a message in an unattended loop's stderr is not where a
+# configuration mistake should live, so doctor names it too.
+#
+# By design this fires on nothing today: sync policy keys off LIFECYCLE groups
+# (`archived`, `dormant`), and measured across the 590-box yard no box carries
+# both. It only speaks up when genuinely contradictory policies are asked for.
+
+# %%
+#|export
+from boxyard._sync_policy import PolicyConflict as _PolicyConflict
+from boxyard._sync_policy import resolve_policy as _resolve_policy
+
+for _bm in sorted(box_metas, key=lambda b: b.index_name):
+    try:
+        _resolve_policy(config, _bm)
+    except _PolicyConflict as _conflict:
+        _add_finding(
+            "sync-policy-conflict",
+            str(_conflict),
+            "Two sync policies claim this box and state different values for "
+            "the same setting. Either stop the box matching both groups, or "
+            "settle it on the box itself in `conf/sync.toml` -- a box-level "
+            "setting beats every policy. The box still syncs meanwhile, on "
+            "whichever cadence the pass resolved.",
+            box_index_name=_bm.index_name,
+        )
+    except ValueError as _bad_conf:
+        _add_finding(
+            "unusable-box-sync-conf",
+            f"Box '{_bm.index_name}': {_bad_conf}",
+            "The box's own `conf/sync.toml` cannot be read, so the cadence it "
+            "asks for is not being applied. It was written deliberately, so "
+            "boxyard refuses to guess: fix the file, or delete it to fall back "
+            "to the group policy.",
+            box_index_name=_bm.index_name,
+        )
 
 for _box_id, _bms in sorted(_metas_by_id.items()):
     if len(_bms) > 1:
