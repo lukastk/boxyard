@@ -68,6 +68,16 @@ def cli_multi_sync(
     sync_recently_modified_first: bool = Option(
         False, help="Sync boxes that have been recently modified first."
     ),
+    skip_unchanged_meta: bool = Option(
+        False,
+        "--skip-unchanged-meta",
+        help=(
+            "Ask the remote ONCE, in bulk, which boxmetas moved, and skip the "
+            "boxes where neither side changed. Turns a 590-box META pass from "
+            "~1,180 remote calls into one listing plus the boxes that actually "
+            "differ."
+        ),
+    ),
     due_only: bool = Option(
         False,
         "--due-only",
@@ -132,6 +142,7 @@ refresh_user_symlinks = True
 show_progress = True
 print_skipped = False
 due_only = False
+skip_unchanged_meta = False
 soft_interruption_enabled = True
 
 # %% [markdown]
@@ -205,6 +216,69 @@ if due_only:
         (bm for bm in box_metas if bm.index_name in _due_order),
         key=lambda bm: _due_order[bm.index_name],
     )
+
+# One bulk listing answers "did this boxmeta move" for every box at once. The
+# per-box alternative is the status probe: 2 remote calls per box, 0.67s each,
+# so ~6.6 min for 590 boxes at concurrency 2 -- against roughly a minute for the
+# listing. Everything that survives goes through the ordinary sync path.
+_skipped_unchanged = []
+if skip_unchanged_meta:
+    # `asyncio` is imported further down this command body, which makes it a
+    # local and leaves it unbound here. Same reason as StorageType above.
+    import asyncio as _aio
+
+    from boxyard._sync_policy import meta_boxes_needing_sync
+    from boxyard._utils import is_in_event_loop, rclone_lsjson
+
+    async def _bulk_meta_listing():
+        """(index name) -> (ModTime, Size) for every boxmeta on every remote."""
+        # Imported here, not taken from the enclosing scope: `StorageType` is
+        # bound LATER in this command body, which makes it a local and leaves it
+        # unbound at this point. `Path` and `const` are imported for the same
+        # reason -- a nested function must not depend on where the body happens
+        # to import things.
+        from pathlib import Path
+
+        from boxyard import const
+        from boxyard.config import StorageType
+
+        listing = {}
+        for _sl_name in sorted({bm.storage_location for bm in box_metas}):
+            _sl_conf = config.storage_locations[_sl_name]
+            if _sl_conf.storage_type == StorageType.LOCAL:
+                continue
+            _entries = await rclone_lsjson(
+                config.rclone_config_path,
+                source=_sl_name,
+                source_path=_sl_conf.store_path / const.REMOTE_BOXES_REL_PATH,
+                files_only=True,
+                recursive=True,
+                filter=[f"+ {const.BOX_METAFILE_REL_PATH}"],
+                max_depth=2,
+            )
+            for _entry in _entries or []:
+                listing[Path(_entry["Path"]).parts[0]] = (
+                    _entry.get("ModTime"),
+                    _entry.get("Size"),
+                )
+        return listing
+
+    # Already inside a loop: skip the OPTIMISATION, not the work. Falling
+    # through with every box still selected costs a slower pass; guessing which
+    # boxes were unchanged without asking the remote would cost correctness.
+    if is_in_event_loop():
+        typer.echo(
+            "--skip-unchanged-meta: already in an event loop, syncing every "
+            "box instead of filtering.",
+            err=True,
+        )
+    else:
+        _listing = _aio.run(_bulk_meta_listing())
+        _needed, _skipped_unchanged = meta_boxes_needing_sync(
+            config, box_metas, _listing
+        )
+        _needed_set = set(_needed)
+        box_metas = [bm for bm in box_metas if bm.index_name in _needed_set]
 
 # A box whose policies disagree is synced anyway -- the ambiguity is about how
 # OFTEN, never about whether -- but it is never synced SILENTLY. Printed once
@@ -512,6 +586,38 @@ from boxyard._utils import is_in_event_loop
 
 if not is_in_event_loop():
     asyncio.run(_runner())
+
+# Stamp the META check records with the remote's state AS IT IS NOW.
+#
+# It has to be a SECOND listing, taken after the syncs: a pass that pushed a
+# local edit changed the remote's ModTime, so the stamp read before the sync
+# describes a state that no longer exists and every box would look changed
+# forever. Two bulk listings per pass is still ~1 minute against the ~6.6 min
+# the per-box probes cost on a 590-box yard.
+#
+# Only boxes that were actually synced this pass need a new stamp; the ones the
+# filter skipped still hold a valid one.
+if skip_unchanged_meta and BoxPart.META in sync_choices and not is_in_event_loop():
+    import asyncio as _aio
+    import time as _stamp_time
+
+    from boxyard._sync_policy import write_check_record as _write_check_record
+
+    _final_listing = _aio.run(_bulk_meta_listing())
+    _now_unix = _stamp_time.time()
+    for _bm in box_metas:
+        _stat = sync_stats.get(_bm.index_name)
+        if _stat is None or _stat[1] not in ("Success", "Read-only", "Local"):
+            continue
+        _modtime, _size = _final_listing.get(_bm.index_name, (None, None))
+        _write_check_record(
+            config,
+            _bm.index_name,
+            BoxPart.META,
+            _now_unix,
+            remote_modtime=_modtime,
+            remote_size=_size,
+        )
 
 final_sync_stat_board = get_sync_stat_board(finished=True)
 console = Console()

@@ -339,6 +339,22 @@ def write_check_record(
 
     path = check_record_path(config, box_index_name, part)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    # A caller with no stamp to offer must not ERASE the one already recorded.
+    # An ordinary `multi-sync` pass records only a timestamp, and wiping the
+    # stamp would disarm the skip filter every time an unfiltered pass ran --
+    # so the filter could never take effect on a machine that also runs the
+    # normal DATA pass, which is every machine.
+    #
+    # Carrying an older stamp forward is the SAFE direction: if the remote moved
+    # since, the next listing reports a different ModTime/Size and the box is
+    # synced. A stale stamp can only ever cause extra work, never a wrong skip.
+    if remote_modtime is None and remote_size is None:
+        previous = read_check_record(config, box_index_name, part)
+        if previous is not None:
+            remote_modtime = previous.get("remote_modtime")
+            remote_size = previous.get("remote_size")
+
     record = {
         "last_checked_unix": now_unix,
         "remote_modtime": remote_modtime,
@@ -455,3 +471,100 @@ def remote_looks_unchanged(
     if remote_modtime is None or remote_size is None:
         return False
     return recorded_modtime == remote_modtime and recorded_size == remote_size
+
+# %% [markdown]
+# ## The META skip filter ("B-prime")
+#
+# The fast META loop's cost is dominated by asking the remote about each box:
+# the status probe is 2 remote calls per box per part, measured at 0.67s each,
+# so 590 boxes is ~6.6 min at concurrency 2. One BULK listing answers the same
+# question for every box at once and already runs in about a minute.
+#
+# So: ask once, in bulk, which boxes could possibly need work, and put the rest
+# aside. Everything that survives goes through the existing `sync_box` META
+# path unchanged -- nothing here reimplements a sync.
+#
+# The two sides are tested differently ON PURPOSE:
+#
+# - **Remote**: `ModTime` + `Size` from the listing, against what was recorded
+#   at the last check. Size matters as much as ModTime, because rclone DOES
+#   preserve modification times across a push.
+# - **Local**: the on-disk boxmeta compared by CONTENT against `meta.base.toml`,
+#   the copy the two sides last agreed on. Content rather than mtime, because
+#   the question is "is there an edit to push", and a file rewritten with
+#   identical content is not one.
+
+# %%
+#|export
+def local_meta_differs_from_base(
+    config: boxyard.config.Config, box_meta: BoxMeta
+) -> bool:
+    """
+    Whether this machine holds a boxmeta edit the remote has not seen.
+
+    No base means "cannot tell", which is reported as DIFFERS -- the direction
+    that costs a sync rather than skipping one. A box that has not synced since
+    `meta.base.toml` was introduced simply has no base yet.
+    """
+    from boxyard._models import read_meta_base
+
+    base = read_meta_base(config, box_meta)
+    if base is None:
+        return True
+
+    on_disk_path = box_meta.get_local_part_path(config, BoxPart.META)
+    if not on_disk_path.exists():
+        return True
+    try:
+        # The identity fields are not IN boxmeta.toml -- they are encoded in the
+        # index name -- so they are supplied from the registry entry, which is
+        # where the index name came from in the first place.
+        on_disk = BoxMeta.load_from_path(
+            on_disk_path,
+            creation_timestamp_utc=box_meta.creation_timestamp_utc,
+            box_subid=box_meta.box_subid,
+            name=box_meta.name,
+            storage_location=box_meta.storage_location,
+        )
+    except Exception:
+        # Unreadable local boxmeta: let the real sync path deal with it and
+        # report properly, rather than silently skipping the box here.
+        return True
+
+    return base.model_dump() != on_disk.model_dump()
+
+
+def meta_boxes_needing_sync(
+    config: boxyard.config.Config,
+    box_metas: list[BoxMeta],
+    remote_listing: dict[str, tuple[str | None, int | None]],
+) -> tuple[list[str], list[str]]:
+    """
+    Split boxes into (needs a META sync, provably does not).
+
+    `remote_listing` maps index name -> (ModTime, Size) from ONE bulk
+    `rclone lsjson` over the remote's boxes. A box missing from it is treated as
+    needing work: it may be new here, deleted there, or on a storage location
+    the listing did not cover, and every one of those wants the real sync path
+    to look rather than this filter to decide.
+
+    Skipping is ONLY ever an optimisation. Anything wrongly skipped is caught by
+    the next unfiltered pass, since the DATA sync always syncs META too.
+    """
+    needed: list[str] = []
+    skippable: list[str] = []
+
+    for box_meta in box_metas:
+        index_name = box_meta.index_name
+        remote_modtime, remote_size = remote_listing.get(index_name, (None, None))
+        record = read_check_record(config, index_name, BoxPart.META)
+
+        if not remote_looks_unchanged(record, remote_modtime, remote_size):
+            needed.append(index_name)
+            continue
+        if local_meta_differs_from_base(config, box_meta):
+            needed.append(index_name)
+            continue
+        skippable.append(index_name)
+
+    return needed, skippable
