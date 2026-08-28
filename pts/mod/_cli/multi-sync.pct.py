@@ -68,6 +68,15 @@ def cli_multi_sync(
     sync_recently_modified_first: bool = Option(
         False, help="Sync boxes that have been recently modified first."
     ),
+    due_only: bool = Option(
+        False,
+        "--due-only",
+        help=(
+            "Only sync boxes whose configured cadence says they are due, most "
+            "overdue first. Requires [sync_policies.*] in config.toml; with "
+            "none configured every box is due and this changes nothing."
+        ),
+    ),
     refresh_user_symlinks: bool = Option(True, help="Refresh the user symlinks."),
     show_progress: bool = Option(True, help="Show the progress of the sync."),
     # `print_skipped`, not `no_print_skipped`. typer derives a bool option's
@@ -122,6 +131,7 @@ sync_recently_modified_first = True
 refresh_user_symlinks = True
 show_progress = True
 print_skipped = False
+due_only = False
 soft_interruption_enabled = True
 
 # %% [markdown]
@@ -177,6 +187,31 @@ else:
         for box_index_name in box_index_names
     ]
 
+# %%
+#|export
+# `--due-only` narrows the selection to boxes whose cadence says so. It is
+# applied AFTER the explicit `--box` list on purpose: naming a box asks for that
+# box, and a cadence is a default for the unattended loop, not an override of a
+# person's explicit instruction.
+_due_conflicts = []
+if due_only:
+    from boxyard._sync_policy import due_boxes as _due_boxes
+    import time as _time
+
+    _due = _due_boxes(config, box_metas, BoxPart.DATA, _time.time())
+    _due_conflicts = _due.conflicts
+    _due_order = {name: i for i, name in enumerate(_due.due)}
+    box_metas = sorted(
+        (bm for bm in box_metas if bm.index_name in _due_order),
+        key=lambda bm: _due_order[bm.index_name],
+    )
+
+# A box whose policies disagree is synced anyway -- the ambiguity is about how
+# OFTEN, never about whether -- but it is never synced SILENTLY. Printed once
+# per pass to stderr so an unattended loop's stdout stays parseable.
+for _conflict in _due_conflicts:
+    typer.echo(f"Sync policy conflict: {_conflict}", err=True)
+
 # %% [markdown]
 # ## Fetch the tombstones once, not once per box
 #
@@ -214,6 +249,18 @@ async def _load_tombstoned_ids():
 
 # %%
 #|export
+def _record_check(box_meta):
+    """Record that every requested part of this box was checked just now."""
+    import time as _time
+
+    from boxyard._sync_policy import SCHEDULABLE_PARTS, write_check_record
+
+    _now = _time.time()
+    for _part in sync_choices:
+        if _part in SCHEDULABLE_PARTS:
+            write_check_record(config, box_meta.index_name, _part, _now)
+
+
 async def _task(num, box_meta):
     sync_stats[box_meta.index_name] = (num, "Syncing...", None, datetime.now(), None)
     try:
@@ -250,6 +297,15 @@ async def _task(num, box_meta):
             datetime.now(),
             sync_results,
         )
+        # The box was CHECKED, so the cadence clock restarts -- including for
+        # "Read-only" (write denied is a completed check whose answer was "not
+        # yours to push") and "Local" (no remote to check against, but the
+        # question was asked and answered).
+        #
+        # Deliberately NOT recorded for Error or Interrupted: an incomplete
+        # check must leave the box due, so a box that fails every pass keeps
+        # being retried instead of going quiet for its whole interval.
+        _record_check(box_meta)
     except SoftInterruption:
         sync_stats[box_meta.index_name] = (
             num,
