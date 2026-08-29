@@ -262,10 +262,11 @@ Select local placement independently of remote storage:
 boxyard new --box-name NAME --storage-location STORAGE --checkout-root ROOT
 boxyard include --box-name NAME --checkout-root ROOT
 boxyard relocate --box-name NAME --checkout-root OTHER_ROOT
+boxyard relocate --box-name NAME --checkout-root ROOT --adopt-existing
 boxyard relocate --box-name NAME  # recover the recorded destination after interruption
 ```
 
-`exclude` remembers the preferred root; `include` without a root reuses it. `relocate` is locked, local-only, does no remote I/O, and is recoverable via `doctor`.
+`exclude` remembers the preferred root; `include` without a root reuses it. `relocate` is locked, local-only, does no remote I/O, and is recoverable via `doctor`. Use `--adopt-existing` only for a pre-populated destination: Boxyard verifies every source entry is identical there, preserves destination-only content, then commits placement and removes the source.
 
 ## Syncing
 

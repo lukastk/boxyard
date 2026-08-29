@@ -105,8 +105,8 @@ It holds the box's operation lock (the same lock used by sync/include/exclude/
 delete/rename) and the global state lock.
 
 Before mutation it validates registration, included state, source root,
-destination root availability and mount identity, destination collision, and
-root configuration.
+destination root availability and mount identity, and root configuration. An
+ordinary move requires an absent destination and preflights destination space.
 
 On one filesystem, DATA moves with `os.replace`, giving an atomic directory
 rename. Across filesystems, Boxyard copies to a hidden staging directory using
@@ -116,9 +116,17 @@ supports hardlinks. It rejects sockets, devices and FIFOs rather than silently
 changing their meaning. A complete manifest compares paths, types, modes,
 timestamps, sizes and SHA-256 file contents before staging is promoted.
 
+For a destination that already contains valuable data, pass `--adopt-existing`.
+Boxyard requires a real destination directory and verifies every source entry is
+present there with the same type, mode, file timestamp and SHA-256 content (or
+symlink target). Destination-only content is deliberately retained. Verification
+walks the source and probes matching destination entries, so adopting a very large
+superset does not construct an in-memory destination manifest. Only after that
+verification does the normal placement commit, link update and source deletion run.
+
 Durable phases are:
 
-1. `copying` (cross-filesystem) or `moving` (same-filesystem);
+1. `copying`, `moving`, or `adopting`;
 2. `destination_ready` after cross-filesystem verification;
 3. `committed` after the destination becomes authoritative.
 

@@ -15,6 +15,9 @@
   Same-filesystem moves use atomic rename; cross-filesystem moves preserve
   metadata, symlinks, sparse files and hardlinks, verify content before commit,
   and retain durable phases recoverable by rerunning the command.
+- `relocate --adopt-existing` transactionally adopts a pre-populated destination
+  after streaming verification that it contains every source entry identically;
+  destination-only content is retained, enabling migrations without a second full copy.
 - Guarded roots can require an exact Linux mount target and filesystem UUID.
   Wrong/unavailable mounts fail loudly before any root directory is created and
   never fall back to default.

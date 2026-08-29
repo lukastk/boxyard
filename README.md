@@ -153,12 +153,13 @@ boxyard checkout-roots
 boxyard new -n dataset --checkout-root bulk
 boxyard include -r 20260101_abcde__dataset --checkout-root volume
 boxyard relocate -r 20260101_abcde__dataset --checkout-root default
+boxyard relocate -r 20260101_abcde__dataset --checkout-root volume --adopt-existing
 boxyard list --checkout-root volume --show-checkout
 boxyard list -o json                 # includes checkout_root, local_path, state
 boxyard which --path /mnt/volume/boxes/20260101_abcde__dataset -j
 ```
 
-`exclude` remembers the root. A later `include` with no `--checkout-root` reuses it; an explicit root overrides it. Relocation is local-only, locked and recoverable. If interrupted, `doctor` reports it and rerunning `boxyard relocate -r BOX` resumes the recorded destination. Boxyard never falls back from an unavailable guarded root.
+`exclude` remembers the root. A later `include` with no `--checkout-root` reuses it; an explicit root overrides it. Relocation is local-only, locked and recoverable. `--adopt-existing` accepts a pre-populated destination only after verifying that every source entry is present there identically, while preserving destination-only content. If interrupted, `doctor` reports it and rerunning `boxyard relocate -r BOX` resumes the recorded destination. Boxyard never falls back from an unavailable guarded root.
 
 Storage locations are rclone remotes or local stores. Boxyard uses its own rclone config at `~/.config/boxyard/boxyard_rclone.conf`.
 

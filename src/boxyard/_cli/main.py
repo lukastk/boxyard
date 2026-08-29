@@ -2895,8 +2895,12 @@ def cli_relocate(
     checkout_root: str | None = Option(
         None, "--checkout-root", help="Destination checkout root. Omit only to recover an interrupted relocation.",
     ),
+    adopt_existing: bool = Option(
+        False, "--adopt-existing",
+        help="Adopt a pre-populated destination after verifying it contains every source entry identically.",
+    ),
 ):
-    """Move an included checkout locally without uploading or downloading."""
+    """Move an included checkout locally, or safely adopt an existing destination."""
     from ..cmds._relocate_box import relocate_box
 
     resolved = _get_box_index_name(
@@ -2912,6 +2916,7 @@ def cli_relocate(
         config_path=app_state["config_path"],
         box_index_name=resolved,
         destination_root=checkout_root,
+        adopt_existing=adopt_existing,
     )
     typer.echo(result)
 

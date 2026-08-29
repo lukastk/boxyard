@@ -10,10 +10,13 @@ def relocate_box(
     config_path: Path,
     box_index_name: str,
     destination_root: str | None = None,
+    adopt_existing: bool = False,
     _phase_hook: Callable[[str], None] | None = None,
 ) -> Path:
     """Move an included box between checkout roots without contacting remote storage.
 
+    ``adopt_existing`` accepts a pre-populated destination only after proving every
+    source entry is present there identically; destination-only content is preserved.
     If a relocation was interrupted, omit ``destination_root`` to recover its
     recorded destination, or provide that same destination explicitly.
     ``_phase_hook`` is a test-only crash-injection seam.
@@ -49,6 +52,7 @@ def relocate_box(
                 config,
                 box_meta,
                 destination_root,
+                adopt_existing=adopt_existing,
                 phase_hook=_phase_hook,
             )
     return result;

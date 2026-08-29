@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import stat
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -268,6 +269,70 @@ def test_relocation_preflight_collision_and_space_leave_source_authoritative(
         )
     assert (source / "payload").read_text() == "only copy"
     assert load_placement(config, meta).state == PlacementState.INCLUDED
+
+
+def test_adopt_existing_checkout_preserves_destination_only_content(
+    test_boxyard_local, tmp_path
+):
+    env = test_boxyard_local
+    bulk = tmp_path / "bulk"
+    configure_roots(env, bulk=bulk)
+    index_name = new_box(
+        config_path=env["config_path"], box_name="adopt", initialise_git=False
+    )
+    config = get_config(env["config_path"])
+    meta = box_meta(config, index_name)
+    source = meta.get_local_part_path(config, BoxPart.DATA)
+    (source / "payload").write_text("shared")
+    destination = bulk / index_name
+    destination.mkdir(parents=True)
+    shutil.copy2(source / "payload", destination / "payload")
+    (destination / "destination-only").write_text("keep me")
+
+    result = relocate_box(
+        config_path=env["config_path"],
+        box_index_name=index_name,
+        destination_root="bulk",
+        adopt_existing=True,
+    )
+
+    assert result == destination
+    assert not source.exists()
+    assert (destination / "payload").read_text() == "shared"
+    assert (destination / "destination-only").read_text() == "keep me"
+    assert load_placement(config, meta).checkout_root == "bulk"
+
+
+def test_adopt_existing_mismatch_is_recoverable(test_boxyard_local, tmp_path):
+    env = test_boxyard_local
+    bulk = tmp_path / "bulk"
+    configure_roots(env, bulk=bulk)
+    index_name = new_box(
+        config_path=env["config_path"], box_name="adopt-recovery", initialise_git=False
+    )
+    config = get_config(env["config_path"])
+    meta = box_meta(config, index_name)
+    source = meta.get_local_part_path(config, BoxPart.DATA)
+    (source / "payload").write_text("source")
+    destination = bulk / index_name
+    destination.mkdir(parents=True)
+    (destination / "payload").write_text("wrong")
+
+    with pytest.raises(IOError, match="adoption verification failed"):
+        relocate_box(
+            config_path=env["config_path"],
+            box_index_name=index_name,
+            destination_root="bulk",
+            adopt_existing=True,
+        )
+    assert (source / "payload").read_text() == "source"
+    assert load_placement(config, meta).state == PlacementState.RELOCATING
+
+    shutil.copy2(source / "payload", destination / "payload")
+    result = relocate_box(config_path=env["config_path"], box_index_name=index_name)
+    assert result == destination
+    assert not source.exists()
+    assert (destination / "payload").read_text() == "source"
 
 
 def test_guarded_root_wrong_identity_never_writes(test_boxyard_local, tmp_path, monkeypatch):

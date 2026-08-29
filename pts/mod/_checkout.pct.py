@@ -52,6 +52,7 @@ class RelocationPhase(str, Enum):
     COPYING = "copying"
     DESTINATION_READY = "destination_ready"
     MOVING = "moving"
+    ADOPTING = "adopting"
     COMMITTED = "committed"
 
 
@@ -60,6 +61,7 @@ class RelocationRecord(const.StrictModel):
     destination_root: str
     staging_name: str | None = None
     phase: RelocationPhase
+    adopt_existing: bool = False
 
 
 class CheckoutPlacement(const.StrictModel):
@@ -548,6 +550,60 @@ def verify_copied_tree(source: Path, destination: Path) -> None:
         raise IOError(f"Relocation verification failed: {'; '.join(details)}")
 
 
+def verify_tree_contained(source: Path, destination: Path) -> None:
+    """Verify every source entry exists identically in a destination superset.
+
+    Adoption deliberately permits destination-only content, but never permits a
+    source file, symlink, mode, timestamp, or byte to disappear. Directory mtimes
+    are excluded because destination-only children necessarily change them.
+    The destination is checked entry-by-entry so a multi-million-file superset
+    does not need to be materialized as an in-memory manifest.
+    """
+    differences: list[str] = []
+    for current, dirnames, filenames in os.walk(source, followlinks=False):
+        current_path = Path(current)
+        for name in sorted(dirnames + filenames):
+            source_path = current_path / name
+            relative = source_path.relative_to(source)
+            destination_path = destination / relative
+            try:
+                source_info = source_path.lstat()
+                destination_info = destination_path.lstat()
+            except FileNotFoundError:
+                differences.append(f"missing {relative.as_posix()}")
+                if len(differences) == 5:
+                    break
+                continue
+            source_mode = stat.S_IMODE(source_info.st_mode)
+            destination_mode = stat.S_IMODE(destination_info.st_mode)
+            if stat.S_ISLNK(source_info.st_mode):
+                equal = (
+                    stat.S_ISLNK(destination_info.st_mode)
+                    and source_mode == destination_mode
+                    and os.readlink(source_path) == os.readlink(destination_path)
+                )
+            elif stat.S_ISDIR(source_info.st_mode):
+                equal = stat.S_ISDIR(destination_info.st_mode) and source_mode == destination_mode
+            elif stat.S_ISREG(source_info.st_mode):
+                equal = (
+                    stat.S_ISREG(destination_info.st_mode)
+                    and source_mode == destination_mode
+                    and source_info.st_size == destination_info.st_size
+                    and source_info.st_mtime_ns == destination_info.st_mtime_ns
+                    and _file_digest(source_path) == _file_digest(destination_path)
+                )
+            else:
+                equal = stat.S_IFMT(source_info.st_mode) == stat.S_IFMT(destination_info.st_mode) and source_mode == destination_mode
+            if not equal:
+                differences.append(f"metadata/content differs at {relative.as_posix()}")
+                if len(differences) == 5:
+                    break
+        if len(differences) == 5:
+            break
+    if differences:
+        raise IOError(f"Existing-checkout adoption verification failed: {differences}")
+
+
 def _same_filesystem(source: Path, destination_root: Path) -> bool:
     return source.stat().st_dev == destination_root.stat().st_dev
 
@@ -562,6 +618,7 @@ def relocate_box(
     box_meta: BoxMeta,
     destination_root: str,
     *,
+    adopt_existing: bool = False,
     phase_hook: Callable[[str], None] | None = None,
 ) -> Path:
     """Relocate one included checkout locally; no remote operation is performed.
@@ -593,28 +650,43 @@ def relocate_box(
     destination = destination_status.path / box_meta.index_name
     if not source.is_dir():
         raise FileNotFoundError(f"Recorded checkout source '{source}' does not exist")
-    if destination.exists() or destination.is_symlink():
-        raise FileExistsError(f"Checkout destination '{destination}' already exists")
-    staging_name = f".{box_meta.index_name}.relocating-{uuid.uuid4().hex}"
-    same_filesystem = _same_filesystem(source, destination_status.path)
-    if not same_filesystem:
-        required_bytes = sum(
-            entry.stat(follow_symlinks=False).st_blocks * 512
-            for directory, _dirs, files in os.walk(source)
-            for entry in (Path(directory) / name for name in files)
-            if not entry.is_symlink()
-        )
-        free_bytes = shutil.disk_usage(destination_status.path).free
-        if free_bytes < required_bytes:
-            raise OSError(
-                f"Checkout root '{destination_root}' has {free_bytes} free bytes, but "
-                f"relocating '{box_meta.index_name}' requires at least {required_bytes}."
+    destination_exists = destination.exists() or destination.is_symlink()
+    if adopt_existing:
+        if not destination.is_dir() or destination.is_symlink():
+            raise FileNotFoundError(
+                f"Existing checkout destination '{destination}' must be a real directory"
             )
+        staging_name = None
+        same_filesystem = False
+    else:
+        if destination_exists:
+            raise FileExistsError(f"Checkout destination '{destination}' already exists")
+        staging_name = f".{box_meta.index_name}.relocating-{uuid.uuid4().hex}"
+        same_filesystem = _same_filesystem(source, destination_status.path)
+        if not same_filesystem:
+            required_bytes = sum(
+                entry.stat(follow_symlinks=False).st_blocks * 512
+                for directory, _dirs, files in os.walk(source)
+                for entry in (Path(directory) / name for name in files)
+                if not entry.is_symlink()
+            )
+            free_bytes = shutil.disk_usage(destination_status.path).free
+            if free_bytes < required_bytes:
+                raise OSError(
+                    f"Checkout root '{destination_root}' has {free_bytes} free bytes, but "
+                    f"relocating '{box_meta.index_name}' requires at least {required_bytes}."
+                )
     relocation = RelocationRecord(
         source_root=source_root,
         destination_root=destination_root,
-        staging_name=None if same_filesystem else staging_name,
-        phase=RelocationPhase.MOVING if same_filesystem else RelocationPhase.COPYING,
+        staging_name=staging_name,
+        phase=(
+            RelocationPhase.ADOPTING
+            if adopt_existing
+            else RelocationPhase.MOVING if same_filesystem
+            else RelocationPhase.COPYING
+        ),
+        adopt_existing=adopt_existing,
     )
     placement = CheckoutPlacement(
         checkout_root=source_root,
@@ -640,6 +712,18 @@ def _recover_relocation(
     source = source_status.path / box_meta.index_name
     destination = destination_status.path / box_meta.index_name
     staging = destination_status.path / record.staging_name if record.staging_name else None
+
+    if record.phase == RelocationPhase.ADOPTING:
+        if not source.is_dir():
+            raise RelocationInterrupted(f"Relocation source '{source}' is missing")
+        if not destination.is_dir() or destination.is_symlink():
+            raise RelocationInterrupted(f"Existing checkout destination '{destination}' is missing")
+        verify_tree_contained(source, destination)
+        _run_phase_hook(phase_hook, "verified")
+        record.phase = RelocationPhase.COMMITTED
+        placement.checkout_root = record.destination_root
+        save_placement(config, box_meta.box_id, placement)
+        _run_phase_hook(phase_hook, "committed")
 
     if record.phase == RelocationPhase.COPYING:
         assert staging is not None
@@ -704,7 +788,10 @@ def _recover_relocation(
         create_user_box_group_symlinks(config)
         _run_phase_hook(phase_hook, "links_updated")
         if source.exists():
-            verify_copied_tree(source, destination)
+            if record.adopt_existing:
+                verify_tree_contained(source, destination)
+            else:
+                verify_copied_tree(source, destination)
             shutil.rmtree(source)
         _run_phase_hook(phase_hook, "source_deleted")
         final = CheckoutPlacement(
