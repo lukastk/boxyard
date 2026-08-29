@@ -148,15 +148,40 @@ try:
         if verbose:
             print("Renaming locally...")
 
-        # Update the boxmeta.toml
-        box_meta.name = new_name
+        # Resolve placement before changing the index name. An unavailable
+        # included root is not an excluded box and must never be renamed through
+        # some other path.
+        from boxyard._checkout import (
+            get_box_checkout_status,
+            LocalCheckoutState,
+            CheckoutRootUnavailable,
+        )
+        _checkout = get_box_checkout_status(config, box_meta)
+        if _checkout.state == LocalCheckoutState.UNAVAILABLE:
+            raise CheckoutRootUnavailable(
+                f"Cannot rename '{box_index_name}': checkout root "
+                f"'{_checkout.checkout_root}' is unavailable"
+            )
+        if _checkout.state == LocalCheckoutState.RELOCATING:
+            raise RuntimeError(
+                f"Cannot rename '{box_index_name}' during an interrupted relocation; "
+                "recover it with `boxyard relocate` first."
+            )
+        if _checkout.state == LocalCheckoutState.MISSING:
+            raise RuntimeError(
+                f"Cannot rename '{box_index_name}': its recorded included checkout is missing. "
+                "Recover it with `boxyard include` first."
+            )
+        old_data_path = _checkout.local_path
 
-        # Compute old and new local paths
+        # Update the boxmeta.toml and compute paths under the same checkout root.
+        box_meta.name = new_name
+        new_data_path = (
+            config.configured_checkout_roots[_checkout.checkout_root].path / new_index_name
+        )
+
         old_local_path = config.local_store_path / storage_location / box_index_name
         new_local_path = config.local_store_path / storage_location / new_index_name
-
-        old_data_path = config.user_boxes_path / box_index_name
-        new_data_path = config.user_boxes_path / new_index_name
 
         old_sync_record_path = config.boxyard_data_path / const.SYNC_RECORDS_REL_PATH / box_index_name
         new_sync_record_path = config.boxyard_data_path / const.SYNC_RECORDS_REL_PATH / new_index_name

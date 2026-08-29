@@ -11,6 +11,7 @@ async def include_box(
     box_index_name: str,
     soft_interruption_enabled: bool = True,
     read_only: bool = False,
+    checkout_root: str | None = None,
 ):
     """
     Bring a box's DATA onto this machine.
@@ -22,23 +23,45 @@ async def include_box(
         read_only: Suppress the nudge to claim an unowned box. Use when you
             only want to read the box here and do not intend to become its
             writer.
+        checkout_root: Explicit machine-local root. If omitted, reuse the
+            remembered placement (``default`` for legacy boxes).
     """
     config = get_config(config_path)
     from boxyard._models import get_boxyard_meta
-    
+
     boxyard_meta = get_boxyard_meta(config)
-    
+
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' does not exist.")
-    
+
     box_meta = boxyard_meta.by_index_name[box_index_name]
-    
+
     if box_meta.check_included(config):
         raise ValueError(f"Box '{box_index_name}' is already included.")
+
+    from boxyard._checkout import (
+        load_placement,
+        require_checkout_root,
+        set_box_placement,
+        PlacementState,
+        LocalCheckoutState,
+        get_box_checkout_status,
+     )
+
+    _previous_placement = load_placement(config, box_meta)
+    _selected_root = checkout_root or _previous_placement.authoritative_root
+    _root_status = require_checkout_root(config, _selected_root, create=True)
+    _destination = _root_status.path / box_meta.index_name
+    _checkout_status = get_box_checkout_status(config, box_meta)
+    if _destination.exists() and _checkout_status.state == LocalCheckoutState.EXCLUDED:
+        raise FileExistsError(
+            f"Checkout destination '{_destination}' already exists while the box is recorded as excluded. "
+            "Move the duplicate aside or use `boxyard doctor` before including."
+        )
     from boxyard.cmds import sync_box
     from boxyard._models import BoxPart
     from boxyard._utils.sync_helper import SyncSetting, SyncDirection
-    
+
     _lock_manager = BoxyardLockManager(config.boxyard_data_path)
     _lock_path = _lock_manager.box_sync_lock_path(box_index_name)
     _lock_manager._ensure_lock_dir(_lock_path)
@@ -50,6 +73,11 @@ async def include_box(
         BOX_SYNC_LOCK_TIMEOUT,
     )
     try:
+        require_checkout_root(config, _selected_root, create=True)
+        # Placement is authoritative before DATA can be pulled. If the process is
+        # interrupted, doctor reports an included-but-missing checkout rather than
+        # silently treating the box as excluded or falling back to another root.
+        set_box_placement(config, box_meta, _selected_root, PlacementState.INCLUDED)
         # First force sync the data
         await sync_box(
             config_path=config_path,
@@ -59,8 +87,9 @@ async def include_box(
             sync_choices=[BoxPart.DATA],
             soft_interruption_enabled=soft_interruption_enabled,
             _skip_lock=True,
+            _allow_missing_checkout=True,
         )
-    
+
         # Then sync the rest
         await sync_box(
             config_path=config_path,
@@ -73,12 +102,12 @@ async def include_box(
         )
     finally:
         _sync_lock.release()
-    
-    print(f"Included box '{box_meta.name}'")
+
+    print(f"Included box '{box_meta.name}' in checkout root '{_selected_root}'")
     from boxyard._models import BoxMeta as _BoxMeta
-    
+
     _included_meta = _BoxMeta.load(config, box_meta.storage_location, box_index_name)
-    
+
     if _included_meta.write_owner is None:
         # Unowned means unrestricted, so nothing is being withheld -- but a box
         # nobody has claimed is a box two machines can still diverge on, which is

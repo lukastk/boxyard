@@ -161,6 +161,7 @@ async def sync_box(
     soft_interruption_enabled: bool = True,
     tombstoned_box_ids: set[str] | None = None,
     _skip_lock: bool = False,
+    _allow_missing_checkout: bool = False,
 ) -> dict[BoxPart, tuple[SyncStatus, bool]]:
     """
     Syncs a box with its remote.
@@ -181,17 +182,43 @@ async def sync_box(
     config = get_config(config_path)
     if sync_choices is None:
         sync_choices = [box_part for box_part in BoxPart]
-    
+
     if soft_interruption_enabled:
         enable_soft_interruption()
     from boxyard._models import get_boxyard_meta
-    
+
     boxyard_meta = get_boxyard_meta(config)
-    
+
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' not found.")
-    
+
     box_meta = boxyard_meta.by_index_name[box_index_name]
+
+    if BoxPart.DATA in sync_choices:
+        from boxyard._checkout import (
+            get_box_checkout_status,
+            LocalCheckoutState,
+            CheckoutRootUnavailable,
+        )
+        _checkout_status = get_box_checkout_status(config, box_meta)
+        if _checkout_status.state == LocalCheckoutState.UNAVAILABLE:
+            raise CheckoutRootUnavailable(
+                f"Cannot sync DATA for '{box_index_name}': checkout root "
+                f"'{_checkout_status.checkout_root}' is unavailable. No fallback root will be used."
+            )
+        if _checkout_status.state == LocalCheckoutState.RELOCATING:
+            raise RuntimeError(
+                f"Cannot sync DATA for '{box_index_name}': checkout state is relocating. "
+                "Run `boxyard relocate` to recover relocation."
+            )
+        if (
+            _checkout_status.state == LocalCheckoutState.MISSING
+            and not _allow_missing_checkout
+        ):
+            raise RuntimeError(
+                f"Cannot sync DATA for '{box_index_name}': its recorded checkout is missing. "
+                "Run `boxyard doctor --no-remote` and use `boxyard include` to recover it."
+            )
     # A `local` storage location has no remote: its store is a directory on this
     # machine, so there is nothing to sync against. That is a legitimate,
     # permanent state -- not an error, and not something a retry resolves.
@@ -208,7 +235,7 @@ async def sync_box(
                 f"'{box_meta.storage_location}'. Nothing to sync."
             )
         from boxyard._models import SyncRecord as _SyncRecord
-    
+
         _local_only_record = _SyncRecord.create(sync_complete=False)
         sync_results = {
             part: (
@@ -228,7 +255,7 @@ async def sync_box(
         return sync_results
     box_id = BoxMeta.extract_box_id(box_index_name)
     storage_location = box_meta.storage_location
-    
+
     # One remote probe PER BOX is what this parameter exists to avoid: a
     # `multi-sync` pass over 587 boxes made 587 separate SFTP connections to the
     # same storage box, every 20 minutes, on every machine. That saturated the
@@ -266,12 +293,12 @@ async def sync_box(
         }
         return sync_results
     remote_index_name = await find_remote_box_by_id(config, storage_location, box_id)
-    
+
     # If remote doesn't exist, this is a new box - use local index_name for remote
     # If remote exists with different name, use that name for remote paths
     if remote_index_name is None:
         remote_index_name = box_index_name
-    
+
     # Precompute remote paths using the remote_index_name (which may differ from local)
     def _get_remote_path_for_index(idx_name: str) -> Path:
         return (
@@ -279,7 +306,7 @@ async def sync_box(
             / const.REMOTE_BOXES_REL_PATH
             / idx_name
         )
-    
+
     def _get_remote_part_path_for_index(idx_name: str, part: BoxPart) -> Path:
         base = _get_remote_path_for_index(idx_name)
         if part == BoxPart.DATA:
@@ -289,7 +316,7 @@ async def sync_box(
         elif part == BoxPart.CONF:
             return base / const.BOX_CONF_REL_PATH
         raise ValueError(f"Invalid box part: {part}")
-    
+
     def _get_remote_sync_record_path_for_index(idx_name: str, part: BoxPart) -> Path:
         sl_conf = config.storage_locations[storage_location]
         return (
@@ -310,23 +337,23 @@ async def sync_box(
             _lock_path,
             BOX_SYNC_LOCK_TIMEOUT,
         )
-    
+
     try:
         # Prints
         if verbose:
             print(f"Syncing box {box_index_name} at {box_meta.storage_location}.")
-    
+
         # Get the backup locations
         sl_config = box_meta.get_storage_location_config(config)
         local_sync_backups_path = config.local_sync_backups_path
         remote_sync_backups_path = sl_config.store_path / const.REMOTE_BACKUP_REL_PATH
-    
+
         # Sync the boxmeta
         sync_results = {}
-    
+
         if check_interrupted():
             raise SoftInterruption()
-    
+
         # META is synced whenever DATA is, even when the caller did not ask for it:
         # the ownership decision below reads `write_owner` out of the boxmeta, and
         # `boxyard sync -c data` would otherwise decide it from a local copy that
@@ -339,7 +366,7 @@ async def sync_box(
         if sync_part in sync_choices or BoxPart.DATA in sync_choices:
             if verbose:
                 print(f"Syncing {sync_part.value}.")
-    
+
             _meta_paths = dict(
                 local_path=box_meta.get_local_part_path(config, BoxPart.META),
                 local_sync_record_path=box_meta.get_local_sync_record_path(config, sync_part),
@@ -395,7 +422,7 @@ async def sync_box(
                 )
             if sync_part in sync_choices:
                 sync_results[BoxPart.META] = _meta_sync_result
-    
+
             # Record the merge base, but ONLY where local and remote are known to
             # match: the status said SYNCED (nothing to do), or a transfer
             # completed and was verified. A base that never corresponded to a
@@ -420,7 +447,7 @@ async def sync_box(
             _meta_status, _meta_synced = _meta_sync_result
             if _meta_status.sync_condition == SyncCondition.SYNCED or _meta_synced:
                 record_meta_base(config, box_meta, verbose=verbose)
-    
+
         # ---- Write ownership -------------------------------------------------
         #
         # Decided HERE: after the META sync, so it reads whatever the rest of the
@@ -434,7 +461,7 @@ async def sync_box(
         _box_meta_on_disk = BoxMeta.load(config, storage_location, box_index_name)
         _write_owner = _box_meta_on_disk.write_owner
         _may_push = may_push(config, _box_meta_on_disk)
-    
+
         def _deny(status: SyncStatus) -> tuple[SyncStatus, bool]:
             return (
                 status._replace(
@@ -443,7 +470,7 @@ async def sync_box(
                 ),
                 False,
             )
-    
+
         async def _sync_part(
             *,
             probe_include_path=None,
@@ -453,7 +480,7 @@ async def sync_box(
         ) -> tuple[SyncStatus, bool]:
             """
             `sync_helper`, except that a non-owner never pushes.
-    
+
             A non-owner is a read-only replica doing its job, so it pulls quietly
             and says nothing; it only speaks up when it holds changes that will
             never leave this machine. Nothing here raises -- see
@@ -461,7 +488,7 @@ async def sync_box(
             """
             if _may_push:
                 return await sync_helper(**helper_kwargs)
-    
+
             # Only a non-owner pays for this extra status read; an unowned box or
             # one we own takes the path above untouched.
             _status = await get_sync_status(
@@ -480,16 +507,16 @@ async def sync_box(
                 ),
             )
             _condition = _status.sync_condition
-    
+
             if _condition == SyncCondition.SYNCED:
                 return _status, False
-    
+
             if _condition == SyncCondition.NEEDS_PULL:
                 # The ordinary state of a read-only replica. Pull, silently.
                 return await sync_helper(
                     **{**helper_kwargs, "sync_direction": SyncDirection.PULL}
                 )
-    
+
             if _condition == SyncCondition.NEEDS_PUSH:
                 # `needs_push` is not evidence of a real change: it comes from a
                 # tree walk, so a single `.DS_Store` sets it even though the file
@@ -509,18 +536,18 @@ async def sync_box(
                     # about changes that do not exist.
                     return _status._replace(sync_condition=SyncCondition.SYNCED), False
                 return _deny(_status)
-    
+
             if _condition == SyncCondition.CONFLICT:
                 return _deny(_status)
-    
+
             # ERROR, EXCLUDED, TOMBSTONED, and the interrupted-sync conditions are
             # not ownership's business: they are handled exactly as before.
             return await sync_helper(**helper_kwargs)
-    
+
         # Sync the boxconf
         if check_interrupted():
             raise SoftInterruption()
-    
+
         # CONF is synced whenever DATA is, even when the caller did not ask for it,
         # for the same reason META is: `conf/.rclone_include|_exclude|_filters`
         # decide WHAT DATA syncs, and they are read off the local disk immediately
@@ -569,7 +596,7 @@ async def sync_box(
             )
             if sync_part in sync_choices:
                 sync_results[sync_part] = _conf_sync_result
-    
+
         # Get the now locally synced conf files for the sync of the box data
         _rclone_include_path = (
             box_meta.get_local_part_path(config, BoxPart.CONF) / const.RCLONE_INCLUDE_FILENAME
@@ -580,7 +607,7 @@ async def sync_box(
         _rclone_filters_path = (
             box_meta.get_local_part_path(config, BoxPart.CONF) / const.RCLONE_FILTERS_FILENAME
         )
-    
+
         _rclone_include_path = _rclone_include_path if _rclone_include_path.exists() else None
         _rclone_exclude_path = (
             _rclone_exclude_path
@@ -588,11 +615,11 @@ async def sync_box(
             else config.default_rclone_exclude_path
         )
         _rclone_filters_path = _rclone_filters_path if _rclone_filters_path.exists() else None
-    
+
         # Sync the box data
         if check_interrupted():
             raise SoftInterruption()
-    
+
         sync_part = BoxPart.DATA
         if sync_part in sync_choices:
             if verbose:
@@ -620,14 +647,14 @@ async def sync_box(
                 show_rclone_progress=show_rclone_progress,
                 preserve_exec_perms=True,
             )
-    
+
         # Update remote index cache
         update_remote_index_cache(config, storage_location, box_id, remote_index_name)
-    
+
         # Refresh the boxyard meta file
         if BoxPart.META in sync_choices:
             from boxyard._models import refresh_boxyard_meta
-    
+
             refresh_boxyard_meta(config)
     finally:
         if _sync_lock is not None:

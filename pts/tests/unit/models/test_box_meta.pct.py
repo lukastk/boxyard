@@ -409,12 +409,16 @@ class TestPathGeneration:
     @pytest.fixture
     def mock_config(self):
         """Create a mock config for path tests."""
-        from boxyard.config import Config, StorageConfig, StorageType
+        from boxyard.config import Config, StorageConfig, StorageType, CheckoutRootConfig
 
         config = MagicMock(spec=Config)
         config.local_store_path = Path("/home/user/.boxyard/local_store")
         config.user_boxes_path = Path("/home/user/boxes")
         config.boxyard_data_path = Path("/home/user/.boxyard")
+        config.placements_path = Path("/home/user/.boxyard/placements")
+        config.configured_checkout_roots = {
+            "default": CheckoutRootConfig(path=config.user_boxes_path),
+        }
 
         storage_config = MagicMock(spec=StorageConfig)
         storage_config.store_path = Path("remote:bucket/boxyard")
@@ -514,10 +518,12 @@ class TestCheckIncluded:
 
     def test_check_included_when_data_dir_exists(self, tmp_path):
         """check_included returns True when data directory exists."""
-        from boxyard.config import Config
+        from boxyard.config import Config, CheckoutRootConfig
 
         mock_config = MagicMock(spec=Config)
         mock_config.user_boxes_path = tmp_path
+        mock_config.placements_path = tmp_path / ".boxyard" / "placements"
+        mock_config.configured_checkout_roots = {"default": CheckoutRootConfig(path=tmp_path)}
 
         box_meta = BoxMeta(
             creation_timestamp_utc="20251122_143022",
@@ -536,10 +542,12 @@ class TestCheckIncluded:
 
     def test_check_included_when_data_dir_not_exists(self, tmp_path):
         """check_included returns False when data directory doesn't exist."""
-        from boxyard.config import Config
+        from boxyard.config import Config, CheckoutRootConfig
 
         mock_config = MagicMock(spec=Config)
         mock_config.user_boxes_path = tmp_path
+        mock_config.placements_path = tmp_path / ".boxyard" / "placements"
+        mock_config.configured_checkout_roots = {"default": CheckoutRootConfig(path=tmp_path)}
 
         box_meta = BoxMeta(
             creation_timestamp_utc="20251122_143022",
@@ -554,10 +562,12 @@ class TestCheckIncluded:
 
     def test_check_included_when_data_is_file(self, tmp_path):
         """check_included returns False when path exists but is a file."""
-        from boxyard.config import Config
+        from boxyard.config import Config, CheckoutRootConfig
 
         mock_config = MagicMock(spec=Config)
         mock_config.user_boxes_path = tmp_path
+        mock_config.placements_path = tmp_path / ".boxyard" / "placements"
+        mock_config.configured_checkout_roots = {"default": CheckoutRootConfig(path=tmp_path)}
 
         box_meta = BoxMeta(
             creation_timestamp_utc="20251122_143022",

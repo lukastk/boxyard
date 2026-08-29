@@ -85,6 +85,7 @@ def _rollback_new_box(
 def new_box(
     config_path: Path,
     storage_location: str | None = None,
+    checkout_root: str | None = None,
     box_name: str | None = None,
     from_path: Path | None = None,
     copy_from_path: bool = False,
@@ -101,7 +102,8 @@ def new_box(
 
     Args:
         config_path: The path to the boxyard config file.
-        storage_location: The storage location to create the new box in.
+        storage_location: The remote storage location for the new box.
+        checkout_root: This machine's checkout root; defaults to ``default``.
         box_name: The name of the new box.
         from_path: The path to a local directory to move into boxyard as a new box.
         copy_from_path: Whether to copy the contents of the from_path into the new box.
@@ -132,6 +134,7 @@ remote_name, remote_rclone_path, config, config_path, data_path = create_boxyard
 # Args
 config_path = config_path
 storage_location = None
+checkout_root = None
 box_name = "test_box"
 from_path = None
 copy_from_path = False
@@ -157,6 +160,12 @@ config = get_config(config_path)
 
 if storage_location is None:
     storage_location = config.default_storage_location
+if checkout_root is None:
+    checkout_root = config.default_checkout_root_name
+
+from boxyard._checkout import require_checkout_root
+
+_checkout_root_status = require_checkout_root(config, checkout_root, create=True)
 
 if storage_location not in config.storage_locations:
     raise ValueError(
@@ -353,6 +362,13 @@ box_meta = BoxMeta(
 from boxyard._models import BoxPart
 
 box_path = box_meta.get_local_path(config)
+from boxyard._checkout import set_box_placement, PlacementState, delete_placement
+_checkout_root_status = require_checkout_root(config, checkout_root, create=True)
+
+_destination = _checkout_root_status.path / box_meta.index_name
+if _destination.exists() or _destination.is_symlink():
+    raise FileExistsError(f"Checkout destination '{_destination}' already exists")
+set_box_placement(config, box_meta, checkout_root, PlacementState.INCLUDED)
 box_data_path = box_meta.get_local_part_path(config, BoxPart.DATA)
 box_conf_path = box_meta.get_local_part_path(config, BoxPart.CONF)
 
@@ -439,6 +455,7 @@ try:
 except BaseException:
     try:
         _rollback_new_box(box_path, box_data_path, _moved_from_path)
+        delete_placement(config, box_meta.box_id)
     except Exception as cleanup_error:
         print(
             f"Warning: failed to clean up the partially-created box "

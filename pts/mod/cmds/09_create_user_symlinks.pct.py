@@ -27,7 +27,6 @@ from boxyard.config import get_config
 #|set_func_signature
 def create_user_symlinks(
     config_path: Path,
-    user_boxes_path: Path | None = None,
     user_box_groups_path: Path | None = None,
 ):
     """ """
@@ -44,7 +43,6 @@ remote_name, remote_rclone_path, config, config_path, data_path = create_boxyard
 # %%
 # Args
 config_path = config_path
-user_boxes_path = None
 user_box_groups_path = None
 
 # %%
@@ -103,8 +101,6 @@ except BoxNameConflict:
 #|export
 config = get_config(config_path)
 
-if user_boxes_path is None:
-    user_boxes_path = config.user_boxes_path
 if user_box_groups_path is None:
     user_box_groups_path = config.user_box_groups_path
 
@@ -118,7 +114,12 @@ from boxyard._models import refresh_boxyard_meta
 refresh_boxyard_meta(config)
 
 # %%
-ps = [p.name for p in config.user_boxes_path.glob("*")]
+ps = [
+    p.name
+    for root in config.configured_checkout_roots.values()
+    if root.path.is_dir()
+    for p in root.path.glob("*")
+]
 assert box_index_name in ps
 
 # %% [markdown]

@@ -222,7 +222,7 @@ try:
     )
     assert False, "Should have raised ValueError"
 except ValueError as e:
-    assert "is within the user boxes path" in str(e)
+    assert "is within checkout root 'default'" in str(e)
 
 # %% [markdown]
 # ## Test 7: Verify no sync records created

@@ -16,31 +16,49 @@ async def exclude_box(
     """ """
     config = get_config(config_path)
     from boxyard._models import get_boxyard_meta
-    
+
     boxyard_meta = get_boxyard_meta(config)
-    
+
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' does not exist.")
-    
+
     box_meta = boxyard_meta.by_index_name[box_index_name]
-    
-    if not box_meta.check_included(config):
+
+    from boxyard._checkout import (
+        get_box_checkout_status,
+        LocalCheckoutState,
+        CheckoutRootUnavailable,
+     )
+
+    _checkout_status = get_box_checkout_status(config, box_meta)
+    if _checkout_status.state == LocalCheckoutState.UNAVAILABLE:
+        raise CheckoutRootUnavailable(
+            f"Cannot exclude '{box_index_name}': its checkout root "
+            f"'{_checkout_status.checkout_root}' is unavailable. Refusing to treat an "
+            "unreachable checkout as absent."
+        )
+    if _checkout_status.state == LocalCheckoutState.EXCLUDED:
         raise ValueError(f"Box '{box_index_name}' is already excluded.")
+    if _checkout_status.state != LocalCheckoutState.INCLUDED:
+        raise ValueError(
+            f"Cannot exclude '{box_index_name}': checkout state is "
+            f"{_checkout_status.state.value}. Run `boxyard doctor --no-remote`."
+        )
     from boxyard.config import StorageType
-    
+
     if box_meta.get_storage_location_config(config).storage_type == StorageType.LOCAL:
         raise ValueError(
             f"Box '{box_index_name}' in local storage location '{box_meta.storage_location}' cannot be excluded."
         )
     from boxyard._models import BoxMeta
-    
+
     _box_meta_on_disk = BoxMeta.load(config, box_meta.storage_location, box_index_name)
-    
+
     if _box_meta_on_disk.write_owner is not None and (
         _box_meta_on_disk.write_owner == config.machine_name
     ):
         from boxyard.cmds import release_box
-    
+
         try:
             await release_box(
                 config_path=config_path, box_index_name=box_index_name, verbose=False
@@ -62,7 +80,7 @@ async def exclude_box(
     import shutil
     from boxyard._models import BoxPart
     from boxyard.cmds import sync_box
-    
+
     _lock_manager = BoxyardLockManager(config.boxyard_data_path)
     _lock_path = _lock_manager.box_sync_lock_path(box_index_name)
     _lock_manager._ensure_lock_dir(_lock_path)
@@ -83,7 +101,7 @@ async def exclude_box(
                 soft_interruption_enabled=soft_interruption_enabled,
                 _skip_lock=True,
             )
-    
+
         # Exclude it - delete local data
         # Retry rmtree to handle macOS race where Finder recreates .DS_Store mid-delete
         import time
@@ -99,7 +117,9 @@ async def exclude_box(
                 else:
                     raise
         box_meta.get_local_sync_record_path(config, BoxPart.DATA).unlink()
+        from boxyard._checkout import mark_excluded
+        mark_excluded(config, box_meta)
     finally:
         _sync_lock.release()
-    
+
     print(f"Excluded box '{box_meta.name}'")

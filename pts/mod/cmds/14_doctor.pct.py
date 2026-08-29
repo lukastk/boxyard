@@ -71,20 +71,22 @@
 #     local, and the POINT IS THE TIMING: on its own this is an ordinary pending
 #     edit, but if another machine pushes that box's META first it becomes a
 #     two-sided divergence that sync refuses and no automatic path resolves.
-#     Forty-four boxes on macbook went that way in one afternoon in August 2026
-#     — group edits made locally with `add-to-group`, which does not push by
-#     default, and a fleet-wide ownership claim landing on top — and every
-#     machine but macbook reported "all checks passed" throughout. This makes
-#     the pending edit visible BEFORE something lands on it. Needs the merge
-#     base (`BoxMeta.get_local_meta_base_path`), so it says nothing about a box
-#     that has not synced its META since v0.5.14.
+#     Forty-four boxes on macbook went that way in one afternoon in August 2026.
+#     Needs the merge base (`BoxMeta.get_local_meta_base_path`), so it says
+#     nothing about a box that has not synced its META since v0.5.14.
 # 22. **unowned-box** — a box INCLUDED here that no machine has claimed. Unowned
-#     means unrestricted, so nothing is being withheld — but it is also a box
-#     two machines can still diverge on, which is the problem ownership exists
-#     to remove, and until this check nothing said so except a one-line nudge
-#     when you happened to `include` one. Scoped to boxes held here because
-#     `claim` refuses a box that is not, so every finding names a command that
-#     will actually work.
+#     means unrestricted, so nothing is being withheld, but multiple machines
+#     can still diverge. Scoped to boxes held here because `claim` requires that.
+# 23. **sync-policy-conflict** — contradictory or invalid effective sync policy.
+# 24. **unusable-box-sync-conf** — unreadable per-box sync configuration.
+# 25. **checkout-root-config** — duplicate or overlapping configured roots.
+# 26. **checkout-root-unavailable** — guarded roots whose exact mount/UUID cannot
+#     be verified, including boxes recorded there.
+# 27. **checkout-placement** — unknown/malformed/orphan placements, missing
+#     included DATA, or excluded boxes with DATA present.
+# 28. **duplicate-checkout** — one box physically present in multiple roots.
+# 29. **interrupted-relocation** — a durable local move transaction requiring
+#     idempotent recovery.
 #
 # Doctor never mutates or auto-fixes anything.
 
@@ -135,6 +137,11 @@ DOCTOR_CHECK_NAMES = [
     "unowned-box",
     "sync-policy-conflict",
     "unusable-box-sync-conf",
+    "checkout-root-config",
+    "checkout-root-unavailable",
+    "checkout-placement",
+    "duplicate-checkout",
+    "interrupted-relocation",
 ]
 
 # %% [markdown]
@@ -440,58 +447,182 @@ for sl_name in config.storage_locations:
             registered_index_names.add(entry.name)
 
 # %% [markdown]
-# ## Check: `unregistered-folder`
-#
-# Every directory inside `user_boxes_path` must be a registered box. Folders
-# hand-created directly in `user_boxes_path` (instead of via `boxyard new`)
-# are invisible to boxyard and will never sync.
+# ## Checks: checkout roots and machine-local placement
+
+# %%
+#|export
+from boxyard._checkout import (
+    CheckoutPlacement,
+    PlacementState,
+    LocalCheckoutState,
+    get_checkout_root_status,
+    get_box_checkout_status,
+    placement_path,
+    root_configuration_findings,
+ )
+
+_root_statuses = {}
+for _root_name in sorted(config.configured_checkout_roots):
+    _root_status = get_checkout_root_status(config, _root_name)
+    _root_statuses[_root_name] = _root_status
+    if not _root_status.available:
+        _add_finding(
+            "checkout-root-unavailable",
+            f"Checkout root '{_root_name}' at '{_root_status.path}' is unavailable: {_root_status.reason}",
+            "Restore the configured mount/device identity. Boxyard will not create, read, or mutate checkouts beneath this root until it matches.",
+            checkout_root=_root_name,
+            path=_root_status.path,
+        )
+
+for _root_problem in root_configuration_findings(config):
+    _add_finding(
+        "checkout-root-config",
+        f"Unsafe {_root_problem['kind']} checkout roots {', '.join(_root_problem['names'])} at '{_root_problem['path']}'",
+        "Give every checkout root a unique, non-overlapping path before running mutations.",
+        checkout_roots=_root_problem["names"],
+        path=_root_problem["path"],
+    )
+
+_known_box_ids = {bm.box_id for bm in box_metas}
+if config.placements_path.is_dir():
+    for _placement_file in sorted(config.placements_path.glob("*.json")):
+        if _placement_file.stem not in _known_box_ids:
+            _add_finding(
+                "checkout-placement",
+                f"Placement record '{_placement_file}' has no registered box id",
+                "Delete it only after confirming the box registration is permanently gone.",
+                path=_placement_file,
+            )
+
+_checkout_by_id = {}
+_placement_problem_ids = set()
+for _bm in box_metas:
+    _placement_file = placement_path(config, _bm.box_id)
+    _copies = []
+    _seen_copy_paths = set()
+    for _name, _status in _root_statuses.items():
+        if not _status.available:
+            continue
+        _candidate = _status.path / _bm.index_name
+        _resolved_candidate = _candidate.resolve(strict=False)
+        if _candidate.is_dir() and _resolved_candidate not in _seen_copy_paths:
+            _seen_copy_paths.add(_resolved_candidate)
+            _copies.append((_name, _candidate))
+    if len(_copies) > 1:
+        _add_finding(
+            "duplicate-checkout",
+            f"Box '{_bm.index_name}' has physical copies in multiple checkout roots: "
+            + ", ".join(f"{name}={path}" for name, path in _copies),
+            "Compare the copies, then keep only the one named by the placement record and move the others outside all checkout roots.",
+            index_name=_bm.index_name,
+            checkout_roots=[name for name, _ in _copies],
+        )
+    try:
+        _checkout = get_box_checkout_status(config, _bm)
+        _checkout_by_id[_bm.box_id] = _checkout
+    except Exception as e:
+        _add_finding(
+            "checkout-placement",
+            f"Placement for '{_bm.index_name}' cannot be loaded: {e}",
+            "Repair the machine-local JSON placement record; do not put checkout_root in synced boxmeta.toml.",
+            index_name=_bm.index_name,
+            path=_placement_file,
+        )
+        _placement_problem_ids.add(_bm.box_id)
+        continue
+
+    if _checkout.root_status is None:
+        _add_finding(
+            "checkout-placement",
+            f"Placement for '{_bm.index_name}' refers to unknown checkout root '{_checkout.checkout_root}'",
+            f"Re-add that root to config, or repair '{_placement_file}' to name the correct configured root.",
+            index_name=_bm.index_name,
+            checkout_root=_checkout.checkout_root,
+            path=_placement_file,
+        )
+        _placement_problem_ids.add(_bm.box_id)
+        continue
+
+    if _checkout.state == LocalCheckoutState.UNAVAILABLE:
+        _add_finding(
+            "checkout-root-unavailable",
+            f"Box '{_bm.index_name}' is included in unavailable checkout root '{_checkout.checkout_root}'",
+            "Restore the configured mount. The box remains included in the catalog and will not fall back to the default root.",
+            index_name=_bm.index_name,
+            checkout_root=_checkout.checkout_root,
+            local_path=_checkout.local_path,
+        )
+        continue  # never inspect paths beneath an unavailable guarded root
+
+    if _checkout.state == LocalCheckoutState.EXCLUDED and _copies:
+        _add_finding(
+            "checkout-placement",
+            f"Box '{_bm.index_name}' is recorded excluded but DATA exists at '{_copies[0][1]}'",
+            "Move the untracked copy aside, or repair placement only after confirming it is the intended complete checkout.",
+            index_name=_bm.index_name,
+            local_path=_copies[0][1],
+        )
+
+    if _checkout.state == LocalCheckoutState.MISSING:
+        _add_finding(
+            "checkout-placement",
+            f"Included box '{_bm.index_name}' is missing from recorded root '{_checkout.checkout_root}' at '{_checkout.local_path}'",
+            f"Restore it with `boxyard include -r '{_bm.index_name}'`, or inspect the placement record before changing state.",
+            index_name=_bm.index_name,
+            checkout_root=_checkout.checkout_root,
+            local_path=_checkout.local_path,
+        )
+    if _checkout.placement.state == PlacementState.RELOCATING:
+        _record = _checkout.placement.relocation
+        _add_finding(
+            "interrupted-relocation",
+            f"Box '{_bm.index_name}' has an interrupted relocation from '{_record.source_root}' to '{_record.destination_root}' in phase '{_record.phase.value}'",
+            f"Recover it idempotently with `boxyard relocate -r '{_bm.index_name}'` (the destination is recorded).",
+            index_name=_bm.index_name,
+            source_root=_record.source_root,
+            destination_root=_record.destination_root,
+            phase=_record.phase.value,
+        )
+
+# %% [markdown]
+# ## Checks: `unregistered-folder` and `malformed-name` across checkout roots
 
 # %%
 #|export
 all_registration_dirs = set().union(*registration_dirs_by_sl.values())
 
-if config.user_boxes_path.is_dir():
-    for entry in sorted(config.user_boxes_path.iterdir(), key=lambda p: p.name):
+for _root_name, _root_status in _root_statuses.items():
+    if not _root_status.available or not _root_status.path.is_dir():
+        continue
+    for entry in sorted(_root_status.path.iterdir(), key=lambda p: p.name):
         if entry.name.startswith("."):
             continue
         if not entry.is_dir():
             _add_finding(
                 "unregistered-folder",
-                f"Stray file in user boxes path: '{entry}'",
-                f"Only box directories belong in '{config.user_boxes_path}'; move the file into a box or delete it.",
+                f"Stray file in checkout root '{_root_name}': '{entry}'",
+                f"Only box directories belong in checkout root '{_root_name}'; move the file into a box or outside the root.",
                 path=entry,
+                checkout_root=_root_name,
             )
             continue
         if entry.name not in registered_index_names:
             _add_finding(
                 "unregistered-folder",
-                f"Directory '{entry.name}' in '{config.user_boxes_path}' is not a registered box",
-                f"Register it with `boxyard new --from '{entry}' -n <name>` (moves it into a new box), or move it out of '{config.user_boxes_path}'.",
+                f"Directory '{entry.name}' in checkout root '{_root_name}' is not a registered box",
+                f"Register it with `boxyard new --from <path> --checkout-root '{_root_name}' -n <name>`, or move it outside all checkout roots.",
                 path=entry,
+                checkout_root=_root_name,
             )
-
-# %% [markdown]
-# ## Check: `malformed-name`
-#
-# Entries in `user_boxes_path` whose names don't parse as a valid index name.
-# A malformed name can never correspond to a registration, so these entries are
-# usually also flagged as `unregistered-folder` — the two findings are distinct
-# problems (the folder is untracked; its name will never parse).
-
-# %%
-#|export
-if config.user_boxes_path.is_dir():
-    for entry in sorted(config.user_boxes_path.iterdir(), key=lambda p: p.name):
-        if entry.name.startswith(".") or not entry.is_dir():
-            continue
         if not is_valid_index_name(
             entry.name, config.box_subid_character_set, config.box_subid_length
         ):
             _add_finding(
                 "malformed-name",
-                f"Directory name '{entry.name}' does not parse as an index name '<timestamp>_<subid>__<name>'",
-                "Boxes must be created via `boxyard new`, which generates the index name; rename/move the folder or register it with `boxyard new --from <path>`.",
+                f"Directory name '{entry.name}' in checkout root '{_root_name}' does not parse as an index name '<timestamp>_<subid>__<name>'",
+                "Boxes must be created via `boxyard new`, which generates the index name; move the folder or register it with `boxyard new --from <path> --checkout-root <root>`.",
                 path=entry,
+                checkout_root=_root_name,
             )
 
 # %% [markdown]
@@ -1010,7 +1141,12 @@ else:
         if storage_locations is not None and _sl_name not in storage_locations:
             continue
 
-        _boxes_here = [bm for bm in box_metas if bm.storage_location == _sl_name]
+        _boxes_here = [
+            bm for bm in box_metas
+            if bm.storage_location == _sl_name
+            and bm.box_id not in _placement_problem_ids
+            and _checkout_by_id[bm.box_id].state != LocalCheckoutState.UNAVAILABLE
+        ]
         if not _boxes_here:
             continue
 
@@ -1330,15 +1466,24 @@ _yard_has_an_established_owner = any(count > 1 for count in _owner_counts.values
 for bm in box_metas:
     if bm.write_owner is None:
         continue
+    if bm.box_id in _placement_problem_ids:
+        continue
 
     if bm.write_owner == config.machine_name:
-        if not bm.check_included(config):
+        _owner_checkout = get_box_checkout_status(config, bm)
+        if _owner_checkout.state == LocalCheckoutState.UNAVAILABLE:
+            continue  # still included; checkout-root-unavailable already explains why it cannot push now
+        if _owner_checkout.state not in (
+            LocalCheckoutState.INCLUDED,
+            LocalCheckoutState.RELOCATING,
+        ):
             _add_finding(
                 "stale-owner",
                 f"Box '{bm.index_name}' names this machine "
                 f"('{config.machine_name}') as its write owner, but it is not "
-                f"included here — so the one machine allowed to push it does not "
-                f"have it",
+                f"included here as a complete checkout (state "
+                f"'{_owner_checkout.state.value}') — so the one machine allowed "
+                f"to push it does not have complete DATA",
                 f"No machine can push this box until that is fixed. Either give it "
                 f"up with `boxyard release -r '{bm.index_name}'`, or take the box "
                 f"back with `boxyard include -r '{bm.index_name}'`.",
@@ -1396,6 +1541,8 @@ else:
 
     for bm in box_metas:
         if bm.write_owner is None or bm.write_owner == config.machine_name:
+            continue
+        if bm.box_id in _placement_problem_ids:
             continue
         _sl_config = config.storage_locations.get(bm.storage_location)
         if _sl_config is None or _sl_config.storage_type != StorageType.RCLONE:

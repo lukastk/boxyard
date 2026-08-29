@@ -89,8 +89,26 @@ if box_index_name not in boxyard_meta.by_index_name:
 
 box_meta = boxyard_meta.by_index_name[box_index_name]
 
-if not box_meta.check_included(config):
+from boxyard._checkout import (
+    get_box_checkout_status,
+    LocalCheckoutState,
+    CheckoutRootUnavailable,
+ )
+
+_checkout_status = get_box_checkout_status(config, box_meta)
+if _checkout_status.state == LocalCheckoutState.UNAVAILABLE:
+    raise CheckoutRootUnavailable(
+        f"Cannot exclude '{box_index_name}': its checkout root "
+        f"'{_checkout_status.checkout_root}' is unavailable. Refusing to treat an "
+        "unreachable checkout as absent."
+    )
+if _checkout_status.state == LocalCheckoutState.EXCLUDED:
     raise ValueError(f"Box '{box_index_name}' is already excluded.")
+if _checkout_status.state != LocalCheckoutState.INCLUDED:
+    raise ValueError(
+        f"Cannot exclude '{box_index_name}': checkout state is "
+        f"{_checkout_status.state.value}. Run `boxyard doctor --no-remote`."
+    )
 
 # %% [markdown]
 # Check that the box is not local
@@ -198,6 +216,8 @@ try:
             else:
                 raise
     box_meta.get_local_sync_record_path(config, BoxPart.DATA).unlink()
+    from boxyard._checkout import mark_excluded
+    mark_excluded(config, box_meta)
 finally:
     _sync_lock.release()
 

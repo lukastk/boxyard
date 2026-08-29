@@ -84,16 +84,16 @@ def cli_multi_sync(
     import shutil
     from boxyard._utils import enable_soft_interruption, SoftInterruption
     from boxyard.config import get_config
-    
+
     if soft_interruption_enabled:
         enable_soft_interruption()
-    
+
     if box_index_names is not None and storage_locations is not None:
         typer.echo("Cannot provide both `--box` and `--storage-location`.", err=True)
         raise typer.Exit(code=1)
-    
+
     config = get_config(app_state["config_path"])
-    
+
     if storage_locations is None and box_index_names is None:
         storage_locations = list(config.storage_locations.keys())
     if storage_locations is not None and any(
@@ -101,13 +101,13 @@ def cli_multi_sync(
     ):
         typer.echo(f"Invalid storage location: {storage_locations}", err=True)
         raise typer.Exit(code=1)
-    
+
     if max_concurrent_rclone_ops is None:
         max_concurrent_rclone_ops = config.max_concurrent_rclone_ops
-    
+
     if sync_choices is None:
         sync_choices = [part for part in BoxPart]
-    
+
     boxyard_meta = get_boxyard_meta(config)
     if box_index_names is None:
         box_metas = [
@@ -134,7 +134,7 @@ def cli_multi_sync(
     if due_only:
         from boxyard._sync_policy import due_boxes as _due_boxes
         import time as _time
-    
+
         _due = _due_boxes(config, box_metas, BoxPart.DATA, _time.time())
         _due_conflicts = _due.conflicts
         _due_order = {name: i for i, name in enumerate(_due.due)}
@@ -142,7 +142,7 @@ def cli_multi_sync(
             (bm for bm in box_metas if bm.index_name in _due_order),
             key=lambda bm: _due_order[bm.index_name],
         )
-    
+
     # One bulk listing answers "did this boxmeta move" for every box at once. The
     # per-box alternative is the status probe: 2 remote calls per box, 0.67s each,
     # so ~6.6 min for 590 boxes at concurrency 2 -- against roughly a minute for the
@@ -152,10 +152,10 @@ def cli_multi_sync(
         # `asyncio` is imported further down this command body, which makes it a
         # local and leaves it unbound here. Same reason as StorageType above.
         import asyncio as _aio
-    
+
         from boxyard._sync_policy import meta_boxes_needing_sync
         from boxyard._utils import is_in_event_loop, rclone_lsjson
-    
+
         async def _bulk_meta_listing():
             """(index name) -> (ModTime, Size) for every boxmeta on every remote."""
             # Imported here, not taken from the enclosing scope: `StorageType` is
@@ -164,10 +164,10 @@ def cli_multi_sync(
             # reason -- a nested function must not depend on where the body happens
             # to import things.
             from pathlib import Path
-    
+
             from boxyard import const
             from boxyard.config import StorageType
-    
+
             listing = {}
             for _sl_name in sorted({bm.storage_location for bm in box_metas}):
                 _sl_conf = config.storage_locations[_sl_name]
@@ -188,7 +188,7 @@ def cli_multi_sync(
                         _entry.get("Size"),
                     )
             return listing
-    
+
         # Already inside a loop: skip the OPTIMISATION, not the work. Falling
         # through with every box still selected costs a slower pass; guessing which
         # boxes were unchanged without asking the remote would cost correctness.
@@ -205,7 +205,7 @@ def cli_multi_sync(
             )
             _needed_set = set(_needed)
             box_metas = [bm for bm in box_metas if bm.index_name in _needed_set]
-    
+
     # A box whose policies disagree is synced anyway -- the ambiguity is about how
     # OFTEN, never about whether -- but it is never synced SILENTLY. Printed once
     # per pass to stderr so an unattended loop's stdout stays parseable.
@@ -213,10 +213,10 @@ def cli_multi_sync(
         typer.echo(f"Sync policy conflict: {_conflict}", err=True)
     from boxyard._tombstones import list_tombstoned_box_ids
     from boxyard.config import StorageType
-    
+
     _tombstoned_ids_by_sl: dict[str, set[str]] = {}
-    
-    
+
+
     async def _load_tombstoned_ids():
         """Populate `_tombstoned_ids_by_sl`, one listing per rclone storage location."""
         for _sl_name in sorted({bm.storage_location for bm in box_metas}):
@@ -228,15 +228,15 @@ def cli_multi_sync(
     def _record_check(box_meta):
         """Record that every requested part of this box was checked just now."""
         import time as _time
-    
+
         from boxyard._sync_policy import SCHEDULABLE_PARTS, write_check_record
-    
+
         _now = _time.time()
         for _part in sync_choices:
             if _part in SCHEDULABLE_PARTS:
                 write_check_record(config, box_meta.index_name, _part, _now)
-    
-    
+
+
     async def _task(num, box_meta):
         sync_stats[box_meta.index_name] = (num, "Syncing...", None, datetime.now(), None)
         try:
@@ -292,23 +292,23 @@ def cli_multi_sync(
             )
         except Exception as e:
             sync_stats[box_meta.index_name] = (num, "Error", str(e), datetime.now(), None)
-    
+
         if show_progress:
             print_finished(box_meta.index_name)
-    
+
     import asyncio
-    
+
     sync_stats = {}
-    
+
     finish_monitoring_event = asyncio.Event()
-    
-    
+
+
     def get_status_lines(box_index_name):
         num, sync_stat, e, timestamp, sync_results = sync_stats[box_index_name]
         lines = []
-    
+
         console_width = shutil.get_terminal_size((80, 20)).columns
-    
+
         status_color = {
             # "Syncing...", with the dots. The key was "Syncing", which is not a
             # status any box ever has -- `_task` sets "Syncing..." -- so the live
@@ -323,7 +323,7 @@ def cli_multi_sync(
             "Interrupted": "magenta",
             "Error": "red",
         }.get(sync_stat, "")
-    
+
         name_color = {
             "Success": "green",
             "Read-only": "yellow",
@@ -331,28 +331,28 @@ def cli_multi_sync(
             "Interrupted": "magenta",
             "Error": "red",
         }.get(sync_stat, "")
-    
+
         left = f"({num + 1}/{len(box_metas)}) [bold {name_color}]{box_index_name}[/bold {name_color}]"
         right = f"[bold {status_color}]{sync_stat}[/bold {status_color}]"
-    
+
         # Strip markup to compute the real visible lengths
         left_len = len(Text.from_markup(left).plain)
         right_len = len(Text.from_markup(right).plain)
-    
+
         # compute how many dots are needed
         dots = (
             console_width - left_len - right_len - 1 - 2
         )  # -2 for the space between dots and the left and right text
         if dots < 1:
             dots = 1
-    
+
         line = f"{left} {'.' * dots} {right}"
         syncs_happened = [
             False if sync_results is None else sync_results[box_part][1]
             for box_part in sync_choices
         ]
         lines.append(line)
-    
+
         indent = "    "
         if e:
             lines.append(f"{indent}[red]{e}[/red]")
@@ -388,10 +388,10 @@ def cli_multi_sync(
                     )
         else:
             lines.append(f"{indent}[yellow]Results pending...[/yellow]")
-    
+
         return lines
-    
-    
+
+
     def get_sync_stat_board(finished: bool):
         console_width = shutil.get_terminal_size((80, 20)).columns
         lines = []
@@ -406,8 +406,8 @@ def cli_multi_sync(
                 continue
             lines.extend(get_status_lines(box_index_name))
         return "\n".join(lines).strip()
-    
-    
+
+
     def print_finished(box_index_name: str):
         num, sync_stat, e, timestamp, sync_results = sync_stats[box_index_name]
         syncs_happened = [
@@ -422,39 +422,41 @@ def cli_multi_sync(
             return
         lines = get_status_lines(box_index_name)
         console.print(Text.from_markup("\n".join(lines).strip()))
-    
-    
+
+
     console = Console()
-    
-    
+
+
     async def _progress_monitor_task():
         with Live(console=console, refresh_per_second=4) as live:
-    
+
             def _update_live(finished: bool):
                 rendered = Text.from_markup(get_sync_stat_board(finished=finished))
                 live.update(rendered)
-    
+
             while not finish_monitoring_event.is_set():
                 _update_live(False)
                 await asyncio.sleep(0.2)
             live.update(Text.from_markup("Finished. Final results:\n\n"))
     _box_metas = box_metas
-    if sync_recently_modified_first:
+    # `--due-only` has already ordered boxes by overdue ratio. The generic
+    # recent-modification preference must not silently overwrite that schedule.
+    if sync_recently_modified_first and not due_only:
         from boxyard._utils import check_last_time_modified
-    
+
         def get_last_modified(box_meta):
             last_modified = check_last_time_modified(box_meta.get_local_path(config))
             return last_modified.timestamp() if last_modified else 0
-    
+
         _box_metas = sorted(_box_metas, key=get_last_modified, reverse=True)
-    
+
     from boxyard._utils import async_throttler
     sync_task = async_throttler(
         [_task(num, box_meta) for num, box_meta in enumerate(_box_metas)],
         max_concurrency=max_concurrent_rclone_ops,
     )
-    
-    
+
+
     async def _runner():
         # Before any box is synced: if this raises we must not sync at all, since
         # we cannot tell which boxes another machine has deleted.
@@ -467,10 +469,10 @@ def cli_multi_sync(
         else:
             await sync_task
     from boxyard._utils import is_in_event_loop
-    
+
     if not is_in_event_loop():
         asyncio.run(_runner())
-    
+
     # Stamp the META check records with the remote's state AS IT IS NOW.
     #
     # It has to be a SECOND listing, taken after the syncs: a pass that pushed a
@@ -484,9 +486,9 @@ def cli_multi_sync(
     if skip_unchanged_meta and BoxPart.META in sync_choices and not is_in_event_loop():
         import asyncio as _aio
         import time as _stamp_time
-    
+
         from boxyard._sync_policy import write_check_record as _write_check_record
-    
+
         _final_listing = _aio.run(_bulk_meta_listing())
         _now_unix = _stamp_time.time()
         for _bm in box_metas:
@@ -502,12 +504,12 @@ def cli_multi_sync(
                 remote_modtime=_modtime,
                 remote_size=_size,
             )
-    
+
     final_sync_stat_board = get_sync_stat_board(finished=True)
     console = Console()
     console.print(final_sync_stat_board, markup=True)
-    
+
     if refresh_user_symlinks:
         from boxyard.cmds import create_user_symlinks
-    
+
         create_user_symlinks(config_path=app_state["config_path"])

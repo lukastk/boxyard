@@ -99,10 +99,18 @@ if box_meta.get_storage_location_config(config).storage_type == StorageType.LOCA
         f"'{box_meta.storage_location}'; there is no remote copy to take."
     )
 
-if not box_meta.check_included(config):
+from boxyard._checkout import get_box_checkout_status, LocalCheckoutState, CheckoutRootUnavailable
+
+_checkout = get_box_checkout_status(config, box_meta)
+if _checkout.state == LocalCheckoutState.UNAVAILABLE:
+    raise CheckoutRootUnavailable(
+        f"Cannot discard '{box_index_name}': checkout root "
+        f"'{_checkout.checkout_root}' is unavailable."
+    )
+if _checkout.state != LocalCheckoutState.INCLUDED:
     raise ValueError(
-        f"Box '{box_index_name}' is not included on this machine, so there are "
-        f"no local changes to discard."
+        f"Box '{box_index_name}' checkout state is {_checkout.state.value}; there is "
+        "no complete local checkout whose changes can be discarded."
     )
 
 # %% [markdown]

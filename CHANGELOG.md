@@ -1,3 +1,27 @@
+## [0.6.0] - 2026-08-29
+
+### ✨ Multiple machine-local checkout roots
+
+- One catalog can now configure additional `[checkout_roots.NAME]` paths while
+  retaining `user_boxes_path` permanently as the root named `default`. Box DATA
+  placement is machine-local state under `placements/<box_id>.json`; it never
+  changes remote storage or synced `boxmeta.toml`. Legacy one-root configs and
+  boxes require no migration.
+- `new` and `include` accept `--checkout-root`; exclude/re-include remembers
+  placement. `checkout-roots` reports configured availability, and `list`,
+  `box-status`, `yard-status`, `which`, `_fast`, and `path` expose authoritative
+  local paths instead of requiring clients to reconstruct `~/boxes/<index>`.
+- `relocate` moves an included checkout locally under the box/global locks.
+  Same-filesystem moves use atomic rename; cross-filesystem moves preserve
+  metadata, symlinks, sparse files and hardlinks, verify content before commit,
+  and retain durable phases recoverable by rerunning the command.
+- Guarded roots can require an exact Linux mount target and filesystem UUID.
+  Wrong/unavailable mounts fail loudly before any root directory is created and
+  never fall back to default.
+- Doctor now covers root configuration and availability, unknown/missing
+  placements, duplicate copies, interrupted relocation, orphan placement
+  records, and unregistered folders across every available root.
+
 ## [0.5.18] - 2026-08-27
 
 ### 🐛 Bug Fixes

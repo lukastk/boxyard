@@ -19,27 +19,30 @@ import boxyard.config
 def get_box_index_name_from_sub_path(
     config: boxyard.config.Config,
     sub_path: str,
-) -> str | None:
+ ) -> str | None:
+    """Return the first checkout path component containing ``sub_path``.
+
+    Both the candidate and roots are resolved, so a path reached through a
+    group symlink is identified by its physical checkout root. Longest roots
+    are tried first; overlapping roots are separately rejected for mutations
+    and reported by doctor.
     """
-    Get the index name of a synced box from a path inside of the box.
-    """
-    sub_path = (
-        Path(sub_path).expanduser().resolve()
-    )  # Need to resolve to replace symlinks
-    is_in_local_store_path = sub_path.is_relative_to(config.user_boxes_path)
-
-    if not is_in_local_store_path:
-        return None
-
-    rel_path = sub_path.relative_to(config.user_boxes_path)
-
-    if (
-        config.user_boxes_path.as_posix() == sub_path.as_posix()
-    ):  # The path is not inside a box but is in the box store root
-        return None
-
-    box_index_name = rel_path.parts[0]
-    return box_index_name
+    candidate = Path(sub_path).expanduser().resolve(strict=False)
+    roots = sorted(
+        config.configured_checkout_roots.values(),
+        key=lambda root: len(root.path.resolve(strict=False).parts),
+        reverse=True,
+    )
+    for root in roots:
+        resolved_root = root.path.resolve(strict=False)
+        try:
+            relative = candidate.relative_to(resolved_root)
+        except ValueError:
+            continue
+        if not relative.parts:
+            return None
+        return relative.parts[0]
+    return None
 
 # %% pts/mod/_utils/00_base.pct.py 7
 import platform

@@ -31,7 +31,6 @@ def search(term: str | None = None, config_path: Path | None = None,
         config_path = Path(env) if env else _DEFAULT_CONFIG_PATH
 
     bf = BoxyardFast.from_file(config_path=config_path)
-    user_boxes_path = Path(bf._user_boxes_path or "~/boxes").expanduser()
     cwd = Path.cwd()
     term_lower = term.lower() if term else None
 
@@ -40,10 +39,14 @@ def search(term: str | None = None, config_path: Path | None = None,
         if term_lower and term_lower not in bm["name"].lower():
             continue
 
+        result = bf._to_result(bm)
         index_name = bm["_index_name"]
         box_id = bm["_box_id"]
-        box_path = user_boxes_path / index_name
-        box_included = box_path.exists() or box_path.is_symlink()
+        box_path_value = result["local_data_path"]
+        if box_path_value is None:
+            continue  # placement names an unknown root; doctor reports it
+        box_path = Path(box_path_value)
+        box_included = result["included"]
 
         if included is not None and box_included != included:
             continue

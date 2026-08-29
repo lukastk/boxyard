@@ -549,7 +549,9 @@ async def _progress_monitor_task():
 # %%
 #|export
 _box_metas = box_metas
-if sync_recently_modified_first:
+# `--due-only` has already ordered boxes by overdue ratio. The generic
+# recent-modification preference must not silently overwrite that schedule.
+if sync_recently_modified_first and not due_only:
     from boxyard._utils import check_last_time_modified
 
     def get_last_modified(box_meta):

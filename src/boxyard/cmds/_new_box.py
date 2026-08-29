@@ -62,6 +62,7 @@ def _rollback_new_box(
 def new_box(
     config_path: Path,
     storage_location: str | None = None,
+    checkout_root: str | None = None,
     box_name: str | None = None,
     from_path: Path | None = None,
     copy_from_path: bool = False,
@@ -78,7 +79,8 @@ def new_box(
 
     Args:
         config_path: The path to the boxyard config file.
-        storage_location: The storage location to create the new box in.
+        storage_location: The remote storage location for the new box.
+        checkout_root: This machine's checkout root; defaults to ``default``.
         box_name: The name of the new box.
         from_path: The path to a local directory to move into boxyard as a new box.
         copy_from_path: Whether to copy the contents of the from_path into the new box.
@@ -96,44 +98,50 @@ def new_box(
         The index name of the new box.
     """
     from boxyard.config import get_config
-    
+
     config = get_config(config_path)
-    
+
     if storage_location is None:
         storage_location = config.default_storage_location
-    
+    if checkout_root is None:
+        checkout_root = config.default_checkout_root_name
+
+    from boxyard._checkout import require_checkout_root
+
+    _checkout_root_status = require_checkout_root(config, checkout_root, create=True)
+
     if storage_location not in config.storage_locations:
         raise ValueError(
             f"Invalid storage location: {storage_location}. Must be one of: {', '.join(config.storage_locations)}."
         )
-    
+
     if git_clone_url is not None and from_path is not None:
         raise ValueError("`git_clone_url` and `from_path` are mutually exclusive.")
-    
+
     if box_name is None and from_path is None and git_clone_url is None:
         raise ValueError("Either `box_name`, `from_path`, or `git_clone_url` must be provided.")
-    
+
     if from_path is not None:
         from_path = Path(from_path).expanduser().resolve()
-    
+
     if from_path is not None and box_name is None:
         box_name = from_path.name
-    
+
     if git_clone_url is not None and box_name is None:
         box_name = _extract_box_name_from_git_url(git_clone_url)
-    
+
     # The name is used verbatim as a directory name, so reject anything that is not
     # a single path component before any of the box is created.
     validate_box_name(box_name)
-    
+
     if from_path is None and copy_from_path:
         raise ValueError("`from_path` must be provided if `copy_from_path` is True.")
-    
+
     from boxyard._utils import get_hostname
-    
+
     if creator_hostname is None:
         creator_hostname = get_hostname()
-    
+
     # Resolve sync_first from config if not specified
     if sync_first is None:
         sync_first = config.sync_before_new_box
@@ -154,16 +162,16 @@ def new_box(
             print("Syncing boxmetas before creating new box...")
         asyncio.run(sync_missing_boxmetas(config_path=config_path, verbose=verbose))
     from boxyard._models import get_boxyard_meta, BoxPart
-    
+
     boxyard_meta = get_boxyard_meta(config)
-    
+
     if from_path is not None:
         from_path = Path(from_path).expanduser().resolve()
         box_paths = [
             box_meta.get_local_part_path(config, BoxPart.DATA)
             for box_meta in boxyard_meta.box_metas
         ]
-    
+
         if from_path in box_paths and not copy_from_path:
             raise ValueError(
                 f"'{from_path}' is already a boxyard box. Use `copy_from_path=True` to copy the contents of this box into a new box."
@@ -185,16 +193,16 @@ def new_box(
             )
         )
     from boxyard._models import BoxMeta, format_creation_timestamp
-    
+
     # Re-read the yard now that the global lock is held. The snapshot taken above
     # was read BEFORE the lock, so a box created by a concurrent `boxyard new`
     # between the two would be missing from the collision check -- the one thing
     # the lock exists to prevent.
     boxyard_meta = get_boxyard_meta(config)
-    
+
     # Collect all existing box IDs to prevent collisions
     existing_ids = {rm.box_id for rm in boxyard_meta.box_metas}
-    
+
     # A caller-supplied timestamp is resolved BEFORE the id is generated, so the
     # collision check runs against the id that will actually be written. The
     # override used to be applied after the check, which meant
@@ -208,7 +216,7 @@ def new_box(
     creation_timestamp, box_subid = generate_unique_box_id(
         config, existing_ids, creation_timestamp=fixed_timestamp
     )
-    
+
     # Claim the box for this machine as it is created.
     #
     # The machine creating a box is the machine that will work on it -- that is
@@ -250,7 +258,7 @@ def new_box(
                 "set, so it cannot claim a box. See `boxyard doctor`.",
                 file=sys.stderr,
             )
-    
+
     box_meta = BoxMeta(
         creation_timestamp_utc=creation_timestamp,
         box_subid=box_subid,
@@ -261,17 +269,24 @@ def new_box(
         write_owner=_write_owner,
     )
     from boxyard._models import BoxPart
-    
+
     box_path = box_meta.get_local_path(config)
+    from boxyard._checkout import set_box_placement, PlacementState, delete_placement
+    _checkout_root_status = require_checkout_root(config, checkout_root, create=True)
+
+    _destination = _checkout_root_status.path / box_meta.index_name
+    if _destination.exists() or _destination.is_symlink():
+        raise FileExistsError(f"Checkout destination '{_destination}' already exists")
+    set_box_placement(config, box_meta, checkout_root, PlacementState.INCLUDED)
     box_data_path = box_meta.get_local_part_path(config, BoxPart.DATA)
     box_conf_path = box_meta.get_local_part_path(config, BoxPart.CONF)
-    
+
     _moved_from_path = None  # Set once `from_path` has been moved into the box.
     try:
         box_meta.save(config)
         box_path.mkdir(parents=True, exist_ok=True)
         box_conf_path.mkdir(parents=True, exist_ok=True)
-    
+
         if git_clone_url is not None:
             if verbose:
                 print(f"Cloning {git_clone_url}")
@@ -296,7 +311,7 @@ def new_box(
         elif from_path is not None:
             if copy_from_path:
                 import shutil
-    
+
                 shutil.copytree(
                     from_path, box_data_path
                 )  # TESTREF: test_new_box_copy_from_path
@@ -314,12 +329,12 @@ def new_box(
                 # pays a second full copy, which is the cost `--from`'s move
                 # exists to avoid.
                 import shutil
-    
+
                 shutil.move(str(from_path), str(box_data_path))
                 _moved_from_path = from_path
         else:
             box_data_path.mkdir(parents=True, exist_ok=True)
-    
+
         # Skip git init when cloning (already a git box) or when .git exists
         if initialise_git and git_clone_url is None and not (box_data_path / ".git").exists():
             if verbose:
@@ -349,6 +364,7 @@ def new_box(
     except BaseException:
         try:
             _rollback_new_box(box_path, box_data_path, _moved_from_path)
+            delete_placement(config, box_meta.box_id)
         except Exception as cleanup_error:
             print(
                 f"Warning: failed to clean up the partially-created box "
@@ -359,7 +375,7 @@ def new_box(
             _global_lock.release()
         raise
     from boxyard._models import refresh_boxyard_meta
-    
+
     try:
         refresh_boxyard_meta(config, _skip_lock=True)
     finally:

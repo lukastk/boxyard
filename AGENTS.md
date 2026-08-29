@@ -107,6 +107,7 @@ result;
 
 - **`src/boxyard/_models.py`** - Data models: `BoxMeta`, `BoxyardMeta`, `SyncRecord`, `SyncStatus`
 - **`src/boxyard/config.py`** - Configuration: `StorageConfig`, `Config`
+- **`src/boxyard/_checkout.py`** - Machine-local checkout-root availability, sparse placement records, and transactional relocation
 - **`src/boxyard/_cli/`** - CLI (typer-based): `app.py` (the `boxyard` entry point / Typer app per `pyproject.toml`), `main.py` (most commands), `multi_sync.py` (registers `multi-sync`)
 - **`src/boxyard/_fast.py`** - `BoxyardFast`: dependency-free query interface over `boxyard_meta.json` (parent/child lookups, groups, DAG traversal)
 - **`src/boxyard/_enums.py`** - Shared CLI enums: `BoxPart`, `SyncSetting`, `SyncDirection`, `RenameScope`, `SyncNameDirection`
@@ -134,16 +135,10 @@ result;
   machine allowed to push a box's DATA/CONF. `write_owner is None` means UNOWNED and is
   fully unrestricted — exactly the pre-feature behaviour — so ownership is opt-in per box
   and never silently blocks an unclaimed box. The owner is compared against
-  `config.machine_name`, which is **configured, never derived from the hostname**: one
-  machine in this fleet reports both `lukas-pocket4` and `pocket4`, and macOS hostnames
-  are user-editable. `BOXYARD_MACHINE_NAME` overrides it. Commands: `claim` (add
-  `--steal` to take it from the current owner, `--all-included` to claim every unowned box
-  here), `release`, `owner` (who may push), and `discard-local` (replace this machine's
-  copy with the remote's — what it overwrites is kept under the sync backups directory and
-  the path is printed). Enforcement is `may_push()` on the sync paths plus `owner_gate()`
-  on the three that bypass `sync_helper` and would otherwise write to the remote
-  unchecked: `force-push`, `rename --scope remote|both`, and `delete` (which purges the
-  remote and writes a tombstone). A refusal raises `OwnershipRefused`.
+  `config.machine_name`, which is **configured, never derived from the hostname**.
+  Commands: `claim`, `release`, `owner`, and `discard-local`; enforcement is
+  `may_push()` plus `owner_gate()`, and refusal raises `OwnershipRefused`.
+- **Checkout roots**: machine-local DATA placement, independent of remote storage. `user_boxes_path` is permanently the root named `default`; additional roots are `[checkout_roots.NAME]`. Placement records live under `~/.boxyard/placements/` and must never be added to synced `boxmeta.toml`. See `docs/checkout-roots.md`.
 - **Exec-bit manifest**: `.boxyard-perms.json` at a box's DATA root records which
   files are executable, so `+x` survives sync over backends that drop Unix mode
   (e.g. SFTP). Generated before push / applied after pull by `_utils/perms.py`.
@@ -154,5 +149,5 @@ result;
 - Config file: `~/.config/boxyard/config.toml`
 - rclone config: `~/.config/boxyard/boxyard_rclone.conf`
 - Data directory: `~/.boxyard/`
-- User boxes: configurable via `user_boxes_path` in `config.toml` (currently `~/dev`)
+- Default checkout root: `user_boxes_path` in `config.toml` (currently `~/dev`); additional named roots use `[checkout_roots.NAME]`
 - Group symlinks: configurable via `user_box_groups_path` in `config.toml` (currently `~/g`)

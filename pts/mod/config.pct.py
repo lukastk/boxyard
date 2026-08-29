@@ -43,8 +43,42 @@ class StorageConfig(const.StrictModel):
 
     @model_validator(mode="after")
     def validate_config(self):
-        # Expand paths
         self.store_path = self.store_path.expanduser()
+        return self
+
+
+class CheckoutRootConfig(const.StrictModel):
+    """One machine-local root where box DATA may be checked out.
+
+    ``mount_target`` and ``filesystem_uuid`` form an optional guard. When set,
+    Boxyard requires that exact path to be a mount point backed by that UUID
+    before it reads or mutates this root. They are a pair: specifying only one
+    is a configuration error.
+    """
+
+    path: Path
+    mount_target: Path | None = None
+    filesystem_uuid: str | None = None
+
+    @model_validator(mode="after")
+    def validate_config(self):
+        self.path = self.path.expanduser().absolute()
+        if self.mount_target is not None:
+            self.mount_target = self.mount_target.expanduser().absolute()
+        if (self.mount_target is None) != (self.filesystem_uuid is None):
+            raise ValueError(
+                "checkout-root mount_target and filesystem_uuid must be configured together"
+            )
+        if self.mount_target is not None:
+            try:
+                self.path.relative_to(self.mount_target)
+            except ValueError as e:
+                raise ValueError(
+                    f"checkout-root path '{self.path}' must be the mount target "
+                    f"'{self.mount_target}' or a directory beneath it"
+                ) from e
+        if self.filesystem_uuid is not None and not self.filesystem_uuid.strip():
+            raise ValueError("checkout-root filesystem_uuid must not be empty")
         return self
 
 
@@ -199,7 +233,12 @@ class Config(const.StrictModel):
     default_storage_location: str
     boxyard_data_path: Path
     box_timestamp_format: BoxTimestampFormat
+    # Permanent legacy/default-root schema: user_boxes_path is the checkout root
+    # named "default". Additional named roots live in checkout_roots. Keeping
+    # this field is intentional, not a transition shim: old configs are complete
+    # multi-root configs with exactly one root and need no rewrite.
     user_boxes_path: Path
+    checkout_roots: dict[str, CheckoutRootConfig] = {}
     user_box_groups_path: Path
     storage_locations: dict[str, StorageConfig]
     box_groups: dict[str, BoxGroupConfig]
@@ -287,6 +326,22 @@ class Config(const.StrictModel):
     unknown_keys: dict[str, Any] = {}
 
     @property
+    def configured_checkout_roots(self) -> dict[str, CheckoutRootConfig]:
+        """All roots, including the permanent implicit ``default`` root."""
+        return {
+            "default": CheckoutRootConfig(path=self.user_boxes_path),
+            **self.checkout_roots,
+        }
+
+    @property
+    def default_checkout_root_name(self) -> str:
+        return "default"
+
+    @property
+    def placements_path(self) -> Path:
+        return self.boxyard_data_path / "placements"
+
+    @property
     def local_store_path(self) -> Path:
         return self.boxyard_data_path / "local_store"
 
@@ -353,13 +408,22 @@ class Config(const.StrictModel):
         if len(self.storage_locations) == 0:
             raise ValueError("No storage locations defined.")
 
-        # Check that the default storage location exists
-        if not any(
-            name == self.default_storage_location for name in self.storage_locations
-        ):
+        if self.default_storage_location not in self.storage_locations:
             raise ValueError(
                 f"default_storage_location '{self.default_storage_location}' not found in storage_locations"
             )
+
+        if "default" in self.checkout_roots:
+            raise ValueError(
+                "checkout_roots may not define the reserved name 'default'; "
+                "user_boxes_path is permanently the checkout root named 'default'"
+            )
+        for name in self.checkout_roots:
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+                raise ValueError(
+                    f"Checkout root name {name!r} is invalid. Names may contain only "
+                    "alphanumeric characters, underscore, or dash."
+                )
 
         from boxyard._models import BoxMeta
 
@@ -541,6 +605,7 @@ def _get_default_config_dict(config_path=None, data_path=None) -> Config:
         boxyard_data_path=data_path.as_posix(),
         box_timestamp_format=BoxTimestampFormat.DATE_ONLY.value,
         user_boxes_path=const.DEFAULT_USER_BOXES_PATH.as_posix(),
+        checkout_roots={},
         user_box_groups_path=const.DEFAULT_USER_BOX_GROUPS_PATH.as_posix(),
         storage_locations={
             "fake": dict(

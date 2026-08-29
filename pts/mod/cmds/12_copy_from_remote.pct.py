@@ -128,19 +128,19 @@ except ValueError as e:
     # Good - dest_path is not within boxyard_data_path
     pass
 
-# Also check user_boxes_path
-user_boxes_path = config.user_boxes_path.resolve()
-try:
-    dest_path.relative_to(user_boxes_path)
+# Also reject every configured checkout root. ``copy`` is deliberately
+# untracked; placing its destination under any checkout root would create an
+# ambiguous duplicate that looks like an included box.
+for _root_name, _root in config.configured_checkout_roots.items():
+    _checkout_path = _root.path.resolve(strict=False)
+    try:
+        dest_path.relative_to(_checkout_path)
+    except ValueError:
+        continue
     raise ValueError(
-        f"Destination path '{dest_path}' is within the user boxes path '{user_boxes_path}'. "
-        f"This operation is not allowed to prevent conflicts with managed boxes. "
-        f"Use a path outside of '{user_boxes_path}'."
+        f"Destination path '{dest_path}' is within checkout root "
+        f"'{_root_name}' at '{_checkout_path}'. Use a path outside all checkout roots."
     )
-except ValueError as e:
-    if "is within the user boxes path" in str(e):
-        raise
-    # Good - dest_path is not within user_boxes_path
     pass
 
 # %% [markdown]

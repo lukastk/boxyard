@@ -196,6 +196,31 @@ def _resolve_parent_box_id(parent: str) -> str:
     return parent_meta.box_id
 
 
+def _checkout_marker(box_meta, config) -> str:
+    return {
+        "included": "●",
+        "excluded": "○",
+        "unavailable": "!",
+        "missing": "×",
+        "relocating": "↔",
+    }[box_meta.get_checkout_status(config).state.value]
+
+
+def _has_complete_checkout(box_meta, config) -> bool:
+    from boxyard._checkout import LocalCheckoutState
+
+    return box_meta.get_checkout_status(config).state == LocalCheckoutState.INCLUDED
+
+
+def _can_include_checkout(box_meta, config) -> bool:
+    from boxyard._checkout import LocalCheckoutState
+
+    return box_meta.get_checkout_status(config).state in (
+        LocalCheckoutState.EXCLUDED,
+        LocalCheckoutState.MISSING,
+    )
+
+
 def _get_box_index_name(
     box_name: str | None,
     box_id: str | None,
@@ -379,6 +404,11 @@ def cli_new(
         "-s",
         help="The storage location to create the new box in.",
     ),
+    checkout_root: str | None = Option(
+        None,
+        "--checkout-root",
+        help="Machine-local checkout root for DATA; defaults to the root named 'default'.",
+    ),
     box_name: str | None = Option(
         None,
         "--box-name",
@@ -490,6 +520,7 @@ def cli_new(
         new_box,
         config_path=app_state["config_path"],
         storage_location=storage_location,
+        checkout_root=checkout_root,
         box_name=box_name,
         from_path=from_path,
         copy_from_path=copy_from_path,
@@ -1273,7 +1304,7 @@ def cli_tree(
         # where they should have been. Box NAMES have the same problem: one
         # containing `[` is valid (validate_box_name forbids only path
         # separators and the like) and would be mangled the same way.
-        status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
+        status = f"{_checkout_marker(bm, config)} " if show_status else ""
         groups_str = f" [groups: {', '.join(bm.groups)}]" if bm.groups else ""
         return RichText(f"{status}{bm.name} ({bm.box_id}){groups_str}")
 
@@ -1377,6 +1408,11 @@ def cli_include(
         "--read-only",
         help="Include without the nudge to claim an unowned box — for a box you only want to read here.",
     ),
+    checkout_root: str | None = Option(
+        None,
+        "--checkout-root",
+        help="Machine-local checkout root. Omit to reuse the box's remembered preference.",
+    ),
 ):
     """
     Include a box in the local store.
@@ -1392,7 +1428,7 @@ def cli_include(
         # Filter to excluded boxes only
         excluded_boxes = [
             bm for bm in boxyard_meta.box_metas
-            if not bm.check_included(config)
+            if _can_include_checkout(bm, config)
         ]
         excluded_boxes.sort(key=lambda bm: bm.name)
 
@@ -1434,6 +1470,7 @@ def cli_include(
                         box_index_name=idx_name,
                         soft_interruption_enabled=soft_interruption_enabled,
                         read_only=read_only,
+                        checkout_root=checkout_root,
                     )
                 )
             except (typer.Exit, SystemExit):
@@ -1460,7 +1497,7 @@ def cli_include(
     # Only show excluded boxes in fzf picker
     _eligible = [
         bm for bm in boxyard_meta.box_metas
-        if not bm.check_included(config)
+        if _can_include_checkout(bm, config)
     ]
 
     box_index_name = _get_box_index_name(
@@ -1482,6 +1519,7 @@ def cli_include(
             box_index_name=box_index_name,
             soft_interruption_enabled=soft_interruption_enabled,
             read_only=read_only,
+            checkout_root=checkout_root,
         )
     )
 
@@ -1559,7 +1597,7 @@ def cli_exclude(
         # Filter to included, non-local boxes only
         eligible_boxes = [
             bm for bm in boxyard_meta.box_metas
-            if bm.check_included(config)
+            if _has_complete_checkout(bm, config)
             and bm.get_storage_location_config(config).storage_type != StorageType.LOCAL
         ]
 
@@ -1676,7 +1714,7 @@ def cli_exclude(
     from boxyard._models import BoxPart
     _eligible = [
         bm for bm in boxyard_meta.box_metas
-        if bm.check_included(config)
+        if _has_complete_checkout(bm, config)
         and bm.get_storage_location_config(config).storage_type != StorageType.LOCAL
     ]
 
@@ -1822,15 +1860,27 @@ print("\n".join(lines))
 #|exporti
 async def get_formatted_box_status(config_path, box_index_name):
     from boxyard.cmds import get_box_sync_status
+    from boxyard._models import get_boxyard_meta
+    from boxyard.config import get_config
+    from boxyard._checkout import LocalCheckoutState
     from pydantic import BaseModel
     import json
 
+    config = get_config(config_path)
+    box_meta = get_boxyard_meta(config).by_index_name[box_index_name]
+    checkout = box_meta.get_checkout_status(config)
+    data = {"checkout": checkout.as_dict()}
+    if checkout.state in (
+        LocalCheckoutState.UNAVAILABLE,
+        LocalCheckoutState.MISSING,
+        LocalCheckoutState.RELOCATING,
+    ):
+        return data
+
     sync_status = await get_box_sync_status(
-        config_path=app_state["config_path"],
+        config_path=config_path,
         box_index_name=box_index_name,
     )
-
-    data = {}
     for box_part, part_sync_status in sync_status.items():
         part_sync_status_dump = part_sync_status._asdict()
         for k, v in part_sync_status_dump.items():
@@ -1839,7 +1889,6 @@ async def get_formatted_box_status(config_path, box_index_name):
             if isinstance(v, Enum):
                 part_sync_status_dump[k] = v.value
         data[box_part.value] = part_sync_status_dump
-
     return data
 
 # %%
@@ -1977,7 +2026,7 @@ def cli_yard_status(
     box_sync_statuses = asyncio.run(
         async_throttler(
             [
-                get_formatted_box_status(config, box_meta.index_name)
+                get_formatted_box_status(app_state["config_path"], box_meta.index_name)
                 for box_meta in box_metas
             ],
             max_concurrency=max_concurrent_rclone_ops,
@@ -2087,6 +2136,12 @@ def cli_list(
     show_owner: bool = Option(
         False, "--show-owner", help="Show each box's write owner.",
     ),
+    checkout_root: str | None = Option(
+        None, "--checkout-root", help="Only show boxes placed in this machine-local checkout root.",
+    ),
+    show_checkout: bool = Option(
+        False, "--show-checkout", help="Show checkout state, root and authoritative local DATA path.",
+    ),
 ):
     """
     List all boxes in the yard.
@@ -2110,6 +2165,14 @@ def cli_list(
         for box_meta in all_boxyard_meta.box_metas
         if box_meta.storage_location in storage_locations
     ]
+    if checkout_root is not None:
+        if checkout_root not in config.configured_checkout_roots:
+            typer.echo(f"Unknown checkout root: {checkout_root}", err=True)
+            raise typer.Exit(code=1)
+        box_metas = [
+            bm for bm in box_metas
+            if bm.get_checkout_status(config).checkout_root == checkout_root
+        ]
     box_metas = _get_filtered_box_metas(
         box_metas, include_groups, exclude_groups, group_filter
     )
@@ -2205,12 +2268,12 @@ def cli_list(
             for bm in sorted(groups_map[group_name], key=lambda x: x.name):
                 other_groups = sorted(g for g in bm.groups if g != group_name)
                 suffix = f" [dim]\\[{', '.join(other_groups)}][/dim]" if other_groups else ""
-                status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
+                status = f"{_checkout_marker(bm, config)} " if show_status else ""
                 group_node.add(f"{status}{_rich_escape(bm.name)} ({bm.box_id}){suffix}")
         if ungrouped:
             ug_node = tree.add("[dim](ungrouped)[/dim]")
             for bm in sorted(ungrouped, key=lambda x: x.name):
-                status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
+                status = f"{_checkout_marker(bm, config)} " if show_status else ""
                 suffix = f" [dim]\\[{', '.join(sorted(bm.groups))}][/dim]" if bm.groups else ""
                 ug_node.add(f"{status}{_rich_escape(bm.name)} ({bm.box_id}){suffix}")
 
@@ -2228,7 +2291,7 @@ def cli_list(
         def _label(bm):
             # See `boxyard tree`: a markup string here means rich eats the
             # `[groups: ...]` suffix, and any box name containing `[` with it.
-            status = f"{'●' if bm.check_included(config) else '○'} " if show_status else ""
+            status = f"{_checkout_marker(bm, config)} " if show_status else ""
             groups_str = f" [groups: {', '.join(bm.groups)}]" if bm.groups else ""
             return RichText(f"{status}{bm.name} ({bm.box_id}){groups_str}")
 
@@ -2252,15 +2315,34 @@ def cli_list(
         Console().print(tree)
         return
 
+    def _list_record(box_meta):
+        record = box_meta.model_dump()
+        record.update(box_meta.get_checkout_status(config).as_dict())
+        return record
+
     if output_format == "json":
-        typer.echo(json.dumps([rm.model_dump() for rm in box_metas], indent=2))
+        typer.echo(json.dumps([_list_record(rm) for rm in box_metas], indent=2))
     else:
         for box_meta in box_metas:
-            status = f"{'●' if box_meta.check_included(config) else '○'} " if show_status else ""
+            checkout = box_meta.get_checkout_status(config)
+            status_icons = {
+                "included": "●",
+                "excluded": "○",
+                "unavailable": "!",
+                "missing": "×",
+                "relocating": "↔",
+            }
+            status = f"{status_icons[checkout.state.value]} " if show_status else ""
             owner_col = ""
             if show_owner:
                 owner_col = f"  [{box_meta.write_owner or '-'}]"
-            typer.echo(f"{status}{box_meta.index_name}{owner_col}")
+            checkout_col = ""
+            if show_checkout:
+                checkout_col = (
+                    f"  [{checkout.state.value} {checkout.checkout_root}:"
+                    f"{checkout.local_path}]"
+                )
+            typer.echo(f"{status}{box_meta.index_name}{owner_col}{checkout_col}")
 
 # %% [markdown]
 # # `list-groups`
@@ -2486,12 +2568,6 @@ def cli_path(
 #|export
 @app.command(name="create-user-symlinks")
 def cli_create_user_symlinks(
-    user_boxes_path: Path | None = Option(
-        None,
-        "--user-boxes-path",
-        "-u",
-        help="The path to the user boxes. If not provided, the default specified in the config will be used.",
-    ),
     user_box_groups_path: Path | None = Option(
         None,
         "--user-box-groups-path",
@@ -2500,13 +2576,12 @@ def cli_create_user_symlinks(
     ),
 ):
     """
-    Create symlinks to the user boxes in the user boxes path.
+    Rebuild group symlinks to authoritative checkout paths.
     """
     from boxyard.cmds import create_user_symlinks
 
     create_user_symlinks(
         config_path=app_state["config_path"],
-        user_boxes_path=user_boxes_path,
         user_box_groups_path=user_box_groups_path,
     )
 
@@ -2894,13 +2969,17 @@ def cli_which(
 
     box_meta = boxyard_meta.by_index_name[box_index_name]
 
+    checkout = box_meta.get_checkout_status(config)
     info = {
         "name": box_meta.name,
         "box_id": box_meta.box_id,
         "index_name": box_meta.index_name,
         "storage_location": box_meta.storage_location,
         "groups": box_meta.groups if box_meta.groups else [],
-        "local_data_path": box_meta.get_local_part_path(config, BoxPart.DATA).as_posix(),
+        "checkout_root": checkout.checkout_root,
+        "local_data_path": checkout.local_path.as_posix(),
+        "checkout_state": checkout.state.value,
+        "root_available": checkout.root_status.available if checkout.root_status else False,
         "included": box_meta.check_included(config),
     }
 
@@ -2912,8 +2991,80 @@ def cli_which(
         typer.echo(f"index_name: {info['index_name']}")
         typer.echo(f"storage_location: {info['storage_location']}")
         typer.echo(f"groups: {', '.join(info['groups']) if info['groups'] else '(none)'}")
+        typer.echo(f"checkout_root: {info['checkout_root']}")
         typer.echo(f"local_data_path: {info['local_data_path']}")
+        typer.echo(f"checkout_state: {info['checkout_state']}")
         typer.echo(f"included: {info['included']}")
+
+# %% [markdown]
+# # Checkout roots and local relocation
+
+# %%
+#|export
+@app.command(name="checkout-roots")
+def cli_checkout_roots(
+    output_format: Literal["text", "json"] = Option(
+        "text", "--output-format", "-o", help="The format of the output.",
+    ),
+):
+    """List machine-local checkout roots and their verified availability."""
+    import json
+    from boxyard.config import get_config
+    from boxyard._checkout import get_checkout_root_status
+
+    config = get_config(app_state["config_path"])
+    statuses = [
+        get_checkout_root_status(config, name).as_dict()
+        for name in sorted(config.configured_checkout_roots)
+    ]
+    if output_format == "json":
+        typer.echo(json.dumps(statuses, indent=2))
+        return
+    for status in statuses:
+        marker = "available" if status["available"] else "UNAVAILABLE"
+        default = " (default)" if status["default"] else ""
+        typer.echo(f"{status['name']}{default}: {status['path']} [{marker}]")
+        if status["reason"]:
+            typer.echo(f"  {status['reason']}")
+
+
+# %%
+#|export
+@app.command(name="relocate")
+def cli_relocate(
+    box_index_name: str | None = Option(
+        None, "--box", "-r", help="The index name of the box.",
+    ),
+    box_id: str | None = Option(None, "--box-id", "-i", help="The id of the box."),
+    box_name: str | None = Option(None, "--box-name", "-n", help="The name of the box."),
+    name_match_mode: NameMatchMode | None = Option(
+        None, "--name-match-mode", "-m", help="The mode to use for matching the box name.",
+    ),
+    name_match_case: bool = Option(
+        False, "--name-match-case", "-c", help="Match the box name case-sensitively.",
+    ),
+    checkout_root: str | None = Option(
+        None, "--checkout-root", help="Destination checkout root. Omit only to recover an interrupted relocation.",
+    ),
+):
+    """Move an included checkout locally without uploading or downloading."""
+    from boxyard.cmds._relocate_box import relocate_box
+
+    resolved = _get_box_index_name(
+        box_name=box_name,
+        box_id=box_id,
+        box_index_name=box_index_name,
+        name_match_mode=name_match_mode,
+        name_match_case=name_match_case,
+        allow_no_args=False,
+    )
+    result = _call_with_lock_handling(
+        relocate_box,
+        config_path=app_state["config_path"],
+        box_index_name=resolved,
+        destination_root=checkout_root,
+    )
+    typer.echo(result)
 
 # %% [markdown]
 # # Write ownership: `claim`, `release`, `discard-local`, `owner`
@@ -3019,7 +3170,7 @@ def cli_claim(
         # bury the boxes that genuinely do.
         _here = [
             bm for bm in boxyard_meta.box_metas
-            if bm.check_included(config)
+            if _has_complete_checkout(bm, config)
             and config.storage_locations[bm.storage_location].storage_type
             == StorageType.RCLONE
         ]

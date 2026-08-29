@@ -19,13 +19,23 @@ class BoxyardFast:
     importing any boxyard modules.
     """
 
-    def __init__(self, data: dict, user_boxes_path: str | None = None):
+    def __init__(
+        self,
+        data: dict,
+        user_boxes_path: str | None = None,
+        checkout_roots: dict[str, str] | None = None,
+        placements: dict[str, dict] | None = None,
+    ):
         self._user_boxes_path = user_boxes_path
+        self._checkout_roots = (
+            {"default": user_boxes_path} if user_boxes_path is not None else {}
+        )
+        self._checkout_roots.update(checkout_roots or {})
+        self._placements = placements or {}
         box_metas = data.get("box_metas", [])
         self._boxes = box_metas
         self._by_id: dict[str, dict] = {}
         self._children_index: dict[str, list[str]] = {}
-
         for bm in box_metas:
             ts = bm["creation_timestamp_utc"]
             subid = bm["box_subid"]
@@ -61,7 +71,25 @@ class BoxyardFast:
 
         data = json.loads(path.read_text())
         user_boxes_path = config.get("user_boxes_path")
-        return cls(data, user_boxes_path=user_boxes_path)
+        if user_boxes_path is None:
+            raise ValueError(
+                f"Config '{config_path}' has no user_boxes_path; cannot provide authoritative local paths"
+            )
+        checkout_roots = {
+            name: entry["path"]
+            for name, entry in config.get("checkout_roots", {}).items()
+        }
+        placements = {}
+        placements_path = Path(config.get("boxyard_data_path", "~/.boxyard")).expanduser() / "placements"
+        if placements_path.is_dir():
+            for placement_file in placements_path.glob("*.json"):
+                placements[placement_file.stem] = json.loads(placement_file.read_text())
+        return cls(
+            data,
+            user_boxes_path=user_boxes_path,
+            checkout_roots=checkout_roots,
+            placements=placements,
+        )
 
     # ── helpers ──
 
@@ -70,7 +98,37 @@ class BoxyardFast:
             return boxes
         return [b for b in boxes if set(b.get("groups", [])) & groups]
 
+    def _placement(self, bm: dict) -> tuple[str, str]:
+        placement = self._placements.get(bm["_box_id"])
+        if placement is None:
+            root = "default"
+            root_path = self._checkout_roots.get(root)
+            state = (
+                "included"
+                if root_path is not None
+                and (Path(root_path).expanduser() / bm["_index_name"]).is_dir()
+                else "excluded"
+            )
+            return root, state
+        root = placement["checkout_root"]
+        state = placement["state"]
+        relocation = placement.get("relocation")
+        if state == "relocating" and relocation is not None:
+            root = (
+                relocation["destination_root"]
+                if relocation["phase"] == "committed"
+                else relocation["source_root"]
+            )
+        return root, state
+
     def _to_result(self, bm: dict) -> dict:
+        checkout_root, placement_state = self._placement(bm)
+        root_path = self._checkout_roots.get(checkout_root)
+        local_data_path = (
+            (Path(root_path).expanduser() / bm["_index_name"]).as_posix()
+            if root_path is not None
+            else None
+        )
         return {
             "name": bm["name"],
             "box_id": bm["_box_id"],
@@ -78,11 +136,15 @@ class BoxyardFast:
             "groups": bm.get("groups", []),
             "parents": bm.get("parents", []),
             "storage_location": bm.get("storage_location", ""),
-            # `.get` rather than `[...]`: this reads `boxyard_meta.json` as
-            # plain dicts, and a cache written by a pre-v0.5 boxyard has no
-            # such key. None means unowned, which is also what an old cache
-            # correctly implies.
             "write_owner": bm.get("write_owner"),
+            "checkout_root": checkout_root,
+            "local_data_path": local_data_path,
+            "placement_state": placement_state,
+            "included": (
+                placement_state in ("included", "relocating")
+                and local_data_path is not None
+                and Path(local_data_path).is_dir()
+            ),
         }
 
     # ── parent-child queries ──
@@ -252,29 +314,26 @@ class BoxyardFast:
     # ── path-based queries ──
 
     def which(self, path: str, user_boxes_path: str | None = None) -> dict | None:
-        """Resolve a filesystem path to the box it belongs to.
-
-        Mirrors the CLI ``which`` command: checks whether *path* falls under
-        *user_boxes_path* and, if so, extracts the first directory component
-        as the index_name and returns the matching box result dict.
-
-        Uses the user_boxes_path from the config file if not provided
-        (set during ``from_file()``). Falls back to ``~/boxes`` if neither
-        is available.
-
-        Returns ``None`` when the path is outside the boxes directory or when
-        no matching box is found in the metadata.
-        """
-        boxes_path = user_boxes_path or self._user_boxes_path or "~/boxes"
-        resolved = Path(path).expanduser().resolve()
-        boxes_root = Path(boxes_path).expanduser().resolve()
-
-        if not resolved.is_relative_to(boxes_root) or resolved == boxes_root:
+        """Resolve a physical or symlinked path beneath any checkout root."""
+        roots = dict(self._checkout_roots)
+        if user_boxes_path is not None:
+            roots["default"] = user_boxes_path
+        resolved = Path(path).expanduser().resolve(strict=False)
+        ordered_roots = sorted(
+            (Path(value).expanduser().resolve(strict=False) for value in roots.values()),
+            key=lambda root: len(root.parts),
+            reverse=True,
+        )
+        for boxes_root in ordered_roots:
+            try:
+                relative = resolved.relative_to(boxes_root)
+            except ValueError:
+                continue
+            if not relative.parts:
+                return None
+            index_name = relative.parts[0]
+            for bm in self._boxes:
+                if bm["_index_name"] == index_name:
+                    return self._to_result(bm)
             return None
-
-        index_name = resolved.relative_to(boxes_root).parts[0]
-
-        for bm in self._boxes:
-            if bm["_index_name"] == index_name:
-                return self._to_result(bm)
         return None

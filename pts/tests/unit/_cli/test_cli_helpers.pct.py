@@ -438,6 +438,7 @@ class TestBoxPathInference:
 
         mock_config = MagicMock()
         mock_config.user_boxes_path = boxes_path
+        mock_config.configured_checkout_roots = {"default": type("Root", (), {"path": boxes_path})()}
 
         result = get_box_index_name_from_sub_path(mock_config, box_dir)
         assert result == "20251116_123456_abc12__mybox"
@@ -452,6 +453,7 @@ class TestBoxPathInference:
 
         mock_config = MagicMock()
         mock_config.user_boxes_path = boxes_path
+        mock_config.configured_checkout_roots = {"default": type("Root", (), {"path": boxes_path})()}
 
         result = get_box_index_name_from_sub_path(mock_config, box_dir)
         assert result == "20251116_123456_abc12__mybox"
@@ -467,6 +469,7 @@ class TestBoxPathInference:
 
         mock_config = MagicMock()
         mock_config.user_boxes_path = boxes_path
+        mock_config.configured_checkout_roots = {"default": type("Root", (), {"path": boxes_path})()}
 
         result = get_box_index_name_from_sub_path(mock_config, other_dir)
         assert result is None
@@ -480,6 +483,7 @@ class TestBoxPathInference:
 
         mock_config = MagicMock()
         mock_config.user_boxes_path = boxes_path
+        mock_config.configured_checkout_roots = {"default": type("Root", (), {"path": boxes_path})()}
 
         result = get_box_index_name_from_sub_path(mock_config, boxes_path)
         assert result is None
@@ -494,6 +498,7 @@ class TestBoxPathInference:
 
         mock_config = MagicMock()
         mock_config.user_boxes_path = boxes_path
+        mock_config.configured_checkout_roots = {"default": type("Root", (), {"path": boxes_path})()}
 
         result = get_box_index_name_from_sub_path(mock_config, deep_dir)
         assert result == "20251116_123456_abc12__mybox"

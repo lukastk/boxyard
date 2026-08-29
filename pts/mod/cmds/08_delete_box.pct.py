@@ -89,6 +89,24 @@ if box_index_name not in boxyard_meta.by_index_name:
 
 box_meta = boxyard_meta.by_index_name[box_index_name]
 
+from boxyard._checkout import (
+    get_box_checkout_status,
+    LocalCheckoutState,
+    CheckoutRootUnavailable,
+ )
+_checkout_status = get_box_checkout_status(config, box_meta)
+if _checkout_status.state == LocalCheckoutState.UNAVAILABLE:
+    raise CheckoutRootUnavailable(
+        f"Cannot delete '{box_index_name}': checkout root "
+        f"'{_checkout_status.checkout_root}' is unavailable; refusing to confuse "
+        "an unreachable copy with an absent one."
+    )
+if _checkout_status.state in (LocalCheckoutState.MISSING, LocalCheckoutState.RELOCATING):
+    raise RuntimeError(
+        f"Cannot delete '{box_index_name}': checkout state is {_checkout_status.state.value}. "
+        "Recover the local state first (`boxyard doctor --no-remote`)."
+    )
+
 # Ownership is checked BEFORE and INDEPENDENTLY of any force/safety flag. A
 # `--force` that also bypassed ownership would leave the remote holding this
 # machine's data while `boxmeta.toml` still names another machine as the owner
@@ -156,7 +174,6 @@ try:
     try:
         if local_box_path.exists():
             _rmtree_retry(local_box_path)
-        _rmtree_retry(box_meta.get_local_path(config))
     except PermissionError as e:
         raise PermissionError(
             f"Cannot delete box '{box_index_name}': some local files are owned by "
@@ -199,6 +216,13 @@ try:
 
     # Remove from remote index cache
     remove_from_remote_index_cache(config, storage_location, box_id)
+
+    # Keep registration + placement until all remote work succeeds. If remote
+    # deletion fails after DATA removal, doctor sees an included-but-missing
+    # checkout and the command can be retried without losing the box identity.
+    _rmtree_retry(box_meta.get_local_path(config))
+    from boxyard._checkout import delete_placement
+    delete_placement(config, box_id)
 
     # Refresh the boxyard meta file
     refresh_boxyard_meta(config)

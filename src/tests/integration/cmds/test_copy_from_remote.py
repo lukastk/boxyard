@@ -29,50 +29,50 @@ async def _test_copy_from_remote():
         box_name="test-copy-box",
         storage_location=remote_name,
     )
-    
+
     # Refresh config and get box meta
     config = get_config(config_path)
     boxyard_meta = get_boxyard_meta(config, force_create=True)
     box_meta = boxyard_meta.by_index_name[box_index_name]
-    
+
     # Add some test data
     local_data_path = box_meta.get_local_part_path(config, BoxPart.DATA)
     test_file = local_data_path / "test_data.txt"
     test_file.write_text("Hello from copy test!")
-    
+
     # Add nested directory
     nested_dir = local_data_path / "nested" / "subdir"
     nested_dir.mkdir(parents=True, exist_ok=True)
     (nested_dir / "nested_file.txt").write_text("Nested content")
-    
+
     # Sync to remote
     await sync_box(config_path=config_path, box_index_name=box_index_name)
     # Create temp directory for copy destination
     with tempfile.TemporaryDirectory() as temp_dir:
         dest_path = Path(temp_dir) / "my_copy"
-    
+
         result_path = await copy_from_remote(
             config_path=config_path,
             box_index_name=box_index_name,
             dest_path=dest_path,
             verbose=True,
         )
-    
+
         assert result_path == dest_path.resolve()
         assert dest_path.exists()
         assert (dest_path / "test_data.txt").exists()
         assert (dest_path / "test_data.txt").read_text() == "Hello from copy test!"
         assert (dest_path / "nested" / "subdir" / "nested_file.txt").exists()
         assert (dest_path / "nested" / "subdir" / "nested_file.txt").read_text() == "Nested content"
-    
+
         # Verify no boxmeta.toml by default
         assert not (dest_path / const.BOX_METAFILE_REL_PATH).exists()
-    
+
         # Verify no conf folder by default
         assert not (dest_path / const.BOX_CONF_REL_PATH).exists()
     with tempfile.TemporaryDirectory() as temp_dir:
         dest_path = Path(temp_dir) / "my_copy_with_meta"
-    
+
         result_path = await copy_from_remote(
             config_path=config_path,
             box_index_name=box_index_name,
@@ -80,17 +80,17 @@ async def _test_copy_from_remote():
             copy_meta=True,
             verbose=True,
         )
-    
+
         assert dest_path.exists()
         assert (dest_path / "test_data.txt").exists()
-    
+
         # Verify boxmeta.toml was copied
         assert (dest_path / const.BOX_METAFILE_REL_PATH).exists()
     with tempfile.TemporaryDirectory() as temp_dir:
         dest_path = Path(temp_dir) / "existing_dest"
         dest_path.mkdir(parents=True)
         (dest_path / "existing_file.txt").write_text("I exist already")
-    
+
         try:
             await copy_from_remote(
                 config_path=config_path,
@@ -105,7 +105,7 @@ async def _test_copy_from_remote():
         dest_path = Path(temp_dir) / "existing_dest"
         dest_path.mkdir(parents=True)
         (dest_path / "existing_file.txt").write_text("I exist already")
-    
+
         result_path = await copy_from_remote(
             config_path=config_path,
             box_index_name=box_index_name,
@@ -113,13 +113,13 @@ async def _test_copy_from_remote():
             overwrite=True,
             verbose=True,
         )
-    
+
         assert dest_path.exists()
         assert (dest_path / "test_data.txt").exists()
         assert (dest_path / "test_data.txt").read_text() == "Hello from copy test!"
     # Try to copy to within boxyard data path
     bad_dest = config.boxyard_data_path / "bad_copy_dest"
-    
+
     try:
         await copy_from_remote(
             config_path=config_path,
@@ -131,7 +131,7 @@ async def _test_copy_from_remote():
         assert "is within the boxyard data path" in str(e)
     # Try to copy to within user boxes path
     bad_dest = config.user_boxes_path / "bad_copy_dest"
-    
+
     try:
         await copy_from_remote(
             config_path=config_path,
@@ -140,20 +140,20 @@ async def _test_copy_from_remote():
         )
         assert False, "Should have raised ValueError"
     except ValueError as e:
-        assert "is within the user boxes path" in str(e)
+        assert "is within checkout root 'default'" in str(e)
     with tempfile.TemporaryDirectory() as temp_dir:
         dest_path = Path(temp_dir) / "no_sync_record_copy"
-    
+
         await copy_from_remote(
             config_path=config_path,
             box_index_name=box_index_name,
             dest_path=dest_path,
         )
-    
+
         # Verify no sync record was created in the destination
         # (This is implicit - there's nowhere for a sync record to be in an arbitrary path)
         assert dest_path.exists()
         assert not (dest_path / ".boxyard").exists()
     from boxyard.cmds import delete_box
-    
+
     await delete_box(config_path=config_path, box_index_name=box_index_name)

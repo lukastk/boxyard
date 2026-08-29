@@ -127,12 +127,21 @@ if box_meta.get_storage_location_config(config).storage_type == StorageType.LOCA
 
 # %%
 #|export
-if not box_meta.check_included(config):
+from boxyard._checkout import get_box_checkout_status, LocalCheckoutState
+
+_checkout = get_box_checkout_status(config, box_meta)
+if _checkout.state == LocalCheckoutState.UNAVAILABLE:
     raise OwnershipRefused(
-        f"Cannot claim '{box_index_name}': it is not included on this machine, "
-        f"so this machine has no DATA to push and claiming it would lock out "
-        f"every machine that does.\n"
-        f"Include it first: `boxyard include -r '{box_index_name}'`, then claim it."
+        f"Cannot claim '{box_index_name}': it is included in unavailable checkout "
+        f"root '{_checkout.checkout_root}'. Restore that root first; Boxyard will "
+        "not treat it as excluded or fall back."
+    )
+if _checkout.state != LocalCheckoutState.INCLUDED:
+    raise OwnershipRefused(
+        f"Cannot claim '{box_index_name}': it is not included on this machine "
+        f"as a complete checkout (state: {_checkout.state.value}), "
+        f"so this machine has no complete DATA to push. Include/recover it first: "
+        f"`boxyard include -r '{box_index_name}'`, then claim it."
     )
 
 # %% [markdown]

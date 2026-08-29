@@ -36,18 +36,18 @@ async def rename_box(
         Only the name portion of the index_name changes.
     """
     config = get_config(config_path)
-    
+
     from boxyard._models import get_boxyard_meta, BoxMeta, BoxPart
-    
+
     boxyard_meta = get_boxyard_meta(config)
-    
+
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' not found.")
-    
+
     box_meta = boxyard_meta.by_index_name[box_index_name]
     box_id = BoxMeta.extract_box_id(box_index_name)
     storage_location = box_meta.storage_location
-    
+
     # A remote-scoped rename renames the box's directory ON THE REMOTE, so it is a
     # write to shared state and needs the ownership gate. A LOCAL-scope rename
     # touches only this machine and is deliberately left alone: a read-only replica
@@ -58,12 +58,12 @@ async def rename_box(
             BoxMeta.load(config, storage_location, box_index_name),
             f"rename '{box_index_name}' on the remote",
         )
-    
+
     # Compute new index name. The name is used verbatim as a directory name, so it
     # has to be a single path component.
     validate_box_name(new_name)
     new_index_name = f"{box_id}__{new_name}"
-    
+
     if verbose:
         print(f"Renaming box from '{box_meta.name}' to '{new_name}'")
         print(f"Index name: {box_index_name} -> {new_index_name}")
@@ -77,48 +77,73 @@ async def rename_box(
         _lock_path,
         BOX_SYNC_LOCK_TIMEOUT,
     )
-    
+
     try:
         # %% [markdown]
         # Rename locally
-    
+
         # %%
         if scope in (RenameScope.LOCAL, RenameScope.BOTH):
             if verbose:
                 print("Renaming locally...")
-    
-            # Update the boxmeta.toml
+
+            # Resolve placement before changing the index name. An unavailable
+            # included root is not an excluded box and must never be renamed through
+            # some other path.
+            from boxyard._checkout import (
+                get_box_checkout_status,
+                LocalCheckoutState,
+                CheckoutRootUnavailable,
+            )
+            _checkout = get_box_checkout_status(config, box_meta)
+            if _checkout.state == LocalCheckoutState.UNAVAILABLE:
+                raise CheckoutRootUnavailable(
+                    f"Cannot rename '{box_index_name}': checkout root "
+                    f"'{_checkout.checkout_root}' is unavailable"
+                )
+            if _checkout.state == LocalCheckoutState.RELOCATING:
+                raise RuntimeError(
+                    f"Cannot rename '{box_index_name}' during an interrupted relocation; "
+                    "recover it with `boxyard relocate` first."
+                )
+            if _checkout.state == LocalCheckoutState.MISSING:
+                raise RuntimeError(
+                    f"Cannot rename '{box_index_name}': its recorded included checkout is missing. "
+                    "Recover it with `boxyard include` first."
+                )
+            old_data_path = _checkout.local_path
+
+            # Update the boxmeta.toml and compute paths under the same checkout root.
             box_meta.name = new_name
-    
-            # Compute old and new local paths
+            new_data_path = (
+                config.configured_checkout_roots[_checkout.checkout_root].path / new_index_name
+            )
+
             old_local_path = config.local_store_path / storage_location / box_index_name
             new_local_path = config.local_store_path / storage_location / new_index_name
-    
-            old_data_path = config.user_boxes_path / box_index_name
-            new_data_path = config.user_boxes_path / new_index_name
-    
+
             old_sync_record_path = config.boxyard_data_path / const.SYNC_RECORDS_REL_PATH / box_index_name
             new_sync_record_path = config.boxyard_data_path / const.SYNC_RECORDS_REL_PATH / new_index_name
-    
+
             # Rename directories
             if old_local_path.exists():
                 old_local_path.rename(new_local_path)
-    
+
             if old_data_path.exists():
                 old_data_path.rename(new_data_path)
-    
+
             if old_sync_record_path.exists():
                 old_sync_record_path.rename(new_sync_record_path)
-    
+
             # Save the updated boxmeta
             box_meta.save(config)
-    
+
             if verbose:
                 print("Local rename complete.")
-    
+
         # %% [markdown]
         # Rename on remote
-    
+
         # %%
         if scope in (RenameScope.REMOTE, RenameScope.BOTH):
             if box_meta.get_storage_location_config(config).storage_type == StorageType.LOCAL:
@@ -127,16 +152,16 @@ async def rename_box(
             else:
                 if verbose:
                     print("Renaming on remote...")
-    
+
                 from boxyard._utils.rclone import rclone_moveto
-    
+
                 sl_config = config.storage_locations[storage_location]
                 boxes_path = sl_config.store_path / const.REMOTE_BOXES_REL_PATH
                 sync_records_path = sl_config.store_path / const.SYNC_RECORDS_REL_PATH
-    
+
                 # Find current remote index name (might differ from local)
                 remote_index_name = await find_remote_box_by_id(config, storage_location, box_id)
-    
+
                 if remote_index_name is None:
                     # Since v0.4.3, `rclone_lsjson`/`rclone_path_exists` report
                     # absence ONLY for rclone's not-found exit codes and raise on
@@ -155,7 +180,7 @@ async def rename_box(
                     # Rename box directory
                     old_remote_box_path = boxes_path / remote_index_name
                     new_remote_box_path = boxes_path / new_index_name
-    
+
                     success, error = await rclone_moveto(
                         rclone_config_path=config.rclone_config_path,
                         source=storage_location,
@@ -163,14 +188,14 @@ async def rename_box(
                         dest=storage_location,
                         dest_path=new_remote_box_path.as_posix(),
                     )
-    
+
                     if not success:
                         raise RuntimeError(f"Failed to rename remote box: {error}")
-    
+
                     # Rename sync records directory
                     old_remote_sync_path = sync_records_path / remote_index_name
                     new_remote_sync_path = sync_records_path / new_index_name
-    
+
                     success, error = await rclone_moveto(
                         rclone_config_path=config.rclone_config_path,
                         source=storage_location,
@@ -178,25 +203,25 @@ async def rename_box(
                         dest=storage_location,
                         dest_path=new_remote_sync_path.as_posix(),
                     )
-    
+
                     # Sync record rename failure is not critical
                     if not success and verbose:
                         print(f"Warning: Failed to rename remote sync records: {error}")
-    
+
                     # Update remote index cache
                     update_remote_index_cache(config, storage_location, box_id, new_index_name)
-    
+
                     if verbose:
                         print("Remote rename complete.")
-    
+
         # %% [markdown]
         # Refresh the boxyard meta file
-    
+
         # %%
         from boxyard._models import refresh_boxyard_meta
-    
+
         refresh_boxyard_meta(config)
-    
+
     finally:
         _sync_lock.release()
     return new_index_name

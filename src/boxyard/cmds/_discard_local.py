@@ -32,35 +32,43 @@ async def discard_local(
         The directory holding what was overwritten.
     """
     config = get_config(config_path)
-    
+
     boxyard_meta = get_boxyard_meta(config)
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' not found.")
-    
+
     box_meta = boxyard_meta.by_index_name[box_index_name]
-    
+
     if box_meta.get_storage_location_config(config).storage_type == StorageType.LOCAL:
         raise ValueError(
             f"Box '{box_index_name}' is in local storage location "
             f"'{box_meta.storage_location}'; there is no remote copy to take."
         )
-    
-    if not box_meta.check_included(config):
+
+    from boxyard._checkout import get_box_checkout_status, LocalCheckoutState, CheckoutRootUnavailable
+
+    _checkout = get_box_checkout_status(config, box_meta)
+    if _checkout.state == LocalCheckoutState.UNAVAILABLE:
+        raise CheckoutRootUnavailable(
+            f"Cannot discard '{box_index_name}': checkout root "
+            f"'{_checkout.checkout_root}' is unavailable."
+        )
+    if _checkout.state != LocalCheckoutState.INCLUDED:
         raise ValueError(
-            f"Box '{box_index_name}' is not included on this machine, so there are "
-            f"no local changes to discard."
+            f"Box '{box_index_name}' checkout state is {_checkout.state.value}; there is "
+            "no complete local checkout whose changes can be discarded."
         )
     _remote_index_name = await find_remote_box_by_id(
         config, box_meta.storage_location, box_meta.box_id
     )
     if _remote_index_name is None:
         _remote_index_name = box_index_name
-    
+
     _sl_config = box_meta.get_storage_location_config(config)
     _remote_base = (
         _sl_config.store_path / const.REMOTE_BOXES_REL_PATH / _remote_index_name
     )
-    
+
     _conf_path = box_meta.get_local_part_path(config, BoxPart.CONF)
     _include_path = _conf_path / const.RCLONE_INCLUDE_FILENAME
     _exclude_path = _conf_path / const.RCLONE_EXCLUDE_FILENAME
@@ -70,7 +78,7 @@ async def discard_local(
         _exclude_path if _exclude_path.exists() else config.default_rclone_exclude_path
     )
     _filters_path = _filters_path if _filters_path.exists() else None
-    
+
     _lock_manager = BoxyardLockManager(config.boxyard_data_path)
     _lock_path = _lock_manager.box_sync_lock_path(box_index_name)
     _lock_manager._ensure_lock_dir(_lock_path)
@@ -107,7 +115,7 @@ async def discard_local(
     finally:
         _sync_lock.release()
     backups_path = config.local_sync_backups_path
-    
+
     if verbose:
         print(
             f"Discarded this machine's local changes to '{box_index_name}' and took "

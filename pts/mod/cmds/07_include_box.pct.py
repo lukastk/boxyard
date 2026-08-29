@@ -32,6 +32,7 @@ async def include_box(
     box_index_name: str,
     soft_interruption_enabled: bool = True,
     read_only: bool = False,
+    checkout_root: str | None = None,
 ):
     """
     Bring a box's DATA onto this machine.
@@ -43,6 +44,8 @@ async def include_box(
         read_only: Suppress the nudge to claim an unowned box. Use when you
             only want to read the box here and do not intend to become its
             writer.
+        checkout_root: Explicit machine-local root. If omitted, reuse the
+            remembered placement (``default`` for legacy boxes).
     """
     ...
 
@@ -64,6 +67,7 @@ box_index_name = new_box(
 )
 soft_interruption_enabled = True
 read_only = False
+checkout_root = None
 
 # %% [markdown]
 # # Function body
@@ -100,6 +104,26 @@ box_meta = boxyard_meta.by_index_name[box_index_name]
 if box_meta.check_included(config):
     raise ValueError(f"Box '{box_index_name}' is already included.")
 
+from boxyard._checkout import (
+    load_placement,
+    require_checkout_root,
+    set_box_placement,
+    PlacementState,
+    LocalCheckoutState,
+    get_box_checkout_status,
+ )
+
+_previous_placement = load_placement(config, box_meta)
+_selected_root = checkout_root or _previous_placement.authoritative_root
+_root_status = require_checkout_root(config, _selected_root, create=True)
+_destination = _root_status.path / box_meta.index_name
+_checkout_status = get_box_checkout_status(config, box_meta)
+if _destination.exists() and _checkout_status.state == LocalCheckoutState.EXCLUDED:
+    raise FileExistsError(
+        f"Checkout destination '{_destination}' already exists while the box is recorded as excluded. "
+        "Move the duplicate aside or use `boxyard doctor` before including."
+    )
+
 # %% [markdown]
 # Acquire per-box sync lock and include the box
 
@@ -120,6 +144,11 @@ await acquire_lock_async(
     BOX_SYNC_LOCK_TIMEOUT,
 )
 try:
+    require_checkout_root(config, _selected_root, create=True)
+    # Placement is authoritative before DATA can be pulled. If the process is
+    # interrupted, doctor reports an included-but-missing checkout rather than
+    # silently treating the box as excluded or falling back to another root.
+    set_box_placement(config, box_meta, _selected_root, PlacementState.INCLUDED)
     # First force sync the data
     await sync_box(
         config_path=config_path,
@@ -129,6 +158,7 @@ try:
         sync_choices=[BoxPart.DATA],
         soft_interruption_enabled=soft_interruption_enabled,
         _skip_lock=True,
+        _allow_missing_checkout=True,
     )
 
     # Then sync the rest
@@ -144,7 +174,7 @@ try:
 finally:
     _sync_lock.release()
 
-print(f"Included box '{box_meta.name}'")
+print(f"Included box '{box_meta.name}' in checkout root '{_selected_root}'")
 
 # %% [markdown]
 # ## Say what including this box means for writing to it

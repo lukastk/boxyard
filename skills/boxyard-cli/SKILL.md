@@ -52,6 +52,15 @@ default_storage_location = "..."
 boxyard_data_path = "~/.boxyard"
 user_boxes_path = "~/boxes"
 user_box_groups_path = "~/box-groups"
+
+[checkout_roots.bulk]
+path = "~/large-boxes"
+
+# Optional guarded root (both keys required together)
+[checkout_roots.volume]
+path = "/mnt/volume/boxes"
+mount_target = "/mnt/volume"
+filesystem_uuid = "..."
 max_concurrent_rclone_ops = 3
 
 [storage_locations.my-remote]
@@ -67,12 +76,13 @@ Derived paths:
 <boxyard_data_path>/sync_records/              # local sync records
 <boxyard_data_path>/sync_backups/              # local sync backups
 <boxyard_data_path>/remote_indexes/            # cached remote index lookups
+<boxyard_data_path>/placements/<box_id>.json # machine-local checkout placement
 ```
 
 For a box with index name `<box_id>__<name>`:
 
 ```text
-<user_boxes_path>/<box_id>__<name>/                         # data path for included boxes
+<configured-checkout-root>/<box_id>__<name>/                # authoritative local DATA path
 <boxyard_data_path>/local_store/<storage>/<index>/           # local box root
 <boxyard_data_path>/local_store/<storage>/<index>/boxmeta.toml
 <boxyard_data_path>/local_store/<storage>/<index>/conf/
@@ -115,7 +125,7 @@ boxyard which --path /some/path --json
 boxyard which --path /some/path --index-name
 ```
 
-`which` reports the box name, box id, index name, storage location, groups, local data path, and whether the box is included.
+`which` searches every configured checkout root (including symlink-resolved paths) and reports the box name, id, index name, storage location, checkout root/state, authoritative local DATA path, and inclusion state.
 
 ### Get a box's data folder
 
@@ -138,22 +148,19 @@ boxyard path --box-name NAME --pick-first --path-option sync-record-meta
 boxyard path --box-name NAME --pick-first --path-option sync-record-conf
 ```
 
-### Find the top-level included boxes folder
+### Find checkout roots and actual local paths
 
-Read `user_boxes_path` from the config. Included boxes are usually symlinked or stored under:
-
-```text
-~/boxes/<index_name>
-```
-
-Commands:
+Never reconstruct `user_boxes_path/<index_name>`: a box may be in any configured root. `user_boxes_path` is permanently the root named `default`; additional roots are `[checkout_roots.NAME]`. Use:
 
 ```bash
-boxyard list --show-status
+boxyard checkout-roots
+boxyard list --show-status --show-checkout
+boxyard list --checkout-root volume --output-format json
 boxyard path --box INDEX_NAME
+boxyard which --path /some/root/INDEX --json
 ```
 
-`●` means included locally; `○` means known metadata exists but local data is excluded/not present.
+Status markers are `●` included, `○` excluded, `!` root unavailable, `×` recorded checkout missing, and `↔` interrupted relocation. An unavailable root never falls back to default and its boxes remain in the catalog.
 
 ## Common discovery commands
 
@@ -248,6 +255,17 @@ boxyard new --box-name NAME --group GROUP --group OTHER_GROUP
 boxyard new --box-name NAME --parent PARENT_BOX
 boxyard new --box-name NAME --no-initialise-git
 ```
+
+Select local placement independently of remote storage:
+
+```bash
+boxyard new --box-name NAME --storage-location STORAGE --checkout-root ROOT
+boxyard include --box-name NAME --checkout-root ROOT
+boxyard relocate --box-name NAME --checkout-root OTHER_ROOT
+boxyard relocate --box-name NAME  # recover the recorded destination after interruption
+```
+
+`exclude` remembers the preferred root; `include` without a root reuses it. `relocate` is locked, local-only, does no remote I/O, and is recoverable via `doctor`.
 
 ## Syncing
 

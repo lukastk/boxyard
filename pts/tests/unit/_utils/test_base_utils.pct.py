@@ -42,6 +42,10 @@ class TestGetBoxIndexNameFromSubPath:
         config = MagicMock()
         config.user_boxes_path = tmp_path / "boxes"
         config.user_boxes_path.mkdir(parents=True, exist_ok=True)
+        from types import SimpleNamespace
+        config.configured_checkout_roots = {
+            "default": SimpleNamespace(path=config.user_boxes_path),
+        }
         return config
 
     def test_path_inside_box(self, mock_config):

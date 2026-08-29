@@ -360,6 +360,7 @@ class TestUnknownNestedConfigKeys:
             StorageConfig,
             SyncPolicyConfig,
             VirtualBoxGroupConfig,
+            CheckoutRootConfig,
             _nested_model_tables,
         )
 
@@ -372,4 +373,5 @@ class TestUnknownNestedConfigKeys:
             "box_groups": BoxGroupConfig,
             "virtual_box_groups": VirtualBoxGroupConfig,
             "sync_policies": SyncPolicyConfig,
+            "checkout_roots": CheckoutRootConfig,
         }

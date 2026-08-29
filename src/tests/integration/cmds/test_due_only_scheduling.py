@@ -4,6 +4,7 @@ __all__ = ['FLEET', 'test_a_completed_sync_restarts_the_clock', 'test_a_failed_s
 
 # %% pts/tests/integration/cmds/test_due_only_scheduling.pct.py 2
 import asyncio
+import re
 import time
 
 import pytest
@@ -300,16 +301,22 @@ def test_the_most_overdue_box_is_synced_first(temp_boxyard):
 
     result = _run_multi_sync(config_path, "--due-only")
 
-    # Located by index name rather than by parsing the decorated line: the
-    # pass output is rich-rendered and wraps, so a regex over it is brittle.
-    positions = {}
+    # Rich's Live output orders the final rendered rows by task completion, not
+# task submission. The `(n/N)` schedule number is deliberately stable across
+# that completion race, so assert those numbers rather than string positions.
+    schedule_numbers = {}
+    total = len(ages)
     for meta in get_boxyard_meta(config).box_metas:
-        at = result.output.find(meta.index_name)
-        assert at != -1, f"{meta.index_name} missing from the pass output"
-        positions[meta.name] = at
+        match = re.search(
+            rf"\((\d+)/{total}\)\s+{re.escape(meta.index_name)}", result.output
+        )
+        assert match is not None, f"{meta.index_name} missing from the pass output"
+        schedule_numbers[meta.name] = int(match.group(1))
 
-    # Alphabetical order would give aaa, bbb, ccc -- the names are chosen so a
-    # registry-ordered pass and an overdue-ordered pass cannot look the same.
-    assert (
-        positions["bbb-most"] < positions["ccc-middling"] < positions["aaa-slightly"]
-    ), positions
+    # Alphabetical order would give aaa=1, bbb=2, ccc=3. Overdue order is
+# bbb (300h), ccc (30h), aaa (7h), each against the default 6h cadence.
+    assert schedule_numbers == {
+        "bbb-most": 1,
+        "ccc-middling": 2,
+        "aaa-slightly": 3,
+    }

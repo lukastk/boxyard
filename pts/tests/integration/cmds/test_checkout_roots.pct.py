@@ -1,0 +1,455 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # Multiple machine-local checkout roots
+
+# %%
+#|default_exp integration.cmds.test_checkout_roots
+
+# %%
+#|export
+import asyncio
+import json
+import os
+import stat
+import tomllib
+from pathlib import Path
+
+import pytest
+import tomli_w
+from typer.testing import CliRunner
+
+from boxyard._checkout import (
+    LocalCheckoutState,
+    PlacementState,
+    delete_placement,
+    get_box_checkout_status,
+    load_placement,
+    placement_path,
+)
+from boxyard._cli.app import app
+from boxyard._models import BoxPart, get_boxyard_meta
+from boxyard.config import get_config
+from boxyard.cmds import (
+    create_user_symlinks,
+    exclude_box,
+    include_box,
+    modify_boxmeta,
+    new_box,
+    run_doctor,
+    sync_box,
+)
+from boxyard.cmds._delete_box import delete_box
+from boxyard.cmds._relocate_box import relocate_box
+from boxyard.cmds._rename_box import rename_box
+from boxyard._enums import RenameScope
+from tests.integration.conftest import create_boxyards
+
+pytestmark = pytest.mark.integration
+
+
+def configure_roots(env, **roots):
+    with open(env["config_path"], "rb") as stream:
+        config_data = tomllib.load(stream)
+    config_data["checkout_roots"] = {
+        name: {"path": str(path)} if isinstance(path, Path) else path
+        for name, path in roots.items()
+    }
+    env["config_path"].write_text(tomli_w.dumps(config_data))
+    return get_config(env["config_path"])
+
+
+def box_meta(config, index_name):
+    return get_boxyard_meta(config, force_create=True).by_index_name[index_name]
+
+
+def test_legacy_single_root_is_permanent_sparse_schema(test_boxyard_local):
+    env = test_boxyard_local
+    index_name = new_box(
+        config_path=env["config_path"], box_name="legacy", initialise_git=False
+    )
+    config = get_config(env["config_path"])
+    meta = box_meta(config, index_name)
+
+    # A pre-v0.6 machine has no placement record. Missing permanently means the
+    # root named default and derives included/excluded from user_boxes_path.
+    delete_placement(config, meta.box_id)
+    assert not placement_path(config, meta.box_id).exists()
+    placement = load_placement(config, meta)
+    assert placement.checkout_root == "default"
+    assert placement.state == PlacementState.INCLUDED
+    assert meta.get_local_part_path(config, BoxPart.DATA) == env["user_boxes"] / index_name
+
+
+def test_new_in_each_root_and_machine_local_metadata(test_boxyard_local, tmp_path):
+    env = test_boxyard_local
+    bulk = tmp_path / "bulk"
+    config = configure_roots(env, bulk=bulk)
+    default_box = new_box(
+        config_path=env["config_path"], box_name="default-box", initialise_git=False
+    )
+    bulk_box = new_box(
+        config_path=env["config_path"], box_name="bulk-box", checkout_root="bulk", initialise_git=False
+    )
+    config = get_config(env["config_path"])
+    default_meta = box_meta(config, default_box)
+    bulk_meta = box_meta(config, bulk_box)
+
+    assert default_meta.get_checkout_status(config).checkout_root == "default"
+    assert bulk_meta.get_checkout_status(config).checkout_root == "bulk"
+    assert (bulk / bulk_box).is_dir()
+    boxmeta_text = bulk_meta.get_local_part_path(config, BoxPart.META).read_text()
+    assert "checkout_root" not in boxmeta_text
+    assert placement_path(config, bulk_meta.box_id).is_relative_to(config.boxyard_data_path)
+
+
+def test_exclude_include_preference_and_explicit_override(tmp_path):
+    remote_name, _remote_path, _config, config_path, _data_path = create_boxyards()
+    env = {"config_path": config_path}
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    configure_roots(env, first=first, second=second)
+    index_name = new_box(
+        config_path=config_path, box_name="portable", storage_location=remote_name,
+        checkout_root="first", initialise_git=False
+    )
+    config = get_config(env["config_path"])
+    meta = box_meta(config, index_name)
+    (meta.get_local_part_path(config, BoxPart.DATA) / "payload").write_text("data")
+    asyncio.run(sync_box(config_path=env["config_path"], box_index_name=index_name))
+
+    asyncio.run(exclude_box(config_path=env["config_path"], box_index_name=index_name, skip_sync=True))
+    assert load_placement(config, meta).checkout_root == "first"
+    asyncio.run(include_box(config_path=env["config_path"], box_index_name=index_name))
+    assert (first / index_name / "payload").read_text() == "data"
+
+    asyncio.run(exclude_box(config_path=env["config_path"], box_index_name=index_name, skip_sync=True))
+    asyncio.run(include_box(
+        config_path=env["config_path"], box_index_name=index_name, checkout_root="second"
+    ))
+    assert (second / index_name / "payload").read_text() == "data"
+    assert load_placement(config, meta).checkout_root == "second"
+
+
+def test_same_filesystem_relocation_updates_group_link(test_boxyard_local, tmp_path):
+    env = test_boxyard_local
+    bulk = tmp_path / "bulk"
+    configure_roots(env, bulk=bulk)
+    index_name = new_box(
+        config_path=env["config_path"], box_name="move-me", initialise_git=False
+    )
+    config = get_config(env["config_path"])
+    meta = box_meta(config, index_name)
+    source = meta.get_local_part_path(config, BoxPart.DATA)
+    (source / "payload").write_text("same-fs")
+    modify_boxmeta(
+        config_path=env["config_path"], box_index_name=index_name,
+        modifications={"groups": ["work"]},
+    )
+    create_user_symlinks(config_path=env["config_path"])
+
+    destination = relocate_box(
+        config_path=env["config_path"], box_index_name=index_name, destination_root="bulk"
+    )
+    assert destination == bulk / index_name
+    assert not source.exists()
+    assert (destination / "payload").read_text() == "same-fs"
+    link = env["user_groups"] / "work" / index_name
+    assert link.resolve() == destination.resolve()
+
+
+def test_cross_filesystem_copy_preserves_layout(test_boxyard_local, tmp_path, monkeypatch):
+    env = test_boxyard_local
+    bulk = tmp_path / "bulk"
+    configure_roots(env, bulk=bulk)
+    index_name = new_box(
+        config_path=env["config_path"], box_name="cross-fs", initialise_git=False
+    )
+    config = get_config(env["config_path"])
+    meta = box_meta(config, index_name)
+    source = meta.get_local_part_path(config, BoxPart.DATA)
+    executable = source / "run"
+    executable.write_text("#!/bin/sh\n")
+    executable.chmod(0o751)
+    os.link(executable, source / "run-hardlink")
+    (source / "run-link").symlink_to("run")
+    sparse = source / "sparse"
+    with open(sparse, "wb") as stream:
+        stream.seek(4 * 1024 * 1024)
+        stream.write(b"end")
+    timestamp = 1_700_000_000_123_456_789
+    os.utime(executable, ns=(timestamp, timestamp))
+
+    monkeypatch.setattr("boxyard._checkout._same_filesystem", lambda *_: False)
+    destination = relocate_box(
+        config_path=env["config_path"], box_index_name=index_name, destination_root="bulk"
+    )
+    assert stat.S_IMODE((destination / "run").stat().st_mode) == 0o751
+    assert (destination / "run").stat().st_mtime_ns == timestamp
+    assert (destination / "run-link").is_symlink()
+    assert os.readlink(destination / "run-link") == "run"
+    assert (destination / "run").stat().st_ino == (destination / "run-hardlink").stat().st_ino
+    assert (destination / "sparse").stat().st_size == 4 * 1024 * 1024 + 3
+    assert (destination / "sparse").stat().st_blocks < (destination / "sparse").stat().st_size // 512
+
+
+@pytest.mark.parametrize(
+    "failure_phase",
+    ["recorded", "copied", "verified", "committed", "links_updated", "source_deleted"],
+)
+def test_interrupted_relocation_is_discoverable_and_recoverable(
+    test_boxyard_local, tmp_path, monkeypatch, failure_phase
+):
+    env = test_boxyard_local
+    bulk = tmp_path / "bulk"
+    configure_roots(env, bulk=bulk)
+    index_name = new_box(
+        config_path=env["config_path"], box_name=f"interrupt-{failure_phase}", initialise_git=False
+    )
+    config = get_config(env["config_path"])
+    meta = box_meta(config, index_name)
+    (meta.get_local_part_path(config, BoxPart.DATA) / "payload").write_text("complete")
+    monkeypatch.setattr("boxyard._checkout._same_filesystem", lambda *_: False)
+
+    def fail(phase):
+        if phase == failure_phase:
+            raise RuntimeError(f"injected at {phase}")
+
+    with pytest.raises(RuntimeError, match="injected"):
+        relocate_box(
+            config_path=env["config_path"], box_index_name=index_name,
+            destination_root="bulk", _phase_hook=fail,
+        )
+    report = asyncio.run(run_doctor(config_path=env["config_path"], check_remote=False))
+    interrupted = report["checks"]["interrupted-relocation"]["findings"]
+    assert [finding["index_name"] for finding in interrupted] == [index_name]
+
+    destination = relocate_box(config_path=env["config_path"], box_index_name=index_name)
+    assert (destination / "payload").read_text() == "complete"
+    assert get_box_checkout_status(config, meta).state == LocalCheckoutState.INCLUDED
+    assert not (env["user_boxes"] / index_name).exists()
+
+
+def test_relocation_preflight_collision_and_space_leave_source_authoritative(
+    test_boxyard_local, tmp_path, monkeypatch
+):
+    env = test_boxyard_local
+    bulk = tmp_path / "bulk"
+    configure_roots(env, bulk=bulk)
+    index_name = new_box(
+        config_path=env["config_path"], box_name="preflight", initialise_git=False
+    )
+    config = get_config(env["config_path"])
+    meta = box_meta(config, index_name)
+    source = meta.get_local_part_path(config, BoxPart.DATA)
+    (source / "payload").write_text("only copy")
+    collision = bulk / index_name
+    collision.mkdir(parents=True)
+    with pytest.raises(FileExistsError):
+        relocate_box(
+            config_path=env["config_path"], box_index_name=index_name, destination_root="bulk"
+        )
+    assert (source / "payload").read_text() == "only copy"
+    assert load_placement(config, meta).state == PlacementState.INCLUDED
+    collision.rmdir()
+
+    monkeypatch.setattr("boxyard._checkout._same_filesystem", lambda *_: False)
+    usage = type("Usage", (), {"total": 1, "used": 1, "free": 0})()
+    monkeypatch.setattr("boxyard._checkout.shutil.disk_usage", lambda *_: usage)
+    with pytest.raises(OSError, match="free bytes"):
+        relocate_box(
+            config_path=env["config_path"], box_index_name=index_name, destination_root="bulk"
+        )
+    assert (source / "payload").read_text() == "only copy"
+    assert load_placement(config, meta).state == PlacementState.INCLUDED
+
+
+def test_guarded_root_wrong_identity_never_writes(test_boxyard_local, tmp_path, monkeypatch):
+    env = test_boxyard_local
+    mount_target = tmp_path / "bare-mountpoint"
+    mount_target.mkdir()
+    checkout = mount_target / "boxes"
+    configure_roots(env, guarded={
+        "path": str(checkout),
+        "mount_target": str(mount_target),
+        "filesystem_uuid": "expected-uuid",
+    })
+    monkeypatch.setattr(
+        "boxyard._checkout._linux_mounts",
+        lambda: [(mount_target.resolve(), "UUID=wrong-uuid")],
+    )
+
+    with pytest.raises(RuntimeError, match="unavailable"):
+        new_box(
+            config_path=env["config_path"], box_name="must-not-land",
+            checkout_root="guarded", initialise_git=False,
+        )
+    assert not checkout.exists()
+    report = asyncio.run(run_doctor(config_path=env["config_path"], check_remote=False))
+    assert report["checks"]["checkout-root-unavailable"]["findings"]
+
+
+def test_nondefault_rename_sync_delete_and_cli_paths(test_boxyard_local, tmp_path):
+    env = test_boxyard_local
+    bulk = tmp_path / "bulk"
+    configure_roots(env, bulk=bulk)
+    index_name = new_box(
+        config_path=env["config_path"], box_name="lifecycle", checkout_root="bulk", initialise_git=False
+    )
+    # Local storage sync is intentionally a no-op, but path resolution must not
+    # jump back to default before taking that branch.
+    asyncio.run(sync_box(config_path=env["config_path"], box_index_name=index_name))
+    renamed = asyncio.run(rename_box(
+        config_path=env["config_path"], box_index_name=index_name,
+        new_name="renamed", scope=RenameScope.LOCAL,
+    ))
+    config = get_config(env["config_path"])
+    meta = box_meta(config, renamed)
+    assert meta.get_local_part_path(config, BoxPart.DATA) == bulk / renamed
+
+    runner = CliRunner()
+    listed = runner.invoke(app, ["--config", str(env["config_path"]), "list", "-o", "json"])
+    assert listed.exit_code == 0, listed.output
+    record = json.loads(listed.stdout)[0]
+    assert record["checkout_root"] == "bulk"
+    assert record["local_path"] == str(bulk / renamed)
+    alias = tmp_path / "checkout-alias"
+    alias.symlink_to(bulk / renamed, target_is_directory=True)
+    which = runner.invoke(app, [
+        "--config", str(env["config_path"]), "which", "--json",
+        "--path", str(alias),
+    ])
+    assert which.exit_code == 0, which.output
+    assert json.loads(which.stdout)["local_data_path"] == str(bulk / renamed)
+
+    asyncio.run(delete_box(config_path=env["config_path"], box_index_name=renamed))
+    assert not (bulk / renamed).exists()
+    assert not placement_path(config, meta.box_id).exists()
+
+
+def test_doctor_unknown_placement_duplicate_and_all_roots(test_boxyard_local, tmp_path):
+    env = test_boxyard_local
+    bulk = tmp_path / "bulk"
+    configure_roots(env, bulk=bulk)
+    index_name = new_box(
+        config_path=env["config_path"], box_name="doctor-root", initialise_git=False
+    )
+    config = get_config(env["config_path"])
+    meta = box_meta(config, index_name)
+    bulk.mkdir(parents=True)
+    (bulk / index_name).mkdir()
+    (bulk / "hand-made").mkdir()
+    placement_path(config, meta.box_id).write_text(json.dumps({
+        "schema_version": 1, "checkout_root": "unknown", "state": "included",
+    }))
+
+    report = asyncio.run(run_doctor(config_path=env["config_path"], check_remote=False))
+    assert report["checks"]["checkout-placement"]["findings"]
+    assert report["checks"]["duplicate-checkout"]["findings"]
+    assert any(
+        finding.get("checkout_root") == "bulk"
+        for finding in report["checks"]["unregistered-folder"]["findings"]
+    )
+
+
+def test_root_config_validation_and_duplicate_doctor(test_boxyard_local, tmp_path):
+    env = test_boxyard_local
+    # Duplicate paths remain loadable so doctor can name both roots, but every
+    # mutation refuses the unsafe ambiguity.
+    configure_roots(env, duplicate=env["user_boxes"])
+    report = asyncio.run(run_doctor(config_path=env["config_path"], check_remote=False))
+    findings = report["checks"]["checkout-root-config"]["findings"]
+    assert findings and findings[0]["checkout_roots"] == ["default", "duplicate"]
+    with pytest.raises(ValueError, match="Unsafe checkout-root configuration"):
+        new_box(
+            config_path=env["config_path"], box_name="blocked", initialise_git=False
+        )
+
+    with open(env["config_path"], "rb") as stream:
+        config_data = tomllib.load(stream)
+    config_data["checkout_roots"] = {"bad/name": {"path": str(tmp_path / "bad")}}
+    env["config_path"].write_text(tomli_w.dumps(config_data))
+    with pytest.raises(ValueError, match="Checkout root name"):
+        get_config(env["config_path"])
+
+
+def test_included_root_becoming_unavailable_stays_in_catalog(
+    test_boxyard_local, tmp_path, monkeypatch
+):
+    env = test_boxyard_local
+    mount_target = tmp_path / "mount"
+    checkout = mount_target / "boxes"
+    configure_roots(env, volume=checkout)
+    index_name = new_box(
+        config_path=env["config_path"], box_name="offline-later",
+        checkout_root="volume", initialise_git=False,
+    )
+    # Add the guard after creation, then present a different mounted UUID.
+    configure_roots(env, volume={
+        "path": str(checkout), "mount_target": str(mount_target),
+        "filesystem_uuid": "expected",
+    })
+    monkeypatch.setattr(
+        "boxyard._checkout._linux_mounts",
+        lambda: [(mount_target.resolve(), "UUID=wrong")],
+    )
+    config = get_config(env["config_path"])
+    meta = box_meta(config, index_name)
+    status = get_box_checkout_status(config, meta)
+    assert status.state == LocalCheckoutState.UNAVAILABLE
+    assert status.checkout_root == "volume"
+    assert not (env["user_boxes"] / index_name).exists()
+
+    runner = CliRunner()
+    listed = runner.invoke(app, [
+        "--config", str(env["config_path"]), "list", "-o", "json",
+    ])
+    assert listed.exit_code == 0, listed.output
+    assert json.loads(listed.stdout)[0]["state"] == "unavailable"
+    roots = runner.invoke(app, [
+        "--config", str(env["config_path"]), "checkout-roots", "-o", "json",
+    ])
+    assert roots.exit_code == 0, roots.output
+    by_name = {entry["name"]: entry for entry in json.loads(roots.stdout)}
+    assert by_name["volume"]["available"] is False
+
+
+def test_relocation_does_not_touch_remote_data_or_metadata(tmp_path):
+    remote_name, remote_root, _config, config_path, _data_path = create_boxyards()
+    env = {"config_path": config_path}
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    configure_roots(env, first=first, second=second)
+    index_name = new_box(
+        config_path=config_path, box_name="remote-stable", storage_location=remote_name,
+        checkout_root="first", initialise_git=False,
+    )
+    config = get_config(config_path)
+    meta = box_meta(config, index_name)
+    (first / index_name / "payload").write_text("unchanged remote")
+    asyncio.run(sync_box(config_path=config_path, box_index_name=index_name))
+    remote_box = (
+        remote_root / config.storage_locations[remote_name].store_path
+        / "boxes" / index_name
+    )
+    remote_meta_before = (remote_box / "boxmeta.toml").read_bytes()
+    remote_data_before = (remote_box / "data" / "payload").read_bytes()
+    remote_record = (
+        remote_root / config.storage_locations[remote_name].store_path
+        / "sync_records" / index_name / "data.rec"
+    )
+    remote_record_before = remote_record.read_bytes()
+
+    relocate_box(
+        config_path=config_path, box_index_name=index_name, destination_root="second"
+    )
+    assert (second / index_name / "payload").read_text() == "unchanged remote"
+    assert (remote_box / "boxmeta.toml").read_bytes() == remote_meta_before
+    assert (remote_box / "data" / "payload").read_bytes() == remote_data_before
+    assert remote_record.read_bytes() == remote_record_before

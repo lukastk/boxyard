@@ -318,7 +318,9 @@ class BoxMeta(const.StrictModel):
         self, config: boxyard.config.Config, box_part: BoxPart
     ) -> Path:
         if box_part == BoxPart.DATA:
-            return config.user_boxes_path / self.index_name
+            from ._checkout import local_data_path
+
+            return local_data_path(config, self)
         elif box_part == BoxPart.META:
             return self.get_local_path(config) / const.BOX_METAFILE_REL_PATH
         elif box_part == BoxPart.CONF:
@@ -371,9 +373,18 @@ class BoxMeta(const.StrictModel):
             / "meta.base.toml"
         )
 
+    def get_checkout_status(self, config: boxyard.config.Config):
+        from ._checkout import get_box_checkout_status
+
+        return get_box_checkout_status(config, self)
+
     def check_included(self, config: boxyard.config.Config) -> bool:
-        included_box_path = self.get_local_part_path(config, BoxPart.DATA)
-        return included_box_path.is_dir() and included_box_path.exists()
+        from ._checkout import LocalCheckoutState
+
+        return self.get_checkout_status(config).state in (
+            LocalCheckoutState.INCLUDED,
+            LocalCheckoutState.RELOCATING,
+        )
 
     def save(self, config: boxyard.config.Config):
         save_path = self.get_local_part_path(config, BoxPart.META)
@@ -840,22 +851,26 @@ def create_user_box_group_symlinks(
                 f"'{path}' is in the user box group path '{config.user_box_groups_path}' but is not a directory!"
             )
 
-    # Create the symlinks
+    # Create/replace each derived link atomically. A relocation can therefore
+    # switch a link from one checkout root to another without an unlink gap.
+    import os
+    import uuid
+
     for dest_path, symlink_path in _symlinks:
         symlink_path.parent.mkdir(parents=True, exist_ok=True)
-        if (
-            symlink_path.exists() or symlink_path.is_symlink()
-        ):  # is_symlink() catches broken symlinks
-            if symlink_path.is_symlink():
-                if symlink_path.resolve() != dest_path.resolve():
-                    symlink_path.unlink()
-                else:
-                    continue  # The symlink already points to the correct destination so leave it as it is
-            else:
-                raise Exception(
-                    f"'{symlink_path}' is in the user box group path '{config.user_box_groups_path}' but is not a symlink!"
-                )
-        symlink_path.symlink_to(dest_path, target_is_directory=True)
+        if symlink_path.exists() and not symlink_path.is_symlink():
+            raise Exception(
+                f"'{symlink_path}' is in the user box group path '{config.user_box_groups_path}' but is not a symlink!"
+            )
+        if symlink_path.is_symlink() and symlink_path.resolve() == dest_path.resolve():
+            continue
+        temp_link = symlink_path.parent / f".{symlink_path.name}.{uuid.uuid4().hex}.tmp"
+        try:
+            temp_link.symlink_to(dest_path, target_is_directory=True)
+            os.replace(temp_link, symlink_path)
+        finally:
+            if temp_link.is_symlink():
+                temp_link.unlink()
 
     # Remove every empty directory, deepest first.
     #

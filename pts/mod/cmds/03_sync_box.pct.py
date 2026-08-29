@@ -184,6 +184,7 @@ async def sync_box(
     soft_interruption_enabled: bool = True,
     tombstoned_box_ids: set[str] | None = None,
     _skip_lock: bool = False,
+    _allow_missing_checkout: bool = False,
 ) -> dict[BoxPart, tuple[SyncStatus, bool]]:
     """
     Syncs a box with its remote.
@@ -226,6 +227,7 @@ verbose = True
 show_rclone_progress = False
 soft_interruption_enabled = True
 _skip_lock = False
+_allow_missing_checkout = False
 
 # %%
 # Put an excluded file into the box data folder to make sure it is not synced
@@ -278,6 +280,32 @@ if box_index_name not in boxyard_meta.by_index_name:
     raise ValueError(f"Box '{box_index_name}' not found.")
 
 box_meta = boxyard_meta.by_index_name[box_index_name]
+
+if BoxPart.DATA in sync_choices:
+    from boxyard._checkout import (
+        get_box_checkout_status,
+        LocalCheckoutState,
+        CheckoutRootUnavailable,
+    )
+    _checkout_status = get_box_checkout_status(config, box_meta)
+    if _checkout_status.state == LocalCheckoutState.UNAVAILABLE:
+        raise CheckoutRootUnavailable(
+            f"Cannot sync DATA for '{box_index_name}': checkout root "
+            f"'{_checkout_status.checkout_root}' is unavailable. No fallback root will be used."
+        )
+    if _checkout_status.state == LocalCheckoutState.RELOCATING:
+        raise RuntimeError(
+            f"Cannot sync DATA for '{box_index_name}': checkout state is relocating. "
+            "Run `boxyard relocate` to recover relocation."
+        )
+    if (
+        _checkout_status.state == LocalCheckoutState.MISSING
+        and not _allow_missing_checkout
+    ):
+        raise RuntimeError(
+            f"Cannot sync DATA for '{box_index_name}': its recorded checkout is missing. "
+            "Run `boxyard doctor --no-remote` and use `boxyard include` to recover it."
+        )
 
 # %% [markdown]
 # Check if the box is in a local storage location, in which case quit.
