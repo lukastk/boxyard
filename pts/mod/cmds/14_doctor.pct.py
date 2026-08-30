@@ -693,11 +693,9 @@ for _bm in sorted(box_metas, key=lambda b: b.index_name):
 # Fires on nothing today: the default is `plain`, every box is `plain`, and no
 # policy sets the key.
 #
-# The hint deliberately names NO command. `boxyard convert` does not exist yet,
-# and `test_doctor_hints_are_runnable` enforces that every command a hint names
-# actually parses -- a rule with a scar behind it, since `diverged-box` spent
-# months telling people to run something that exited 2. The hint gains the
-# command when the command lands.
+# The hint names `boxyard convert`, which `test_doctor_hints_are_runnable`
+# checks actually parses -- a rule with a scar behind it, since `diverged-box`
+# spent months telling people to run something that exited 2.
 
 for _bm in sorted(box_metas, key=lambda b: b.index_name):
     try:
@@ -712,13 +710,14 @@ for _bm in sorted(box_metas, key=lambda b: b.index_name):
             f"Box '{_bm.index_name}' is stored as '{_bm.storage_format.value}' "
             f"but policy asks for '{_policy.storage_format.value}' "
             f"(from {_policy.sources.get('storage_format', 'unset')})",
-            "Nothing converts a box automatically, in either direction. The "
-            "format changes only through an explicit conversion that verifies a "
-            "byte-identical restore before the old copy is removed, and that "
-            "command does not exist yet. Meanwhile the box syncs normally in "
-            "the format it actually has, and this finding is informational: "
-            "either leave it until conversion ships, or change the policy if "
-            "the box should stay as it is.",
+            f"Nothing converts a box automatically, in either direction, so "
+            f"the box syncs normally meanwhile in the format it actually has. "
+            f"Close the gap with `boxyard convert -r '{_bm.index_name}'`, which "
+            f"verifies a byte-identical restore before the old copy is removed "
+            f"-- run it with --dry-run first. Or change the policy if the box "
+            f"should stay as it is. Machines still on an older boxyard cannot "
+            f"read a converted box, so convert only once the whole fleet is "
+            f"upgraded.",
             box_index_name=_bm.index_name,
         )
 

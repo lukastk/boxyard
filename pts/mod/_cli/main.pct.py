@@ -3366,6 +3366,91 @@ def cli_discard_local(
         )
     )
 
+# %% [markdown]
+# # `convert`
+#
+# The only thing that changes a box's storage format. One box, named by a
+# person, verified byte-identically before anything is removed.
+#
+# It is destructive on the REMOTE (it purges the plain tree), so it confirms
+# unless `--yes`, and `--dry-run` exists to be run first.
+
+# %%
+#|export
+@app.command(name="convert")
+def cli_convert(
+    box_index_name: str | None = Option(
+        None, "--box", "-r", help="The index name of the box, in the form '{ULID}__{BOX_NAME}'."
+    ),
+    box_id: str | None = Option(None, "--box-id", "-i", help="The id of the box."),
+    box_name: str | None = Option(None, "--box-name", "-n", help="The name of the box."),
+    name_match_mode: NameMatchMode | None = Option(
+        None, "--name-match-mode", "-m", help="The mode to use for matching the box name."
+    ),
+    name_match_case: bool = Option(
+        False, "--name-match-case", "-c", help="Whether to match the box name case-sensitively."
+    ),
+    dry_run: bool = Option(
+        False, "--dry-run", help="Report what would happen and change nothing."
+    ),
+    estimate_size: bool = Option(
+        False,
+        "--estimate-size",
+        help=(
+            "With --dry-run, also measure what restic would store, by ingesting "
+            "into a local temporary repository. Reads the whole box; writes "
+            "nothing to the remote."
+        ),
+    ),
+    yes: bool = Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+):
+    """
+    Convert a box's DATA to a per-box restic repository.
+
+    Verifies a byte-identical restore -- content, mode and symlinks -- before
+    the plain copy is removed, and is resumable: re-running after an interruption
+    continues from where it stopped.
+
+    A machine still running an older boxyard CANNOT read a converted box. It
+    refuses loudly rather than corrupting anything, but it means conversion
+    should not begin until every machine has been upgraded. Check with
+    `ssh-target <machine> boxyard --version` across the fleet.
+    """
+    import asyncio
+
+    from boxyard.cmds import convert_box
+    from boxyard.cmds._convert_box import ConversionRefused
+
+    _config, _, resolved = _resolve_box(
+        box_index_name, box_id, box_name, name_match_mode, name_match_case,
+        label="box to convert",
+    )
+
+    if not dry_run and not yes:
+        typer.echo(
+            f"This converts '{resolved}' to a restic repository and PURGES its "
+            f"plain copy from the remote, after verifying a byte-identical "
+            f"restore.\n"
+            f"Machines still running an older boxyard will refuse this box until "
+            f"they are upgraded.\n"
+            f"Run with --dry-run first if you have not."
+        )
+        if not typer.confirm(f"Convert '{resolved}' to restic?"):
+            raise typer.Exit(code=0)
+
+    try:
+        asyncio.run(
+            convert_box(
+                config_path=app_state["config_path"],
+                box_index_name=resolved,
+                dry_run=dry_run,
+                estimate_size=estimate_size,
+            )
+        )
+    except ConversionRefused as e:
+        typer.echo(f"Refused: {e}", err=True)
+        raise typer.Exit(code=1) from None
+
 # %%
 #|export
 @app.command(name="owner")

@@ -172,16 +172,27 @@ def test_a_conflicted_policy_is_reported_once_not_twice(yard):
 
 
 # %% [markdown]
-# ## The hint names no command that does not exist
+# ## The hint names a real command, and warns about the fleet
 #
 # `diverged-box` spent months telling people to run something that exited 2.
-# `test_doctor_hints_are_runnable` enforces the rule now; this pins the specific
-# case, because the conversion command does not exist until the next step.
+# `test_doctor_hints_are_runnable` enforces that every named command parses;
+# this pins that the hint carries the two things a person needs to act safely.
 
 # %%
 #|export
-def test_the_hint_promises_no_command_yet(yard):
+def test_the_hint_names_the_conversion_command(yard):
     set_policies(yard, {"default": {"storage_format": "restic"}})
     hint = findings(yard, "storage-format-mismatch")[0]["hint"]
-    assert "boxyard convert" not in hint
-    assert "does not exist yet" in hint
+    assert f"boxyard convert -r '{yard['index_name']}'" in hint
+    assert "--dry-run" in hint
+
+
+def test_the_hint_warns_that_old_machines_cannot_read_a_converted_box(yard):
+    """
+    The rollout constraint. Someone reading this finding is exactly the person
+    about to convert, and it is the one thing they must know first.
+    """
+    set_policies(yard, {"default": {"storage_format": "restic"}})
+    hint = findings(yard, "storage-format-mismatch")[0]["hint"]
+    assert "older boxyard" in hint
+    assert "whole fleet is" in hint

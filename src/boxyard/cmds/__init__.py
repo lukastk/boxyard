@@ -10,6 +10,7 @@ def __getattr__(name):
         "create_user_symlinks": "._create_user_symlinks",
         "delete_box": "._delete_box",
         "discard_local": "._discard_local",
+        "convert_box": "._convert_box",
         "exclude_box": "._exclude_box",
         "force_push_to_remote": "._force_push_to_remote",
         "get_box_sync_status": "._get_box_sync_status",

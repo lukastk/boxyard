@@ -251,6 +251,68 @@ def pointer_remote_path(store_path: Path, remote_index_name: str) -> Path:
     )
 
 # %% [markdown]
+# ## The password
+#
+# One password for the whole fleet, one key per repo. Fetched ONCE per process
+# and passed in the child environment.
+
+# %%
+#|exporti
+_password_cache: dict[str, str] = {}
+
+# %%
+#|export
+def resolve_restic_password(config) -> str:
+    """
+    The repository password, from the environment or `restic_password_command`.
+
+    Cached per resolved command for the life of the process, which is the whole
+    point: `secret get` measured 0.77-1.51 s, and a 590-box pass would otherwise
+    spend minutes on 1Password round trips for a value that cannot change.
+
+    Refuses loudly when neither source is configured. There is no default and no
+    fallback: an empty password would create a repository nobody could open
+    again, and restic itself refuses one.
+    """
+    import subprocess
+
+    env_value = os.environ.get(const.ENV_VAR_BOXYARD_RESTIC_PASSWORD)
+    if env_value:
+        return env_value
+
+    command = getattr(config, "restic_password_command", None)
+    if not command:
+        raise ResticError(
+            f"No restic repository password is configured. Set "
+            f"`restic_password_command` in '{config.config_path}' to a command "
+            f"that prints it (e.g. `secret get BOXYARD_RESTIC_PASSWORD`), or "
+            f"set ${const.ENV_VAR_BOXYARD_RESTIC_PASSWORD}."
+        )
+    if command in _password_cache:
+        return _password_cache[command]
+
+    # A configured command is a shell string by nature ("secret get NAME"), and
+    # it comes from the user's own config file rather than from box content, so
+    # `shell=True` is appropriate here and only here. Nothing derived from a
+    # path or a box name is ever interpolated into it.
+    proc = subprocess.run(
+        command, shell=True, capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        raise ResticError(
+            f"`restic_password_command` failed (exit {proc.returncode}): "
+            f"{command}\n{proc.stderr.strip()}"
+        )
+    password = proc.stdout.strip()
+    if not password:
+        raise ResticError(
+            f"`restic_password_command` produced no output: {command}. An empty "
+            f"password would create a repository that cannot be opened again."
+        )
+    _password_cache[command] = password
+    return password
+
+# %% [markdown]
 # ## Running restic
 
 # %%
@@ -1032,6 +1094,39 @@ async def push(
     return PushResult(
         snapshot_id=snapshot_id, source_path=source, canonical=canonical
     )
+
+# %%
+#|export
+async def estimate_stored_bytes(
+    repo: ResticRepo,
+    data_path: Path,
+    *,
+    box_index_name: str | None = None,
+    excludes: list[str] | None = None,
+) -> int:
+    """
+    How many bytes restic would actually store for this tree, measured.
+
+    `data_added_packed` from a dry-run backup: the compressed, packed size after
+    deduplication, which is what lands on the remote. Not an estimate from a
+    ratio -- deduplication and compression are content-dependent and a ratio
+    quoted from another box would be a guess presented as a measurement.
+    """
+    with _backup_path(box_index_name, data_path) as (effective_path, _):
+        args = ["backup", "--dry-run", "--json"] + _backup_args(
+            effective_path, excludes
+        )
+        args.append(str(effective_path))
+        _, stdout, _ = await run_restic(repo, args)
+
+    for line in stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if message.get("message_type") == "summary":
+            return int(message.get("data_added_packed", 0))
+    raise ResticError("restic backup --dry-run reported no summary")
 
 # %% [markdown]
 # ## Pull

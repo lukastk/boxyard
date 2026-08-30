@@ -140,12 +140,36 @@ whole yard at the cost of reading, with no disk.
 
 ## Group C — still to do
 
-### `04_migration_dry_run` — `todo`
+### `04_migration_dry_run` — superseded by the real command
 
-Convert a handful of *real* boxes (copied to a throwaway yard first) end to end,
-including at least one remote-only box, and get a measured per-GiB conversion
-rate rather than the current 11.8 MiB/s extrapolation. Also: what a partially
-converted yard looks like to `doctor`.
+`boxyard convert` now exists in the package with its own tests
+(`src/tests/integration/cmds/test_convert_box.py`), so a throwaway prototype of
+the same thing would only duplicate it. What the experiment was going to
+establish, established:
+
+- **The step order was wrong in the design note and is now corrected.** Purging
+  `data/` before deleting `sync_records/<box>/data.rec` leaves a window in which
+  an un-upgraded machine with local changes RESURRECTS the plain tree beside the
+  repository. Deleting the record first closes it, because `get_sync_status`
+  refuses immediately on "remote path exists, but remote sync record does not
+  exist". Every intermediate state is now a loud refusal on every machine.
+- **The converting machine's own LOCAL `data.rec` must NOT be removed** during
+  the conversion. Its presence is what makes the interrupted states report ERROR
+  rather than looking like a fresh box that wants pushing.
+- The interruption table is tested row by row, each row asking the same two
+  questions: does an un-upgraded peer do damage, and does a re-run recover.
+
+Still genuinely open, and needing a real box rather than a fixture: **the
+measured per-GiB conversion rate on the live remote.** The current 11.8 MiB/s
+figure is a single-file throughput measurement, not a conversion.
+
+### `04b_partial_yard_doctor` — `todo`
+
+What a partly converted yard looks like to `doctor`, on a machine that has been
+upgraded and on one that has not. The pieces exist (`storage-format-mismatch`,
+and the refusals); nobody has looked at the whole report mid-migration.
+
+
 
 ### `05_prune_and_retention` — `in progress`
 

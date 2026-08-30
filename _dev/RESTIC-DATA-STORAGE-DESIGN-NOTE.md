@@ -492,11 +492,63 @@ This was tested against an un-upgraded machine in a throwaway two-machine yard.
 
 1. push the repo to `boxes/<box>/data.restic/`
 2. **verify a restore is byte-identical** before destroying anything
-3. purge `boxes/<box>/data/`
-4. **delete `boxyard/sync_records/<box>/data.rec`**
+3. **delete `boxyard/sync_records/<box>/data.rec`**
+4. purge `boxes/<box>/data/`
 5. write `boxes/<box>/data.snapshot`; set `storage_format` in `boxmeta.toml`
 
-Step 4 is the gate, and skipping it is the failure mode:
+> **Correction to an earlier revision of this note, found while implementing it.**
+> Steps 3 and 4 were originally the other way round — purge the tree, then delete
+> the record. That leaves a real window. With `data/` gone but `data.rec` still
+> present, `get_sync_status` finds matching sync records and reports
+> `NEEDS_PUSH` for a box with local changes, so an un-upgraded machine
+> **resurrects the plain tree beside the repository** and the two diverge with
+> nothing reporting it.
+>
+> Deleting the record FIRST closes it, because `get_sync_status` opens with
+>
+> ```python
+> if remote_path_exists and remote_sync_record is None:  # -> ERROR
+> ```
+>
+> which fires the moment the record is gone, while `data/` is still there. With
+> this order **every intermediate state is a loud refusal on every machine**, and
+> there is no window at all. The interruption table below is tested row by row.
+>
+> A related detail that is easy to get backwards: the converting machine's own
+> LOCAL `data.rec` is deliberately **not** removed during the conversion. Its
+> presence is what makes the interrupted states report `ERROR` instead of looking
+> like a fresh box that wants pushing.
+
+| # | after | remote holds | this machine | an un-upgraded peer | recovery |
+|---|---|---|---|---|---|
+| 0 | nothing | `data/`, `.rec` | plain, syncs | plain, syncs | start again |
+| 1 | repo pushed | + `data.restic/` | plain, syncs | plain, syncs; cannot see the repo | re-push is a cheap no-op |
+| 2 | verified | unchanged | as 1 | as 1 | as 1 |
+| 3 | `.rec` deleted | `data/`, repo | **ERROR** | **ERROR** | re-run continues |
+| 4 | `data/` purged | repo | **ERROR** | **ERROR** | re-run continues |
+| 5 | pointer written | + `data.snapshot` | ERROR until boxmeta | **ERROR** | re-run completes |
+| 6 | boxmeta saved | complete | restic, syncs | **ERROR** | done |
+
+**What the verification compares:** content, mode and symlink targets, plus the
+set of paths in both directions. Not bytes alone — the claim being verified is
+that restic carries mode and symlinks natively, and a check that only compared
+content would not be checking the claim. The exec-bit manifest is excluded from
+the snapshot on purpose, so it is excluded from the comparison too.
+
+**What conversion refuses**, always before anything is written: a box being
+synced right now (detected by taking the same per-box lock `sync_box` holds),
+a box with an interrupted sync record on either side (no process holds the lock,
+but the tree is not settled, so "byte-identical" would be verifying a torn tree),
+a box not checked out on this machine (nothing to verify against), and a
+`local` storage location (no remote, nothing to convert).
+
+**`--dry-run`** reports the plan, the local file count and byte total, and
+changes nothing. **`--dry-run --estimate-size`** additionally measures what
+restic would store, by ingesting into a LOCAL temporary repository —
+`data_added_packed`, the real packed size after deduplication and compression,
+rather than a ratio borrowed from another box. It writes nothing to the remote.
+
+The old procedure's failure mode, kept because it is why the order is what it is:
 
 | what was done | what an un-upgraded machine does |
 |---|---|
@@ -517,6 +569,41 @@ converted box per pass — the "cries wolf" pathology v0.4.x spent a week removi
 It is bounded by the migration window, and new boxyard must recognise this exact
 state and render it as its own `SyncCondition` (alongside `WRITE_DENIED` and
 `LOCAL_STORAGE`), not as an error.
+
+### The rollout constraint: every machine first, and that is slow
+
+**A converted box is unusable on a machine still running an older boxyard.** The
+gate above makes that a loud refusal rather than corruption, which is the point —
+but it means **conversion must not begin until every machine has the new
+boxyard.** Not "most", and not "the ones that matter": a single stale machine
+turns every converted box into a permanent error there, and if it is a machine
+that holds local work, that work stops leaving it.
+
+This is a slow condition, not a checkbox. **macbook and pocket4 go offline for
+days at a time** — both were unreachable twice during one afternoon of
+measurement. So the fleet reaches a version when the last laptop is next opened,
+which is a date nobody controls.
+
+How a person should confirm it, before converting anything:
+
+```bash
+for m in mymain macbook macstudio ideapad pocket4; do
+  printf '%-10s ' "$m"
+  ssh-target "$m" 'boxyard --version' 2>/dev/null || echo UNREACHABLE
+done
+```
+
+`UNREACHABLE` is not a pass. A machine that cannot be checked is a machine that
+might be stale, and the honest reading is "not yet". termux is deliberately not
+in that list: it does not run boxyard at all (verified — no binary, no
+`~/.boxyard`, and its `~/dev` entries are plain git repos).
+
+There is no automatic enforcement of this and deliberately so. A version
+handshake would need a fleet-wide heartbeat mechanism that does not exist, and
+inventing one to gate a one-off migration would be a permanent cost for a
+temporary problem. The gate that DOES exist — every intermediate and final state
+being a loud refusal — is what makes a mistake here recoverable rather than
+destructive.
 
 ### Order of migration
 
