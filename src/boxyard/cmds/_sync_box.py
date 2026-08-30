@@ -15,6 +15,7 @@ from .._models import (
     read_meta_base,
     record_meta_base,
 )
+from .._enums import StorageFormat
 from .._ownership import may_push, push_would_transfer, write_denied_message
 from ..config import get_config, StorageType
 from .._utils import (
@@ -624,6 +625,36 @@ async def sync_box(
         if sync_part in sync_choices:
             if verbose:
                 print("Syncing", sync_part.value)
+    
+        # ---- The storage-format branch ---------------------------------------
+        #
+        # ONE branch, and the plain arm is the untouched call it always was -- not
+        # "mostly the same", literally the same expression. The overwhelming
+        # majority of boxes are plain and will be for a long time, so a regression
+        # here is a far bigger incident than anything restic-related.
+        #
+        # Decided from the boxmeta ON DISK, after the META sync, so a box converted
+        # on another machine is recognised on the pass that learns about it rather
+        # than the one after.
+        if sync_part in sync_choices and _box_meta_on_disk.storage_format is StorageFormat.RESTIC:
+            from boxyard._restic_sync import sync_data_restic
+    
+            from boxyard._restic import restic_excludes_from_rclone_file
+    
+            sync_results[sync_part] = await sync_data_restic(
+                config,
+                _box_meta_on_disk,
+                remote_index_name,
+                may_push=_may_push,
+                sync_direction=sync_direction,
+                sync_setting=sync_setting,
+                # The SAME exclude list the plain path would apply, translated. A
+                # converted box must not silently start storing `.venv/` and
+                # `node_modules/`.
+                excludes=restic_excludes_from_rclone_file(_rclone_exclude_path),
+                verbose=verbose,
+            )
+        elif sync_part in sync_choices:
             sync_results[sync_part] = await _sync_part(
                 probe_include_path=_rclone_include_path,
                 probe_exclude_path=_rclone_exclude_path,

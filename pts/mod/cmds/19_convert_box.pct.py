@@ -90,6 +90,7 @@ from boxyard._restic import (
     repo_exists,
     repo_url_for_box,
     resolve_restic_password,
+    restic_excludes_from_rclone_file,
     write_pointer,
     write_state,
 )
@@ -339,6 +340,17 @@ _repo = ResticRepo(
 )
 _repo.cache_dir.mkdir(parents=True, exist_ok=True)
 
+# The SAME exclude list the plain sync applies, translated for restic. Without
+# it the first snapshot would carry `.venv/` and `node_modules/` -- everything
+# the fleet-wide list removes -- and the verification below would then insist
+# they be restored too.
+_conf_exclude = (
+    box_meta.get_local_part_path(config, BoxPart.CONF) / const.RCLONE_EXCLUDE_FILENAME
+)
+_excludes = restic_excludes_from_rclone_file(
+    _conf_exclude if _conf_exclude.exists() else config.default_rclone_exclude_path
+)
+
 _file_count = sum(1 for p in _local_data.rglob("*") if p.is_file())
 _byte_count = sum(
     p.lstat().st_size for p in _local_data.rglob("*") if p.is_file() and not p.is_symlink()
@@ -380,7 +392,8 @@ if dry_run:
             (Path(_tmp) / "cache").mkdir()
             await init_repo(_probe)
             _estimate = await estimate_stored_bytes(
-                _probe, _local_data, box_index_name=box_index_name
+                _probe, _local_data, box_index_name=box_index_name,
+                excludes=_excludes,
             )
         result["estimated_stored_bytes"] = _estimate
         _say(
@@ -412,7 +425,9 @@ try:
         await init_repo(_repo)
         _did("initialised the repository")
 
-    _push = await push(_repo, _local_data, box_index_name=box_index_name)
+    _push = await push(
+        _repo, _local_data, box_index_name=box_index_name, excludes=_excludes
+    )
     result["snapshot_id"] = _push.snapshot_id
     result["canonical"] = _push.canonical
     _did(f"pushed snapshot {_push.snapshot_id[:8]}")
@@ -471,7 +486,10 @@ try:
     )
     _did("wrote data.snapshot")
 
-    write_state(config.boxyard_data_path, box_index_name, _push.snapshot_id)
+    write_state(
+        config.boxyard_data_path, box_index_name, _push.snapshot_id,
+        files=_push.files,
+    )
     _did("recorded this machine's restic state")
 
     _on_disk = BoxMeta.load(config, box_meta.storage_location, box_index_name)

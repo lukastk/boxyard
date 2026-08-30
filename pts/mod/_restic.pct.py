@@ -546,6 +546,40 @@ def data_root_exclude_args(data_path: Path) -> list[str]:
     ]
 
 
+def restic_excludes_from_rclone_file(exclude_path: "str | Path | None") -> list[str]:
+    """
+    Translate boxyard's rclone exclude file into restic `--exclude` patterns.
+
+    Without this a converted box would silently start storing `.venv/`,
+    `node_modules/`, `target/` and everything else the fleet-wide exclude list
+    removes -- the same list that cut jackfruit from 687,876 files to 134,551
+    before restic was involved at all. Ignoring it would not be a small
+    regression.
+
+    The two syntaxes agree on the case that matters. rclone writes one pattern
+    per line with a trailing slash for a directory (".venv/"), and restic
+    matches an unanchored pattern against the basename at any depth -- which is
+    exactly rclone's meaning for these names. Only the trailing slash has to go.
+
+    Deliberately NOT passed to restic as `--exclude-file`: the file is rclone's,
+    the syntaxes diverge for anchored and wildcard patterns, and handing restic a
+    file written for another tool would silently apply different rules than the
+    plain path does.
+    """
+    if exclude_path is None:
+        return []
+    path = Path(exclude_path)
+    if not path.is_file():
+        return []
+    patterns: list[str] = []
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        patterns.append(stripped.rstrip("/"))
+    return patterns
+
+
 def anchored_include_args(rel_paths: list[str]) -> list[str]:
     """
     `--include` arguments for a targeted restore, anchored to the snapshot
@@ -658,6 +692,25 @@ def state_path(boxyard_data_path: Path, box_index_name: str) -> Path:
     )
 
 
+def mark_pull_started(
+    boxyard_data_path: Path, box_index_name: str, target_snapshot: str
+) -> None:
+    """
+    Note that a restore to `target_snapshot` has begun.
+
+    Keeps whatever snapshot the record already named, so an interrupted pull
+    still knows where it came FROM as well as where it was going.
+    """
+    previous = read_state(boxyard_data_path, box_index_name)
+    write_state(
+        boxyard_data_path,
+        box_index_name,
+        (previous or {}).get("snapshot") or target_snapshot,
+        now_unix=(previous or {}).get("synced_at_unix"),
+        pulling_from=target_snapshot,
+    )
+
+
 def read_state(boxyard_data_path: Path, box_index_name: str) -> dict | None:
     """The snapshot this machine last agreed with, and when, or None."""
     path = state_path(boxyard_data_path, box_index_name)
@@ -677,6 +730,8 @@ def write_state(
     box_index_name: str,
     snapshot_id: str,
     now_unix: float | None = None,
+    pulling_from: str | None = None,
+    files: int | None = None,
 ) -> Path:
     """
     Record agreement with `snapshot_id`, now.
@@ -684,6 +739,14 @@ def write_state(
     Written via a temp file in the same directory then renamed, so a crash
     mid-write leaves either the old record or the new one, never a truncated
     file that reads as "never synced" and silently costs a full restore.
+
+    `pulling_from` marks a restore that is IN PROGRESS. Without it an
+    interrupted pull is indistinguishable from local edits: the tree matches
+    neither the old snapshot nor the new one, so `local_is_modified` says yes
+    and the box reports CONFLICT -- a false conflict after every interrupted
+    pull, needing a person for something the next pass could finish by itself.
+    Cleared by writing the record again without it, which only happens after a
+    restore has completed.
     """
     import tempfile
     import time
@@ -694,6 +757,14 @@ def write_state(
         "snapshot": snapshot_id,
         "synced_at_unix": time.time() if now_unix is None else now_unix,
     }
+    if pulling_from is not None:
+        record["pulling_from"] = pulling_from
+    # How many files that snapshot held. `backup --dry-run` cannot see a
+    # DELETION -- a file that is gone is simply not walked, so `files_new` and
+    # `files_changed` both stay 0 and a box whose only change is a deletion
+    # never pushes. Comparing the count catches it, with no extra remote call.
+    if files is not None:
+        record["files"] = files
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
     try:
         with os.fdopen(fd, "w") as f:
@@ -910,6 +981,7 @@ async def local_is_modified(
     synced_at_unix: float | None = None,
     excludes: list[str] | None = None,
     box_index_name: str | None = None,
+    expected_files: int | None = None,
 ) -> bool:
     """
     Does this machine hold DATA changes the remote has not seen?
@@ -943,11 +1015,26 @@ async def local_is_modified(
         except json.JSONDecodeError:
             continue
         if message.get("message_type") == "summary":
-            return bool(
+            if (
                 message.get("files_new")
                 or message.get("files_changed")
                 or message.get("dirs_new")
-            )
+            ):
+                return True
+            # DELETIONS. `backup --dry-run` walks the tree, so a file that has
+            # been removed is simply not seen: measured, deleting one of three
+            # files gives `files_new=0, files_changed=0, files_unmodified=2` --
+            # indistinguishable from a no-op by those fields alone, so a box
+            # whose only change is a deletion would never push.
+            #
+            # `total_files_processed` does move (3 -> 2), and the count the
+            # parent snapshot held was recorded when it was pushed, so the
+            # comparison costs nothing. A record without it -- written before
+            # this existed -- returns "changed", which costs one sync rather
+            # than losing a deletion.
+            if expected_files is None:
+                return True
+            return message.get("total_files_processed") != expected_files
     return True
 
 # %% [markdown]
@@ -980,6 +1067,42 @@ class ResticStatus:
     local_modified: bool = False
 
 
+async def count_tracked_files(
+    repo: ResticRepo,
+    data_path: Path,
+    *,
+    excludes: list[str] | None = None,
+    box_index_name: str | None = None,
+) -> int | None:
+    """
+    How many files restic would walk in this tree, right now.
+
+    Measured the SAME way `local_is_modified` compares it -- a dry-run's
+    `total_files_processed` -- rather than by counting the tree here, which
+    would be a second implementation of the exclude rules that could disagree.
+
+    Recorded after a PULL as well as after a push. Without it a pulled box has
+    no count, "no count" means "assume changed", and the box would push a
+    redundant snapshot on every single pass.
+    """
+    with _backup_path(box_index_name, data_path) as (effective_path, _):
+        args = ["backup", "--dry-run", "--json"] + _backup_args(
+            effective_path, excludes
+        )
+        args.append(str(effective_path))
+        returncode, stdout, _ = await run_restic(repo, args, check=False)
+    if returncode != 0:
+        return None
+    for line in stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if message.get("message_type") == "summary":
+            return int(message.get("total_files_processed", 0))
+    return None
+
+
 async def get_status(
     repo: ResticRepo,
     data_path: Path,
@@ -988,6 +1111,8 @@ async def get_status(
     local_snapshot: str | None,
     synced_at_unix: float | None = None,
     excludes: list[str] | None = None,
+    box_index_name: str | None = None,
+    expected_files: int | None = None,
 ) -> ResticStatus:
     """
     Map (remote pointer, local record, local tree) onto a condition.
@@ -1005,6 +1130,8 @@ async def get_status(
         local_snapshot,
         synced_at_unix=synced_at_unix,
         excludes=excludes,
+        box_index_name=box_index_name,
+        expected_files=expected_files,
     )
 
     if local_snapshot == remote_snapshot:
@@ -1032,6 +1159,9 @@ async def get_status(
 class PushResult:
     snapshot_id: str
     source_path: str
+    # How many files the snapshot holds. Recorded in the local state so a later
+    # pass can notice a DELETION, which `backup --dry-run` cannot see.
+    files: int = 0
     # False when this machine could not use the canonical root and backed up
     # through its own path instead. Expected to be True on every machine in the
     # live fleet, so a False is a MACHINE-level fault worth reporting -- a `/tmp`
@@ -1072,6 +1202,7 @@ async def push(
         _, stdout, stderr = await run_restic(repo, args)
 
     snapshot_id = None
+    file_count = 0
     for line in stdout.splitlines():
         try:
             message = json.loads(line)
@@ -1079,6 +1210,7 @@ async def push(
             continue
         if message.get("message_type") == "summary":
             snapshot_id = message.get("snapshot_id")
+            file_count = int(message.get("total_files_processed", 0))
     if not snapshot_id:
         raise ResticError(
             f"restic backup of '{data_path}' reported no snapshot id.\n"
@@ -1092,7 +1224,8 @@ async def push(
             f"recorded source path."
         )
     return PushResult(
-        snapshot_id=snapshot_id, source_path=source, canonical=canonical
+        snapshot_id=snapshot_id, source_path=source, canonical=canonical,
+        files=file_count,
     )
 
 # %%

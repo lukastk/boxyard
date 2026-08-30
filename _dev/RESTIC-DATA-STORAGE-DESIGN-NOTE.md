@@ -437,6 +437,52 @@ no merge. The one improvement is that the losing side's work is never destroyed 
 it can be pushed as its own snapshot and recovered from history, which the plain
 backend cannot offer.
 
+### Two things `backup --dry-run` cannot see, found by implementing it
+
+**Deletions.** A dry-run WALKS the tree, so a file that has been removed is
+simply not visited: measured, deleting one of three files gives `files_new=0,
+files_changed=0, files_unmodified=2` — indistinguishable from a no-op by those
+fields. A box whose only change is a deletion would have reported `SYNCED`
+forever and the deletion would never have left the machine. `total_files_processed`
+does move (3 → 2), so the file count is recorded in the local state whenever a
+snapshot is pushed *or* pulled, and compared on the next check. No extra remote
+call; a record without the count reads as "changed", which costs one sync rather
+than losing a deletion.
+
+**An interrupted restore.** The tree then matches neither snapshot, so change
+detection calls it a local edit and the box reports `CONFLICT` — a conflict no
+person caused, after every interrupted pull. The local state carries a
+`pulling_from` marker for the duration of a restore; seeing it means "resume",
+and this machine owns its own tree so resuming is always safe. This is what
+`SYNC_FROM_REMOTE_INCOMPLETE` means for a restic box, and it is the one
+incomplete-sync condition that survives.
+
+### Adopting a converted box — the most common transition in the migration
+
+A machine that already holds a PLAIN checkout of a box converted elsewhere has
+no restic state record. That is not an edge case: it happens to *every* other
+machine holding the box, on the pass after the conversion.
+
+Without handling it, change detection has no parent, reports every file as new,
+and a replica whose tree is perfectly fine reports `CONFLICT`.
+
+The question to ask is **not** "does this tree differ from the snapshot" — a
+replica that is merely BEHIND differs too, and refusing those would refuse almost
+every machine. It is "did this machine hold unpushed work when the box was
+converted", and the PLAIN sync record answers it exactly:
+`check_last_time_modified` against that record's timestamp is the same test the
+plain backend applied to this box moments earlier.
+
+- No unpushed work → adopt: full restore, record the state, done.
+- Unpushed work → refuse, naming `discard-local` and saying that the work
+  predates the conversion.
+
+**This is a second reason the plain `data.rec` is not deleted during
+conversion**, the first being that its presence makes the interrupted states
+loud. And it gives the migration a precondition worth stating: **convert a box
+only when its replicas are in sync**, or those replicas will refuse and need
+`discard-local`.
+
 ---
 
 ## 5. Ownership — `write_owner` stays optional
@@ -454,6 +500,35 @@ resolves last-write-wins — and the loser's work is still in the repo.
 Forcing ownership on all 594 boxes would mass-assign state to 321 boxes nobody
 chose to claim, which is precisely what `_ownership`'s "unowned means
 unrestricted" rule exists to prevent.
+
+### The canonical path changes what concurrent pushers do — for the worse
+
+Measured after the canonical path landed, and it revises the paragraph above.
+Two machines pushing the same box now record the SAME path, so:
+
+- both `backup` calls take non-exclusive locks and both succeed;
+- each uses its own recorded parent, so the snapshots are SIBLINGS, both valid
+  and both in the repository;
+- the pointer is a plain file, so the **last writer wins**.
+
+The loser's work is still in the repository, but the pointer does not name it —
+and on its next pass that machine's tree matches its own snapshot exactly, so it
+looks *unmodified*, reports `NEEDS_PULL`, and its working tree is replaced.
+Recoverable from the repo until retention forgets that snapshot, but **silent**,
+which is worse than the plain backend, where the same race produces a visible
+conflict.
+
+So the pointer is written with a check: re-read it immediately before writing,
+and if it no longer names the snapshot this push was based on, leave it alone and
+report `CONFLICT`. One extra remote read per push — pushes are rare per box — and
+it turns a silent overwrite into a loud refusal. It NARROWS the race rather than
+closing it: rclone has no compare-and-swap, so a sufficiently exact collision
+still resolves last-write-wins, with both snapshots preserved.
+
+**This strengthens the case for `write_owner` without changing the rule.**
+Unowned still means unrestricted — deliberately, and 321 boxes rely on it — but a
+box two machines actually write is now a box worth claiming, and `doctor`'s
+existing `unowned-box` check is where that belongs.
 
 Where single-writer *does* matter is **`prune`**, which takes an exclusive lock
 and rewrites packs. So:

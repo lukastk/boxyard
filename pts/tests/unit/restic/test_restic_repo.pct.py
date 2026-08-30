@@ -405,7 +405,39 @@ def test_an_unchanged_box_is_not_reported_as_modified(repo, data):
     and silently disables the whole skip filter.
     """
     result = run(push(repo, data))
-    assert run(local_is_modified(repo, data, result.snapshot_id)) is False
+    assert (
+        run(
+            local_is_modified(
+                repo, data, result.snapshot_id, expected_files=result.files
+            )
+        )
+        is False
+    )
+
+
+def test_a_missing_file_count_assumes_changed(repo, data):
+    """
+    `backup --dry-run` cannot see a DELETION, so the file count recorded at push
+    time is what catches one. A state record without it -- written before the
+    field existed -- must therefore read as CHANGED: that costs one redundant
+    snapshot, once, and then the count is recorded. Reading it as unchanged
+    would lose deletions silently and forever.
+    """
+    result = run(push(repo, data))
+    assert run(local_is_modified(repo, data, result.snapshot_id)) is True
+
+
+def test_a_deletion_is_detected_by_the_file_count(repo, data):
+    result = run(push(repo, data))
+    (data / "sub" / "doomed.txt").unlink()
+    assert (
+        run(
+            local_is_modified(
+                repo, data, result.snapshot_id, expected_files=result.files
+            )
+        )
+        is True
+    ), "a deletion-only change was invisible"
 
 
 def test_an_edited_box_is_reported_as_modified(repo, data):
@@ -430,7 +462,14 @@ def test_a_touched_manifest_alone_is_not_a_change(repo, data):
 
     result = run(push(repo, data))
     (data / const.BOX_PERMS_MANIFEST_REL_PATH).write_text('{"version":1,"x":[]}')
-    assert run(local_is_modified(repo, data, result.snapshot_id)) is False
+    assert (
+        run(
+            local_is_modified(
+                repo, data, result.snapshot_id, expected_files=result.files
+            )
+        )
+        is False
+    )
 
 
 # %% [markdown]
@@ -531,6 +570,7 @@ def test_status_is_synced_when_nothing_moved(repo, data):
             data,
             remote_snapshot=result.snapshot_id,
             local_snapshot=result.snapshot_id,
+            expected_files=result.files,
         )
     )
     assert status.condition is ResticCondition.SYNCED
@@ -598,6 +638,7 @@ def test_a_replica_at_a_different_path_is_not_falsely_modified(repo, data, tmp_p
                 dest,
                 first.snapshot_id,
                 synced_at_unix=state["synced_at_unix"],
+                expected_files=first.files,
             )
         )
         is False
@@ -877,7 +918,12 @@ def test_a_replica_on_another_checkout_root_is_not_falsely_modified(
     run(pull(repo, m2, target_snapshot=first.snapshot_id, base_snapshot=None))
 
     assert (
-        run(local_is_modified(repo, m2, first.snapshot_id, box_index_name=idx))
+        run(
+            local_is_modified(
+                repo, m2, first.snapshot_id, box_index_name=idx,
+                expected_files=first.files,
+            )
+        )
         is False
     )
 
@@ -892,7 +938,12 @@ def test_an_edit_on_the_replica_is_still_seen(repo, canon_root, two_machines):
     (m2 / "a.txt").write_text("edited on the replica\n")
 
     assert (
-        run(local_is_modified(repo, m2, first.snapshot_id, box_index_name=idx))
+        run(
+            local_is_modified(
+                repo, m2, first.snapshot_id, box_index_name=idx,
+                expected_files=first.files,
+            )
+        )
         is True
     )
 
