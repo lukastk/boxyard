@@ -330,16 +330,27 @@ def test_the_most_overdue_box_is_synced_first(temp_boxyard):
 
     result = _run_multi_sync(config_path, "--due-only")
 
-    # Rich's Live output orders the final rendered rows by task completion, not
-# task submission. The `(n/N)` schedule number is deliberately stable across
-# that completion race, so assert those numbers rather than string positions.
+    # Two independent sources of flakiness, both handled here:
+    #
+    # 1. Rich's Live output orders the final rendered rows by task COMPLETION,
+    #    not submission, so asserting on where a name appears in the string is
+    #    a race. The `(n/N)` schedule number is stable across it, so assert
+    #    that instead.
+    # 2. Rich emits ANSI when it thinks it has a terminal, and the box name is
+    #    wrapped in it: `(1/3) \x1b[1m2026..._bbb-most\x1b[0m`. A regex with
+    #    `\s+` between the number and the name never matches then, and whether
+    #    it matches at all depends on the environment the suite runs in.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+
     schedule_numbers = {}
     total = len(ages)
     for meta in get_boxyard_meta(config).box_metas:
         match = re.search(
-            rf"\((\d+)/{total}\)\s+{re.escape(meta.index_name)}", result.output
+            rf"\((\d+)/{total}\)\s+{re.escape(meta.index_name)}", plain
         )
-        assert match is not None, f"{meta.index_name} missing from the pass output"
+        assert match is not None, (
+            f"{meta.index_name} missing from the pass output:\n{plain[:400]}"
+        )
         schedule_numbers[meta.name] = int(match.group(1))
 
     # Alphabetical order would give aaa=1, bbb=2, ccc=3. Overdue order is
@@ -349,3 +360,55 @@ def test_the_most_overdue_box_is_synced_first(temp_boxyard):
         "ccc-middling": 2,
         "aaa-slightly": 3,
     }
+
+
+# %% [markdown]
+# ## Interaction with multiple checkout roots
+#
+# The checkout-roots work (0.6.0) made a box's DATA path resolve through
+# `_checkout.local_data_path`, so a box can live in any of several named roots.
+# META and CONF deliberately did NOT move — they stay in `local_store/<sl>/`.
+#
+# That matters for the scheduler, which reads exactly those two: the merge base
+# and `conf/sync.toml`. If META ever became per-root, the skip filter would be
+# comparing against whichever root it happened to look in, and a box checked out
+# twice would get two different answers. This pins the property rather than
+# trusting it, because the checkout work moved a great deal.
+
+# %%
+#|export
+def test_the_scheduler_is_checkout_root_independent(temp_boxyard, tmp_path):
+    """META and CONF stay single-location, so cadence is per BOX, not per root."""
+    from boxyard._enums import BoxPart as _BoxPart
+    from boxyard._models import get_boxyard_meta
+
+    remote_name, _, config, config_path, _ = temp_boxyard
+    index_name = _make_box(config_path, remote_name, "rooted-box", [])
+
+    with open(config_path, "rb") as f:
+        dump = tomllib.load(f)
+    alt = tmp_path / "second-root"
+    alt.mkdir()
+    dump["checkout_roots"] = {"alt": {"path": str(alt)}}
+    dump["sync_policies"] = FLEET
+    config_path.write_text(tomli_w.dumps(dump))
+    config = get_config(config_path)
+
+    meta = next(
+        m for m in get_boxyard_meta(config).box_metas if m.index_name == index_name
+    )
+
+    # DATA is root-aware; META and CONF are not, and must sit under local_store.
+    store = str(config.local_store_path)
+    assert str(meta.get_local_part_path(config, _BoxPart.META)).startswith(store)
+    assert str(meta.get_local_part_path(config, _BoxPart.CONF)).startswith(store)
+
+    # And the scheduler still answers, with ONE entry for the box rather than
+    # one per configured root.
+    from boxyard._sync_policy import due_boxes
+
+    result = due_boxes(config, [meta], _BoxPart.DATA, time.time())
+    assert result.due == [index_name]
+
+    write_check_record(config, index_name, _BoxPart.DATA, time.time())
+    assert due_boxes(config, [meta], _BoxPart.DATA, time.time()).due == []
