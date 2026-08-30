@@ -11,9 +11,9 @@
 //     exactly today's behaviour, where a supervisor loop syncs everything on a
 //     fixed sleep. The feature is opt-in per fleet, and a machine that has not
 //     opted in must not quietly start skipping boxes.
-//  2. Resolution is per DIMENSION, not per policy. A box takes its cadence from
-//     conf/sync.toml and its Compress from the group policy if that is what
-//     each level states. Type and schedule are independent axes.
+//  2. Resolution is per DIMENSION, not per policy. A box takes its DATA cadence
+//     from conf/sync.toml and its META cadence from the group policy if that is
+//     what each level states.
 //  3. Ambiguity is REFUSED, never joined. A box matching two policies that
 //     disagree on one dimension is an error a person settles.
 //
@@ -51,7 +51,7 @@ const BoxSyncConfFilename = "sync.toml"
 // Dimensions a box may override in its own conf/. Kept explicit rather than
 // derived from SyncPolicyConfig because `groups` is a policy-level concept that
 // a single box must not be able to set.
-var boxOverridable = []string{"data_interval", "meta_interval", "compress"}
+var boxOverridable = []string{"data_interval", "meta_interval"}
 
 // SchedulableParts are the parts a cadence can be set for.
 //
@@ -104,7 +104,6 @@ type ResolvedPolicy struct {
 	HasDataInterval     bool
 	MetaIntervalSeconds int
 	HasMetaInterval     bool
-	Compress            bool
 	Sources             map[string]string
 }
 
@@ -250,10 +249,6 @@ func ResolvePolicy(cfg *config.Config, bm *models.BoxMeta) (ResolvedPolicy, erro
 				if p.MetaInterval != "" {
 					out[name] = p.MetaInterval
 				}
-			case "compress":
-				if p.Compress != nil {
-					out[name] = fmt.Sprintf("%v", *p.Compress)
-				}
 			}
 		}
 		return out
@@ -267,11 +262,6 @@ func ResolvePolicy(cfg *config.Config, bm *models.BoxMeta) (ResolvedPolicy, erro
 			return def.DataInterval, "sync_policies.default"
 		case "meta_interval":
 			return def.MetaInterval, "sync_policies.default"
-		case "compress":
-			if def.Compress == nil {
-				return "", "sync_policies.default"
-			}
-			return fmt.Sprintf("%v", *def.Compress), "sync_policies.default"
 		}
 		return "", "unset"
 	}
@@ -304,19 +294,6 @@ func ResolvePolicy(cfg *config.Config, bm *models.BoxMeta) (ResolvedPolicy, erro
 		} else {
 			out.MetaIntervalSeconds, out.HasMetaInterval = seconds, true
 		}
-	}
-	switch resolved["compress"] {
-	case "", "false":
-		out.Compress = false
-		if resolved["compress"] == "" {
-			out.Sources["compress"] = "built-in default (False)"
-		}
-	case "true":
-		out.Compress = true
-	default:
-		return zero, fmt.Errorf(
-			"Box '%s': compress must be true or false (from %s); got %q",
-			bm.IndexName(), sources["compress"], resolved["compress"])
 	}
 	return out, nil
 }

@@ -28,8 +28,6 @@ func testConfig(t *testing.T, policies map[string]*config.SyncPolicyConfig) *con
 	}
 }
 
-func boolPtr(b bool) *bool { return &b }
-
 func testBox(name string, groups ...string) *models.BoxMeta {
 	if groups == nil {
 		groups = []string{}
@@ -44,11 +42,8 @@ func testBox(name string, groups ...string) *models.BoxMeta {
 // The fleet's real shape: cold is archived+dormant, and NOT null.
 func fleetPolicies() map[string]*config.SyncPolicyConfig {
 	return map[string]*config.SyncPolicyConfig{
-		"default": {DataInterval: "6h", MetaInterval: "15m", Compress: boolPtr(false)},
-		"cold": {
-			DataInterval: "7d", Compress: boolPtr(true),
-			Groups: []string{"archived", "dormant"},
-		},
+		"default": {DataInterval: "6h", MetaInterval: "15m"},
+		"cold":    {DataInterval: "7d", Groups: []string{"archived", "dormant"}},
 	}
 }
 

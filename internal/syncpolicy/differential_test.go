@@ -162,7 +162,6 @@ for policies, groups in CASES:
     out.append({
         "data": r.data_interval_seconds,
         "meta": r.meta_interval_seconds,
-        "compress": r.compress,
     })
 print(json.dumps(out))
 `
@@ -188,10 +187,10 @@ func TestResolvePolicyMatchesPython(t *testing.T) {
 	// `default` also naming a group.
 	policySets := []map[string]map[string]any{
 		{},
-		{"default": {"data_interval": "6h", "meta_interval": "15m", "compress": false}},
+		{"default": {"data_interval": "6h", "meta_interval": "15m"}},
 		{
-			"default": {"data_interval": "6h", "meta_interval": "15m", "compress": false},
-			"cold":    {"data_interval": "7d", "compress": false, "groups": []string{"archived", "dormant"}},
+			"default": {"data_interval": "6h", "meta_interval": "15m"},
+			"cold":    {"data_interval": "7d", "meta_interval": "30m", "groups": []string{"archived", "dormant"}},
 		},
 		{
 			"default": {"data_interval": "6h"},
@@ -208,10 +207,7 @@ func TestResolvePolicyMatchesPython(t *testing.T) {
 			"cold":    {"data_interval": "7d", "groups": []string{"archived"}},
 		},
 		{
-			// compress = true is refused by BOTH implementations (nothing packs
-			// a box yet), so the compress dimension is exercised with the
-			// values that are legal: unset on one side, false on the other.
-			"default": {"compress": false},
+			"default": {"meta_interval": "15m"},
 			"plain":   {"data_interval": "1h", "groups": []string{"live"}},
 		},
 	}
@@ -252,7 +248,6 @@ func TestResolvePolicyMatchesPython(t *testing.T) {
 	var want []struct {
 		Data     *int    `json:"data"`
 		Meta     *int    `json:"meta"`
-		Compress *bool   `json:"compress"`
 		Conflict *string `json:"conflict"`
 		Error    *string `json:"error"`
 	}
@@ -309,9 +304,6 @@ func TestResolvePolicyMatchesPython(t *testing.T) {
 			t.Errorf("case %d (%v):\n  python data=%v meta=%v\n  go     data=%v meta=%v",
 				i, c.G, deref(want[i].Data), deref(want[i].Meta), deref(gotData), deref(gotMeta))
 		}
-		if want[i].Compress != nil && got.Compress != *want[i].Compress {
-			t.Errorf("case %d (%v): python compress=%v go=%v", i, c.G, *want[i].Compress, got.Compress)
-		}
 	}
 	if conflicts == 0 {
 		t.Error("no case produced a conflict — the refusal path is not covered")
@@ -340,10 +332,6 @@ func buildConfig(t *testing.T, policies map[string]map[string]any) *config.Confi
 		if v, ok := spec["meta_interval"].(string); ok {
 			p.MetaInterval = v
 		}
-		if v, ok := spec["compress"].(bool); ok {
-			b := v
-			p.Compress = &b
-		}
 		if v, ok := spec["groups"].([]string); ok {
 			p.Groups = v
 		}
@@ -360,98 +348,6 @@ func intPtrEqual(a, b *int) bool {
 }
 
 func deref(p *int) any {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
-const pyCompressRefusalDriver = `
-import json, sys
-from pathlib import Path
-from boxyard.config import Config
-
-BASE = {
-    "config_path": Path("/tmp/x/config.toml"),
-    "default_storage_location": "remote",
-    "boxyard_data_path": Path("/tmp/nope"),
-    "box_timestamp_format": "date_only",
-    "user_boxes_path": Path("/tmp/boxes"),
-    "user_box_groups_path": Path("/tmp/box-groups"),
-    "storage_locations": {"remote": {"storage_type": "local", "store_path": "/tmp/store"}},
-    "box_groups": {}, "virtual_box_groups": {}, "default_box_groups": [],
-    "box_subid_character_set": "abcdefghijklmnopqrstuvwxyz0123456789",
-    "box_subid_length": 5, "max_concurrent_rclone_ops": 3,
-}
-
-out = []
-for compress in json.load(sys.stdin):
-    policy = {"data_interval": "7d"}
-    if compress is not None:
-        policy["compress"] = compress
-    try:
-        Config(**{**BASE, "sync_policies": {"cold": policy}})
-        out.append(True)
-    except Exception:
-        out.append(False)
-print(json.dumps(out))
-`
-
-// TestCompressRefusalMatchesPython pins that both implementations refuse
-// `compress = true` and accept false/unset.
-//
-// It matters because the two disagree LOUDLY only here: if the Go accepted it,
-// a Go machine would run a config the Python machines refuse to start with,
-// and the fleet would split on whether boxyard runs at all.
-func TestCompressRefusalMatchesPython(t *testing.T) {
-	py := pyref.Bin()
-	if py == "" {
-		t.Skip("no interpreter that can import boxyard")
-	}
-	if !pyref.HasSymbol("boxyard._sync_policy", "resolve_policy") {
-		t.Skip("installed boxyard predates the sync-policy config")
-	}
-
-	cases := []*bool{nil, boolPtr(false), boolPtr(true)}
-	payload, err := json.Marshal(cases)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(py, "-c", pyCompressRefusalDriver)
-	cmd.Stdin = bytes.NewReader(payload)
-	out, err := cmd.Output()
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			t.Fatalf("python driver failed: %v\n%s", err, ee.Stderr)
-		}
-		t.Fatal(err)
-	}
-	var pyAccepted []bool
-	if err := json.Unmarshal(out, &pyAccepted); err != nil {
-		t.Fatalf("decoding %q: %v", out, err)
-	}
-	if len(pyAccepted) != len(cases) {
-		t.Fatalf("python answered %d cases, %d asked", len(pyAccepted), len(cases))
-	}
-
-	for i, compress := range cases {
-		policy := &config.SyncPolicyConfig{DataInterval: "7d", Compress: compress}
-		goAccepted := policy.Validate("cold") == nil
-		if goAccepted != pyAccepted[i] {
-			t.Errorf("compress=%v: python accepted=%v, go accepted=%v",
-				derefBool(compress), pyAccepted[i], goAccepted)
-		}
-	}
-	// Guard against a vacuous comparison.
-	if pyAccepted[2] {
-		t.Error("python accepted compress=true — the refusal is gone")
-	}
-	if !pyAccepted[0] || !pyAccepted[1] {
-		t.Error("python refused unset/false — the refusal is too broad")
-	}
-}
-
-func derefBool(p *bool) any {
 	if p == nil {
 		return nil
 	}

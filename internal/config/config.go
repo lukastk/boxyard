@@ -172,13 +172,19 @@ func ParseInterval(text, where string) (int, error) {
 //
 // Every field is OPTIONAL and unset means "not stated at this level" rather
 // than "off" — that is what makes resolution work per DIMENSION, so a box can
-// take its cadence from conf/sync.toml and its Compress from the group policy.
-// Pointers rather than bare values, because Go's zero value cannot distinguish
-// "false" from "not stated" and that distinction is the whole mechanism.
+// take its DATA cadence from conf/sync.toml and its META cadence from the group
+// policy.
+//
+// There is deliberately NO Compress field. Compression is a property of the
+// storage BACKEND, not a scheduling policy: a restic-backed box is compressed
+// and deduplicated because that is what the backend does, and no per-box knob
+// would change it. Measured on jackfruit-hq: 687,876 remote objects -> 56,
+// 7.52 GiB -> 0.72 GiB. A choice of BACKEND may well be wanted, but that is
+// StorageFormat, a different field answering a different question, and it
+// belongs with the code that can honour it.
 type SyncPolicyConfig struct {
 	DataInterval string   `toml:"data_interval"`
 	MetaInterval string   `toml:"meta_interval"`
-	Compress     *bool    `toml:"compress"`
 	Groups       []string `toml:"groups"`
 }
 
@@ -201,29 +207,9 @@ func (p *SyncPolicyConfig) IntervalSeconds(part, policyName string) (int, bool, 
 
 // validate refuses a policy this build cannot honour.
 //
-// `compress = true` is REFUSED, loudly, because nothing implements it yet. The
-// field is specified — the cadence design depends on the policy model having a
-// place for it — but no code packs a box. Accepting the key would mean a config
-// that says "archived boxes are compressed" while every archived box stays a
-// plain tree, discoverable only by going and looking at the remote. A setting
-// that silently does nothing is worse than either implementing it or refusing
-// it; this is the refusal, and it keeps the port in step with the Python, which
-// refuses it in a pydantic validator.
-//
+
 // TODO(cleanup): drop this check — when packing is actually implemented, or
 // when the decision not to implement it is final and the field is removed.
-// Validate is exported so the differential can compare the refusal against the
-// Python without going through a full config load.
-func (p *SyncPolicyConfig) Validate(name string) error {
-	if p.Compress != nil && *p.Compress {
-		return fmt.Errorf(
-			"sync_policies.%s.compress = true is not implemented yet: no code packs "+
-				"a box, so setting it would silently do nothing. Leave it unset or "+
-				"false. See _dev/SYNC-CADENCE-DESIGN-NOTE.md.", name)
-	}
-	return nil
-}
-
 // BoxGroupConfig configures a real (membership-based) box group.
 type BoxGroupConfig struct {
 	SymlinkName    string            `toml:"symlink_name"`
@@ -475,11 +461,6 @@ func (c *Config) Validate() error {
 	if _, ok := c.StorageLocations[c.DefaultStorageLocation]; !ok {
 		return strict.Invalid(t, "default_storage_location",
 			fmt.Sprintf("default_storage_location '%s' not found in storage_locations", c.DefaultStorageLocation))
-	}
-	for name, p := range c.SyncPolicies {
-		if err := p.Validate(name); err != nil {
-			return err
-		}
 	}
 	for name, g := range c.BoxGroups {
 		if err := naming.ValidateGroupName(name); err != nil {
