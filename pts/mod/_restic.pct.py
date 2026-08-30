@@ -62,6 +62,7 @@ from nblite import nbl_export, show_doc; nbl_export();
 
 # %%
 #|export
+import contextlib
 import json
 import os
 import shutil
@@ -304,6 +305,136 @@ async def repo_exists(repo: ResticRepo) -> bool:
         repo, ["cat", "config"], timeout=const.RESTIC_METADATA_TIMEOUT, check=False
     )
     return returncode == 0
+
+# %% [markdown]
+# ## The canonical path
+#
+# restic records the path **as given** and does not resolve symlinks. So if every
+# machine backs a box up through the same fixed path string, every machine
+# records the same path -- and `--parent` and `restic diff`, both of which match
+# BY PATH, work across machines whose checkout roots differ. Without this,
+# `~/dev/<box>` is `/Users/lukastk/...` on the Macs and `/home/lukastk/...` on
+# Linux, and every cross-OS replica is permanently unmatchable.
+#
+# **The symlink must be an INTERMEDIATE component, never the final one.**
+# Measured, and the difference is silent:
+#
+# | argument | recorded path | files archived |
+# |---|---|---|
+# | a real directory | its own path | all of them |
+# | a SYMLINK to the box | the symlink path | **0 -- it archives the link itself** |
+# | `<symlink to parent>/<box>` | the unresolved path | all of them |
+#
+# So the link points at the box's PARENT and the box's own name is the final
+# component: `<canonical root>/<index_name>` -> `<checkout root>`, and the backup
+# argument is `<canonical root>/<index_name>/<index_name>`. The box directory is
+# named for its index name, which is unique across the yard, so two boxes can
+# never collide on one canonical name.
+#
+# `--ignore-inode` is REQUIRED with this. Two machines never share inodes, and
+# restic compares them by default, so a replica that obtained its copy by
+# restoring reports every file `changed` without it. Measured: `changed=2,
+# unmodified=0` by default against `changed=0, unmodified=2` with the flag, and a
+# genuine edit is still seen (`changed=1, unmodified=1`).
+#
+# Verified on macOS as well as Linux: `/tmp` is itself a symlink to `private/tmp`
+# there, and the path is still recorded verbatim.
+#
+# **One machine cannot do this: termux.** It runs as an untrusted_app uid and can
+# write to no fixed absolute path -- `/tmp` (mode 0771, owned by `shell`),
+# `/var/tmp` and `/data/local/tmp` are all refused. It holds boxes, so the
+# fallbacks below are not decoration; see `parent_is_usable`.
+
+# %%
+#|export
+class CanonicalRootUnavailable(Exception):
+    """
+    The canonical root cannot be used on this machine.
+
+    Raised rather than worked around, because silently backing up through the
+    real path instead would record a path no other machine can match, and the
+    damage (every other machine falling back to full restores) would show up
+    somewhere else entirely.
+    """
+
+
+def canonical_root() -> Path:
+    """
+    The fixed directory every box is backed up through, created 0700 and
+    validated.
+
+    `/tmp` is world-writable and sticky on every machine in this fleet, so a
+    hostile or stale entry could otherwise redirect a backup -- or a restore --
+    outside the box. The root must therefore be a real directory, not a symlink,
+    owned by us, and not group- or world-writable. Anything else is refused.
+    """
+    root = Path(const.RESTIC_CANONICAL_ROOT)
+    if root.is_symlink():
+        raise CanonicalRootUnavailable(
+            f"'{root}' is a symlink. It must be a real directory owned by this "
+            f"user; refusing to back up through it."
+        )
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as exc:
+        raise CanonicalRootUnavailable(
+            f"cannot create the canonical restic root '{root}': {exc}"
+        ) from exc
+    stat = root.stat()
+    if not root.is_dir():
+        raise CanonicalRootUnavailable(f"'{root}' exists and is not a directory.")
+    if hasattr(os, "geteuid") and stat.st_uid != os.geteuid():
+        raise CanonicalRootUnavailable(
+            f"'{root}' is owned by uid {stat.st_uid}, not by this user "
+            f"({os.geteuid()}). Refusing to back up through it."
+        )
+    if stat.st_mode & 0o077:
+        raise CanonicalRootUnavailable(
+            f"'{root}' is mode {stat.st_mode & 0o777:o}; it must not be readable "
+            f"or writable by group or other."
+        )
+    return root
+
+
+def canonical_data_path(box_index_name: str) -> Path:
+    """
+    The path a box is ALWAYS backed up through, on every machine.
+
+    Note the index name appears twice, and that is the point: the first is the
+    symlink (pointing at this machine's checkout root), the second is the box's
+    own directory inside it. A symlink as the FINAL component would archive the
+    link and nothing else.
+    """
+    return Path(const.RESTIC_CANONICAL_ROOT) / box_index_name / box_index_name
+
+
+@contextlib.contextmanager
+def canonical_link(box_index_name: str, data_path: Path):
+    """
+    Point the canonical path at `data_path` for the duration of one operation.
+
+    Re-pointed ATOMICALLY on every use, never created-only-if-missing: a crashed
+    run can leave a link aimed at a checkout root the box has since left, and
+    silently backing up the old location would be worse than any failure. Costs
+    0.033 ms, measured.
+    """
+    data_path = Path(data_path).resolve()
+    if data_path.name != box_index_name:
+        raise CanonicalRootUnavailable(
+            f"'{data_path}' is not named for its box ('{box_index_name}'), so the "
+            f"canonical path cannot be formed. This is a boxyard bug, not a "
+            f"user error."
+        )
+    root = canonical_root()
+    link = root / box_index_name
+    tmp = root / f".tmp-{box_index_name}-{os.getpid()}"
+    tmp.unlink(missing_ok=True)
+    os.symlink(data_path.parent, tmp)
+    os.replace(tmp, link)
+    try:
+        yield canonical_data_path(box_index_name)
+    finally:
+        link.unlink(missing_ok=True)
 
 # %% [markdown]
 # ## Trap 1: exclude and include anchor by OPPOSITE rules
@@ -662,6 +793,46 @@ def tree_modified_since(data_path: Path, since_unix: float) -> bool:
     return last_modified.timestamp() > since_unix
 
 
+@contextlib.contextmanager
+def _backup_path(box_index_name: str | None, data_path: Path):
+    """
+    The path restic should be pointed at, and whether it is the canonical one.
+
+    Falls back to the real path when the canonical root is unavailable -- which
+    on this fleet means termux, and only termux. Falling back DEGRADES (every
+    other machine loses `--parent` matching and diff-based pulls for this box)
+    but stays CORRECT, because `parent_is_usable` and `PullMode.FULL_PATH_MISMATCH`
+    both key off the recorded path. Refusing instead would leave that machine
+    unable to save work at all, which is worse; the caller is told which path was
+    used so `doctor` can report it.
+    """
+    if box_index_name is None:
+        yield Path(data_path), False
+        return
+    try:
+        with canonical_link(box_index_name, data_path) as canonical:
+            yield canonical, True
+    except CanonicalRootUnavailable:
+        yield Path(data_path), False
+
+
+def _backup_args(effective_path: Path, excludes: list[str] | None) -> list[str]:
+    """
+    Flags shared by the real backup and the dry-run used for change detection.
+    The two MUST agree, or a box looks modified in one and clean in the other.
+
+    `--ignore-inode` is not optional. Two machines never share inodes and restic
+    compares them by default, so a replica that obtained its copy by restoring
+    reports every file `changed` without it -- measured, `changed=2 unmodified=0`
+    against `changed=0 unmodified=2` with the flag. A genuine edit is still seen.
+    """
+    args = ["--no-scan", "--ignore-inode"]
+    args += data_root_exclude_args(effective_path)
+    for pattern in excludes or []:
+        args += ["--exclude", pattern]
+    return args
+
+
 async def local_is_modified(
     repo: ResticRepo,
     data_path: Path,
@@ -669,27 +840,31 @@ async def local_is_modified(
     *,
     synced_at_unix: float | None = None,
     excludes: list[str] | None = None,
+    box_index_name: str | None = None,
 ) -> bool:
     """
     Does this machine hold DATA changes the remote has not seen?
     """
-    if parent_snapshot and not await parent_is_usable(repo, parent_snapshot, data_path):
-        if synced_at_unix is None:
-            # No timestamp either: a record written before this field existed.
-            # Now we genuinely cannot tell, and "assume changed" is the safe
-            # direction -- it costs a sync, never a wrong skip.
-            return True
-        return tree_modified_since(data_path, synced_at_unix)
+    with _backup_path(box_index_name, data_path) as (effective_path, _):
+        if parent_snapshot and not await parent_is_usable(
+            repo, parent_snapshot, effective_path
+        ):
+            if synced_at_unix is None:
+                # No timestamp either: a record written before this field
+                # existed. Now we genuinely cannot tell, and "assume changed" is
+                # the safe direction -- it costs a sync, never a wrong skip.
+                return True
+            return tree_modified_since(data_path, synced_at_unix)
 
-    args = ["backup", "--dry-run", "--no-scan", "--json"]
-    args += data_root_exclude_args(data_path)
-    for pattern in excludes or []:
-        args += ["--exclude", pattern]
-    if parent_snapshot:
-        args += ["--parent", parent_snapshot]
-    args.append(str(data_path))
+        args = ["backup", "--dry-run", "--json"] + _backup_args(
+            effective_path, excludes
+        )
+        if parent_snapshot:
+            args += ["--parent", parent_snapshot]
+        args.append(str(effective_path))
 
-    returncode, stdout, _ = await run_restic(repo, args, check=False)
+        returncode, stdout, _ = await run_restic(repo, args, check=False)
+
     if returncode != 0:
         return True  # cannot tell -> assume changed
 
@@ -788,6 +963,11 @@ async def get_status(
 class PushResult:
     snapshot_id: str
     source_path: str
+    # False when this machine could not use the canonical root and backed up
+    # through its own path instead. The box still syncs, but every other machine
+    # loses `--parent` matching and diff-based pulls for it until a machine that
+    # CAN use the canonical root pushes again. `doctor` should say so.
+    canonical: bool = True
 
 
 async def push(
@@ -797,6 +977,7 @@ async def push(
     parent: str | None = None,
     excludes: list[str] | None = None,
     exclude_file: Path | None = None,
+    box_index_name: str | None = None,
 ) -> PushResult:
     """
     Back the box's DATA up. Returns the new snapshot id and the path it records.
@@ -805,17 +986,15 @@ async def push(
     caller does that, so the ordering (snapshot first, then pointer, then local
     state) stays visible at the call site rather than buried here.
     """
-    args = ["backup", "--no-scan", "--json"]
-    args += data_root_exclude_args(data_path)
-    for pattern in excludes or []:
-        args += ["--exclude", pattern]
-    if exclude_file is not None:
-        args += ["--exclude-file", str(exclude_file)]
-    if parent:
-        args += ["--parent", parent]
-    args.append(str(data_path))
+    with _backup_path(box_index_name, data_path) as (effective_path, canonical):
+        args = ["backup", "--json"] + _backup_args(effective_path, excludes)
+        if exclude_file is not None:
+            args += ["--exclude-file", str(exclude_file)]
+        if parent:
+            args += ["--parent", parent]
+        args.append(str(effective_path))
 
-    _, stdout, stderr = await run_restic(repo, args)
+        _, stdout, stderr = await run_restic(repo, args)
 
     snapshot_id = None
     for line in stdout.splitlines():
@@ -837,7 +1016,9 @@ async def push(
             f"restic backup created snapshot {snapshot_id} but it has no "
             f"recorded source path."
         )
-    return PushResult(snapshot_id=snapshot_id, source_path=source)
+    return PushResult(
+        snapshot_id=snapshot_id, source_path=source, canonical=canonical
+    )
 
 # %% [markdown]
 # ## Pull

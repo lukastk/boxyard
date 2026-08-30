@@ -30,11 +30,15 @@ from pathlib import Path
 import pytest
 
 from boxyard._restic import (
+    CanonicalRootUnavailable,
     PullMode,
     ResticCondition,
     ResticError,
     ResticRepo,
     anchored_include_args,
+    canonical_data_path,
+    canonical_link,
+    canonical_root,
     get_status,
     init_repo,
     latest_snapshot_id,
@@ -706,3 +710,280 @@ def test_the_snapshot_filename_is_the_snapshot_id(repo, data):
     result = run(push(repo, data))
     names = {p.name for p in (Path(repo.url) / "snapshots").iterdir()}
     assert result.snapshot_id in names
+
+
+# %% [markdown]
+# ## The canonical path
+#
+# restic records the path AS GIVEN and does not resolve symlinks, so backing
+# every box up through one fixed path string makes `--parent` and `restic diff`
+# -- both of which match BY PATH -- work across machines whose checkout roots
+# differ. That is the difference between exact change detection for every
+# replica and a fallback that only serves the machine that last pushed.
+
+# %%
+#|export
+@pytest.fixture
+def canon_root(tmp_path, monkeypatch):
+    """A private canonical root, so tests never touch the real /tmp one."""
+    root = tmp_path / "canon"
+    monkeypatch.setattr("boxyard.const.RESTIC_CANONICAL_ROOT", str(root))
+    monkeypatch.setattr("boxyard._restic.const.RESTIC_CANONICAL_ROOT", str(root))
+    return root
+
+
+def test_the_canonical_path_repeats_the_index_name(canon_root):
+    """
+    The first is the SYMLINK (pointing at this machine's checkout root), the
+    second is the box's own directory. A symlink as the FINAL component would
+    archive the link and nothing else -- 0 files.
+    """
+    path = canonical_data_path("20260101_abc__demo")
+    assert path.parent.name == "20260101_abc__demo"
+    assert path.name == "20260101_abc__demo"
+
+
+def test_canonical_root_is_created_private(canon_root):
+    root = canonical_root()
+    assert root.is_dir()
+    assert root.stat().st_mode & 0o077 == 0, "the root must not be group/other accessible"
+
+
+def test_canonical_root_refuses_a_symlink(canon_root, tmp_path):
+    """
+    /tmp is world-writable and sticky on every machine in this fleet, so a
+    hostile or stale symlink there could redirect a backup -- or a restore --
+    outside the box.
+    """
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    # 0700 and owned by us, so ONLY the symlink check can reject this. Without
+    # that, the mode check would catch it and the test would pass for the wrong
+    # reason -- which is what mutation testing caught.
+    os.symlink(elsewhere, canon_root)
+    with pytest.raises(CanonicalRootUnavailable):
+        canonical_root()
+
+
+def test_canonical_root_refuses_a_world_writable_directory(canon_root):
+    canon_root.mkdir(parents=True)
+    canon_root.chmod(0o777)
+    with pytest.raises(CanonicalRootUnavailable):
+        canonical_root()
+
+
+def test_canonical_link_is_repointed_every_time(canon_root, tmp_path):
+    first = tmp_path / "rootA" / "20260101_abc__demo"
+    second = tmp_path / "rootB" / "20260101_abc__demo"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+
+    with canonical_link("20260101_abc__demo", first) as path:
+        assert path.resolve() == first.resolve()
+    with canonical_link("20260101_abc__demo", second) as path:
+        assert path.resolve() == second.resolve()
+
+
+def test_a_stale_canonical_link_is_overwritten(canon_root, tmp_path):
+    """
+    The case a normal re-point test misses, because the context manager cleans
+    up after itself: a link left behind by a CRASHED run, aimed at a checkout
+    root the box has since left. Creating the link only when missing would back
+    up the old location and say nothing.
+    """
+    old_root = tmp_path / "rootA" / "20260101_abc__demo"
+    new_root = tmp_path / "rootB" / "20260101_abc__demo"
+    old_root.mkdir(parents=True)
+    new_root.mkdir(parents=True)
+    (old_root / "stale.txt").write_text("the box used to live here\n")
+    (new_root / "current.txt").write_text("it lives here now\n")
+
+    canonical_root().mkdir(parents=True, exist_ok=True)
+    os.symlink(old_root.parent, canon_root / "20260101_abc__demo")
+
+    with canonical_link("20260101_abc__demo", new_root) as path:
+        assert (path / "current.txt").exists(), "the stale link was not replaced"
+        assert not (path / "stale.txt").exists()
+
+
+def test_canonical_link_is_cleaned_up(canon_root, tmp_path):
+    box = tmp_path / "root" / "20260101_abc__demo"
+    box.mkdir(parents=True)
+    with canonical_link("20260101_abc__demo", box):
+        assert (canon_root / "20260101_abc__demo").is_symlink()
+    assert not (canon_root / "20260101_abc__demo").exists()
+    assert list(canon_root.iterdir()) == []
+
+
+def test_two_boxes_never_collide_on_one_canonical_name(canon_root, tmp_path):
+    """Index names are unique across the yard, so the links are too."""
+    a = tmp_path / "root" / "20260101_aaa__one"
+    b = tmp_path / "root" / "20260101_bbb__two"
+    a.mkdir(parents=True)
+    b.mkdir(parents=True)
+    with canonical_link("20260101_aaa__one", a) as pa:
+        with canonical_link("20260101_bbb__two", b) as pb:
+            assert pa != pb
+            assert pa.resolve() == a.resolve()
+            assert pb.resolve() == b.resolve()
+
+
+def test_canonical_link_refuses_a_box_not_named_for_its_index(canon_root, tmp_path):
+    odd = tmp_path / "root" / "some-other-name"
+    odd.mkdir(parents=True)
+    with pytest.raises(CanonicalRootUnavailable):
+        with canonical_link("20260101_abc__demo", odd):
+            pass
+
+
+# %% [markdown]
+# ## The reason it exists: two checkout roots, one repo
+#
+# Simulates two machines by pointing the canonical link at each in turn -- which
+# is exactly what two machines using the same canonical string would produce.
+
+# %%
+#|export
+@pytest.fixture
+def two_machines(tmp_path):
+    """Identical content under two different 'checkout roots'."""
+    idx = "20260101_abc__demo"
+    m1 = tmp_path / "m1" / "dev" / idx
+    m2 = tmp_path / "m2" / "hetzner_volume" / "boxes" / idx
+    for d in (m1, m2):
+        (d / "sub").mkdir(parents=True)
+        (d / "a.txt").write_text("hello\n")
+        (d / "sub" / "b.txt").write_text("world\n")
+    return idx, m1, m2
+
+
+def test_a_replica_on_another_checkout_root_is_not_falsely_modified(
+    repo, canon_root, two_machines
+):
+    """
+    THE test this whole mechanism exists for. Machine 1 pushes; machine 2
+    restores onto a DIFFERENT checkout root and must read as unmodified.
+
+    Without the canonical path `--parent` cannot find the tree at all
+    (files_new = everything). Without `--ignore-inode` it finds it but calls
+    every file changed, because two machines never share inodes.
+    """
+    idx, m1, m2 = two_machines
+    first = run(push(repo, m1, box_index_name=idx))
+    assert first.canonical is True
+
+    shutil.rmtree(m2)
+    m2.mkdir(parents=True)
+    run(pull(repo, m2, target_snapshot=first.snapshot_id, base_snapshot=None))
+
+    assert (
+        run(local_is_modified(repo, m2, first.snapshot_id, box_index_name=idx))
+        is False
+    )
+
+
+def test_an_edit_on_the_replica_is_still_seen(repo, canon_root, two_machines):
+    idx, m1, m2 = two_machines
+    first = run(push(repo, m1, box_index_name=idx))
+    shutil.rmtree(m2)
+    m2.mkdir(parents=True)
+    run(pull(repo, m2, target_snapshot=first.snapshot_id, base_snapshot=None))
+
+    (m2 / "a.txt").write_text("edited on the replica\n")
+
+    assert (
+        run(local_is_modified(repo, m2, first.snapshot_id, box_index_name=idx))
+        is True
+    )
+
+
+def test_both_machines_record_the_same_source_path(repo, canon_root, two_machines):
+    idx, m1, m2 = two_machines
+    first = run(push(repo, m1, box_index_name=idx))
+    second = run(push(repo, m2, box_index_name=idx, parent=first.snapshot_id))
+    assert first.source_path == second.source_path == str(canonical_data_path(idx))
+
+
+def test_a_diff_pull_works_across_checkout_roots(repo, canon_root, two_machines):
+    """
+    With matching source paths the pull takes the DIFF path instead of falling
+    back to a full restore -- 3.1 s against 14-65 s on a 134k-file box.
+    """
+    idx, m1, m2 = two_machines
+    first = run(push(repo, m1, box_index_name=idx))
+    shutil.rmtree(m2)
+    m2.mkdir(parents=True)
+    run(pull(repo, m2, target_snapshot=first.snapshot_id, base_snapshot=None))
+
+    (m1 / "a.txt").write_text("moved on\n")
+    second = run(push(repo, m1, box_index_name=idx, parent=first.snapshot_id))
+
+    outcome = run(
+        pull(
+            repo,
+            m2,
+            target_snapshot=second.snapshot_id,
+            base_snapshot=first.snapshot_id,
+        )
+    )
+    assert outcome.mode is PullMode.DIFF
+    assert tree(m2) == tree(m1)
+
+
+def test_the_exclude_anchors_under_the_canonical_path(repo, canon_root, two_machines):
+    """
+    The excludes must anchor on the path restic actually WALKS, which is now the
+    canonical one. Anchoring on the real path excludes nothing.
+    """
+    from boxyard import const
+
+    idx, m1, _ = two_machines
+    (m1 / const.BOX_PERMS_MANIFEST_REL_PATH).write_text('{"version":1}')
+    (m1 / "sub" / const.BOX_PERMS_MANIFEST_REL_PATH).write_text('{"nested":1}')
+
+    result = run(push(repo, m1, box_index_name=idx))
+    _, listing, _ = run(run_restic(repo, ["ls", result.snapshot_id]))
+    manifests = [
+        line for line in listing.splitlines()
+        if line.strip().endswith(const.BOX_PERMS_MANIFEST_REL_PATH)
+    ]
+    assert len(manifests) == 1
+    assert manifests[0].endswith(f"sub/{const.BOX_PERMS_MANIFEST_REL_PATH}")
+
+
+def test_a_machine_without_a_canonical_root_can_still_pull(
+    repo, canon_root, two_machines, monkeypatch
+):
+    """
+    The termux story, and the reassuring half of it. `restore <snap>:<source>`
+    needs the source only as a STRING recorded in the repo -- the path need not
+    exist on the restoring machine. So a machine that cannot create the
+    canonical root reads everything normally; only its pushes degrade.
+    """
+    idx, m1, m2 = two_machines
+    first = run(push(repo, m1, box_index_name=idx))
+    assert first.canonical is True
+
+    monkeypatch.setattr(
+        "boxyard._restic.const.RESTIC_CANONICAL_ROOT", "/proc/cannot-create-me"
+    )
+    shutil.rmtree(m2)
+    run(pull(repo, m2, target_snapshot=first.snapshot_id, base_snapshot=None))
+    assert tree(m2) == tree(m1)
+
+
+def test_a_machine_without_a_canonical_root_still_pushes(
+    repo, two_machines, monkeypatch
+):
+    """
+    termux runs as an untrusted_app uid and can write to NO fixed absolute path.
+    It must still be able to save work; the cost is that other machines lose
+    `--parent` matching for that box until one of them pushes again.
+    """
+    idx, m1, _ = two_machines
+    monkeypatch.setattr(
+        "boxyard._restic.const.RESTIC_CANONICAL_ROOT", "/proc/cannot-create-me"
+    )
+    result = run(push(repo, m1, box_index_name=idx))
+    assert result.canonical is False
+    assert result.source_path == str(m1)

@@ -83,6 +83,18 @@ BOX_SNAPSHOT_POINTER_REL_PATH = "data.snapshot"
 # THIS machine.
 RESTIC_STATE_REL_PATH = "restic_state"
 
+# The fixed absolute path every machine backs a box up THROUGH, so that every
+# machine records the SAME path string in its snapshots. restic records the path
+# as GIVEN -- it does not resolve symlinks -- so a symlink at a constant location
+# makes `--parent` and `restic diff` work across machines whose checkout roots
+# differ. Verified on Linux and on macOS, where /tmp is itself a symlink to
+# private/tmp and the path is still recorded verbatim.
+#
+# Must be a fixed STRING, so it cannot live under $HOME (/home/... vs /Users/...).
+# /tmp is world-writable everywhere, so the root is created 0700 and validated as
+# a real, self-owned directory before every use -- see `_restic.canonical_root`.
+RESTIC_CANONICAL_ROOT = "/tmp/boxyard-restic"
+
 ENV_VAR_BOXYARD_RESTIC = "BOXYARD_RESTIC"  # explicit full path to the restic binary
 ENV_VAR_BOXYARD_RESTIC_PASSWORD = "BOXYARD_RESTIC_PASSWORD"
 

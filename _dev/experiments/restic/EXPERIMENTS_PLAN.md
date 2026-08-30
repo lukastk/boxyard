@@ -254,6 +254,35 @@ before it is needed rather than during an incident.
 - **Neither `forget` nor `prune` ever runs in the sync loop.** Both take
   exclusive locks (measured).
 
+### `07_canonical_path` — `done` (2026-08-30)
+
+**Question:** can a fixed canonical path make every machine record the same
+snapshot path, removing the whole absolute-path problem rather than working
+around it?
+
+**Findings — yes, on 5 of 6 machines.**
+- A symlink as the FINAL path component archives the LINK: a 0-file snapshot,
+  silently. As an INTERMEDIATE component it is recorded unresolved AND traversed.
+  So the shape is `<canon>/<index_name>/<index_name>`, link then real directory.
+- `--ignore-inode` is required: two machines never share inodes, so a restored
+  replica reports `changed=2 unmodified=0` without it and `changed=0
+  unmodified=2` with it, while a genuine edit is still seen.
+- Verified on macOS (macstudio, via a throwaway restic binary, removed
+  afterwards): `/tmp` is itself a symlink to `private/tmp` there and the path is
+  still recorded verbatim.
+- `/tmp` is `drwxrwxrwt` on mymain, ideapad and macOS, so the root must be
+  created 0700 and validated as a real, self-owned directory before use.
+- Atomic re-point costs 0.033 ms.
+- **termux cannot participate**: untrusted_app uid, and `/tmp` (0771, owned by
+  `shell`), `/var/tmp` and `/data/local/tmp` are all unwritable. It holds 3
+  boxes. It can still PULL normally; only its pushes degrade.
+
+**Decision:** adopt the canonical path; KEEP `parent_is_usable` and
+`PullMode.FULL_PATH_MISMATCH` as the correctness backstop, because termux and
+any pre-conversion snapshot still produce mismatched paths.
+
+---
+
 ## Still to decide
 
 - Retention: the ladder numbers. Proposed `retention = "90d"` expanding to

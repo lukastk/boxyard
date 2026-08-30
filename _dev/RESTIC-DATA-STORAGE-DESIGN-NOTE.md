@@ -245,13 +245,63 @@ perfect and only the *diff* is useless). This is live here: mymain already has
 two checkout roots (`~/dev`, `~/hetzner_volume/boxes`) and the Macs use
 `/Users/lukastk`. A naive diff-driven pull would delete the tree and restore it.
 
-Four normalisation routes were tested and all are dead: `backup --set-path` does
+Five normalisation routes were tested. Four are dead: `backup --set-path` does
 not exist; `rewrite` changes host and time but not paths; `cd <box> && backup .`
-still records the absolute path; backing up a symlink at a fixed canonical path
-records the fixed path but archives *the symlink* (0 B snapshot). A bind mount
-would work and needs root — rejected.
+still records the absolute path; a bind mount would work and needs root.
 
-The fix, verified:
+**The fifth works, and it is what the implementation does.** A symlink as the
+FINAL path component records the fixed path but archives *the symlink itself* —
+a 0-file snapshot, silently. A symlink as an **intermediate** component is
+recorded unresolved AND traversed:
+
+| argument | recorded path | files archived |
+|---|---|---|
+| a real directory | its own path | all of them |
+| a symlink to the box | the symlink's path | **0 — it archives the link** |
+| `<symlink to the parent>/<box>` | the unresolved path | all of them |
+
+So every machine backs a box up through
+`/tmp/boxyard-restic/<index_name>/<index_name>`: the first component is a
+symlink to that machine's checkout root, the second is the box's own directory.
+Every machine records the identical string, and `--parent` and `restic diff` —
+both of which match by path — work across differing checkout roots. Verified on
+macOS too, where `/tmp` is itself a symlink to `private/tmp` and the path is
+still recorded verbatim.
+
+Two conditions come with it, both measured:
+
+- **`--ignore-inode` is required.** Two machines never share inodes and restic
+  compares them by default, so a replica that obtained its copy by restoring
+  reports every file `changed` — `changed=2 unmodified=0` against
+  `changed=0 unmodified=2` with the flag, while a genuine edit is still seen.
+- **The canonical root must be validated, not merely created.** `/tmp` is
+  world-writable and sticky everywhere here (`drwxrwxrwt` on mymain, ideapad and
+  macOS's `/private/tmp`), so it is created `0700` and refused unless it is a
+  real directory, not a symlink, owned by this user, and not group- or
+  world-accessible. Otherwise a hostile or stale entry could redirect a backup —
+  or a `restore --target` — outside the box.
+
+Index names are unique, so two boxes never collide on one canonical name, and
+the link is re-pointed **atomically before every use** (0.033 ms) rather than
+created-if-missing: a crashed run can leave a link aimed at a checkout root the
+box has since left, and silently backing up the old location would be worse than
+any failure.
+
+**One machine cannot do this: termux.** It runs as an untrusted_app uid and can
+write to no fixed absolute path — `/tmp` (mode 0771, owned by `shell`),
+`/var/tmp` and `/data/local/tmp` are all refused, and its writable areas are all
+under `/data/data/com.termux/files/`, which Linux and macOS cannot create
+without root. It holds 3 boxes. It can still **pull** everything normally, since
+`restore <snap>:<source>` needs the source only as a string recorded in the repo
+— but a push from termux records its own path, and every other machine then
+falls back for that box until one of them pushes again.
+
+That is why the fallbacks stay. They are not belt-and-braces: they are what
+makes a fleet with termux in it, and a yard mid-conversion, correct.
+
+The restore fix, verified, and still needed — the canonical path makes the
+source a constant, but a box pushed before conversion, or from a machine that
+cannot use the canonical root, still records its own:
 
 ```
 restic restore <snap>:<source_path> --target <box data dir>
@@ -334,8 +384,29 @@ Two things genuinely improve:
   wasted space, not a corrupt remote. The whole `SYNC_TO_REMOTE_INCOMPLETE`
   machinery — matching incomplete ULIDs on both sides to prove which machine owns
   the interrupted sync — has nothing left to describe for DATA.
-- **Change detection stops being a mtime walk.** `backup --dry-run --parent`
-  reuses restic's own detection instead of `check_last_time_modified`.
+- **Change detection stops being a mtime walk — for every machine, but only
+  because of the canonical path.** `backup --dry-run --parent` reuses restic's
+  own detection instead of `check_last_time_modified`.
+
+  > **What this does and does not guarantee.** `backup --parent` matches the
+  > parent's tree BY PATH, exactly as `restic diff` does. Measured:
+  > byte-identical content under a different path reports
+  > `files_new=1, files_unmodified=0`, against `files_new=0, files_unmodified=1`
+  > under the same path. So restic's exact detection is available **only where
+  > the snapshot was taken through the same path** — which is what the canonical
+  > path (§2) buys, and why it is not an optimisation but a correctness
+  > mechanism. Without it every Mac↔Linux replica would report CONFLICT forever.
+  >
+  > Where the paths do NOT agree — a box pushed from termux, or one whose
+  > snapshot predates conversion — `parent_is_usable` detects the mismatch and
+  > falls back to the mtime-versus-record-time test the plain backend already
+  > applies in `get_sync_status`. That is not a regression; it is today's
+  > semantics, and it is why the local state record carries `synced_at_unix`.
+  >
+  > So the honest statement is: **exact for every machine that can use the
+  > canonical root, today's mtime semantics for any that cannot, and never a
+  > wrong answer in either case.** The failure direction is always "do more
+  > work", never "skip".
 
   > **Trap, found by the prototype:** a perfect no-op reports `Dirs: 0 new, 1
   > changed` — the root directory's own metadata is re-read. Consulting
