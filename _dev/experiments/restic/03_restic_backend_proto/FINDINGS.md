@@ -1,6 +1,6 @@
 # 03 — restic DATA backend prototype: findings
 
-**Status:** done, 2026-08-30. 22/22 checks pass.
+**Status:** done, 2026-08-30. 30/30 checks pass.
 
 ```bash
 uv run python _dev/experiments/restic/03_restic_backend_proto/e2e.py
@@ -144,17 +144,61 @@ is modified" makes every box permanently `NEEDS_PUSH` and silently disables the
 whole skip filter. Use `files_new`, `files_changed`, `dirs_new` only. This is why
 check 4 failed on the first run.
 
-## 6. Concurrent writers are fine; only `prune` is not
+## 6. restic carries Unix mode natively — the exec-bit manifest is redundant
+
+Through the exact restore form this design uses (`restore <snap>:<source> --target`),
+with `umask 022`:
+
+| file | source | restored |
+|---|---|---|
+| `run.sh` | 755 | **755** |
+| `notes.txt` | 644 | **644** |
+| `sub/tool.sh` | 775 | **775** |
+| `link.txt` | symlink | symlink |
+
+Exact, including 775 — which `.boxyard-perms.json` cannot express, since it
+stores a boolean per path and reconstructs the mode by mirroring read bits into
+exec bits, and its v1 is additive-only (restores `+x`, never clears it).
+
+So `preserve_exec_perms` is skipped for restic-backed DATA, `_utils/perms.py`
+stays for plain boxes, and the push excludes the manifest so a converted box does
+not carry one into every snapshot.
+
+**Trap — `backup --exclude` and `restore --include` anchor by OPPOSITE rules.**
+Measured with a manifest at the DATA root and another in a subdirectory:
+
+| `backup --exclude …` | manifests left in the snapshot |
+|---|---|
+| `.boxyard-perms.json` | **0** — unanchored basename, excludes both |
+| `/.boxyard-perms.json` | **2** — anchors at the filesystem root, excludes neither |
+| `<abs data path>/.boxyard-perms.json` | **1** — excludes exactly the root one ✔ |
+
+`backup` patterns match the **absolute** path; `restore --include` under the
+`<snap>:<subpath>` form anchors with a **leading slash relative to the subpath**.
+Same-looking flags, opposite rules, and both failure modes are silent.
+
+## 7. Concurrent writers are fine; only `prune` is not
 
 Two `restic backup` runs into one repo with separate cache directories (two
 machines simulated): both exit 0, both snapshots recorded, no leftover locks.
 `backup` takes a non-exclusive lock.
 
 So `write_owner` does **not** need to become mandatory for restic-backed boxes —
-restic makes unowned boxes safer, not less safe. Only `prune` takes an exclusive
-lock and rewrites packs, which is why it must never run inside the sync loop.
+restic makes unowned boxes safer, not less safe.
 
-## 7. Conversion is safe — but only with step 4
+**But `forget` and `prune` both DO take exclusive locks**, and that was measured
+rather than assumed after an earlier draft claimed `forget` was cheap enough to
+run on every push. `forget --keep-last 3` is indeed cheap in work — 0.78 s,
+removed 9 snapshot files, left all 22 packs — but run concurrently with a
+`backup` against the same repo, **3 trials of 3** ended with one side exiting
+**11, failed to lock repository** (the backup lost once, the `forget` twice).
+`prune` for contrast: 0.80 s, repacked 24 blobs, removed 17 of 22 packs.
+
+On a five-machine fleet a `forget` inside the sync loop would intermittently fail
+other machines' pushes. Both belong in an explicit maintenance command, never in
+the loop.
+
+## 8. Conversion is safe — but only with step 4
 
 Tested with an un-upgraded machine present, holding a real local checkout.
 
@@ -183,7 +227,43 @@ pass — the "cries wolf" pathology v0.4.x removed. Bounded by the migration
 window, and new boxyard must render this state as its own `SyncCondition`
 (alongside `WRITE_DENIED` and `LOCAL_STORAGE`), not as an error.
 
-## 8. What the prototype locks in
+## 9. Retention, and the bug it exposed
+
+`--keep-within` is relative to the **newest snapshot**, not to now — restic says
+so itself (`Applying Policy: keep all snapshots within 90d of the newest`), and
+it was verified on a repo whose newest snapshot was back-dated 200 days:
+`forget --keep-within 90d` kept 2 of 6 rather than deleting all six. That is what
+makes a single duration string a safe shape for the retention policy even for
+dormant boxes.
+
+**The bug this exposed.** With a snapshot that no longer exists, restic's two
+relevant commands disagree:
+
+| | behaviour |
+|---|---|
+| `restic snapshots --json <gone>` | **rc=0**, stdout `[]`, warning on stderr |
+| `restic backup --parent <gone>` | **rc=1**, no summary |
+
+The prototype's `local_is_modified` used `rc != 0 -> assume changed`, so a clean
+replica whose base had been forgotten by another machine's retention pass
+reported **CONFLICT**: no data lost, but the box stops syncing there until a
+human intervenes. On a fleet where pocket4 is offline for days, that is a
+recurring false alarm on the machine least able to notice it.
+
+Fixed by recording `synced_at_unix` alongside the snapshot ID and falling back to
+the mtime-versus-record-time test the plain backend already uses. Now tested in
+both directions (e2e check 9):
+
+| | verdict | action |
+|---|---|---|
+| base forgotten, replica unmodified | `NEEDS_PULL` | full restore (`full-base-forgotten`), converges byte-identically |
+| base forgotten, replica edited | `CONFLICT` | nothing touched, local work intact |
+
+The pull layer degrades independently too: `snapshot_source_path` returns `None`
+for a forgotten base, which routes to the full restore. Two independent reasons
+it cannot act on a bad diff.
+
+## 10. What the prototype locks in
 
 - repo at `boxes/<index_name>/data.restic/`; pointer at
   `boxes/<index_name>/data.snapshot`; local state at

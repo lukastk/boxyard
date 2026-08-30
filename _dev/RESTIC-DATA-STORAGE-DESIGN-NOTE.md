@@ -1,7 +1,7 @@
 # Content-addressed DATA storage via restic — design note
 
 Status: **proposed, nothing implemented in the package.** A working prototype
-lives at `_dev/experiments/restic/03_restic_backend_proto/` (22/22 end-to-end
+lives at `_dev/experiments/restic/03_restic_backend_proto/` (30/30 end-to-end
 checks). This replaces how the primary copy of everything is stored, so nothing
 ships before Lukas agrees to the approach.
 
@@ -485,11 +485,466 @@ better.
   removes the "up to 6h of work living on one disk" trade the cadence note
   explicitly accepted. That is a decision to take *after* migration, with
   numbers, not now.
+- **A THIRD schedule appears, and the cadence work is the right home for it.**
+  Retention needs its own low-frequency pass because `forget` and `prune` both
+  take exclusive locks (§10.1c). It reuses `due_boxes` unchanged by adding a
+  third schedulable part alongside DATA and META — same check records, same
+  most-overdue-first ordering, same zero-remote-call decision. See §10.2.
 - **The 10-hour box stops holding the fleet hostage.** That wrinkle is listed as
   "known, non-architectural" in the cadence note; this removes its cause.
 - **`compress` staying removed is confirmed correct.** Compression is a backend
   property: measured 1.76x on jackfruit on top of 3.4x deduplication, with no
   knob and no per-box decision.
+
+---
+
+## 9. What becomes redundant
+
+Two pieces of existing machinery exist only because a plain `rclone sync` over
+SFTP cannot do something. restic can. Both must be handled explicitly, because
+leaving them running under restic is not neutral — one of them actively churns
+the thing the whole design exists to stop churning.
+
+### 9.1 The exec-bit manifest — skipped for restic-backed boxes
+
+`.boxyard-perms.json` and `_utils/perms.py` exist for one reason: SFTP drops the
+Unix mode bit, so boxyard records which files are executable before a push and
+reapplies it after a pull.
+
+**restic carries mode natively**, and better than the manifest does. Verified
+through the exact restore form this design uses
+(`restore <snap>:<source> --target`):
+
+| file | source mode | restored mode |
+|---|---|---|
+| `run.sh` | 755 | **755** |
+| `notes.txt` | 644 | **644** |
+| `sub/tool.sh` | 775 | **775** |
+| `link.txt` | symlink | symlink |
+
+Note 775 survives exactly. The manifest cannot do that: it stores a boolean per
+path and reconstructs the mode by mirroring read bits into exec bits, and its v1
+is deliberately **additive-only** — it restores `+x` and never clears it. restic
+restores the literal mode, including clearing. So this is a capability upgrade,
+not just a removal.
+
+**Decision:**
+
+- `preserve_exec_perms` is **skipped entirely** for restic-backed DATA. No
+  `generate_exec_manifest` before push, no `apply_exec_manifest` after pull.
+- `_utils/perms.py` **stays, unchanged, for plain boxes.** SFTP has not changed
+  and 594 boxes are plain today. It becomes plain-only, not dead.
+- The push **excludes** the manifest from the snapshot, so a box converted while
+  still holding one does not carry it forward:
+  `--exclude <data_path>/.boxyard-perms.json`.
+  Excluding rather than deleting keeps conversion non-destructive; the file is
+  derived, so the first full restore with `--delete` cleans it up locally, and a
+  box that ever reverted to `plain` would simply regenerate it.
+
+> **Trap — the exclude and include anchoring rules are MIRROR IMAGES, and getting
+> it wrong fails silently.** Measured, with a manifest at the DATA root and
+> another in a subdirectory:
+>
+> | `backup --exclude …` | result |
+> |---|---|
+> | `.boxyard-perms.json` | excludes **both** — unanchored basename match |
+> | `/.boxyard-perms.json` | excludes **neither** — anchors at the filesystem root |
+> | `<abs data path>/.boxyard-perms.json` | excludes **exactly** the root one ✔ |
+>
+> So `backup` patterns match the **absolute** path, while `restore --include`
+> under the `<snap>:<subpath>` form anchors with a **leading slash relative to
+> the subpath** (§2). Same-looking flags, opposite rules.
+
+### 9.2 `sync_backups/` — stops being written, and is already 38.6 GiB of residue
+
+`sync_helper` passes `--backup-dir` to every `rclone sync` so an overwrite is
+recoverable, then purges the directory on success (`delete_backup=True`).
+
+For restic-backed DATA this **stops by construction**: the DATA path no longer
+calls `rclone sync`, so no backup directory is created for it. No new mechanism,
+nothing to switch off. **META and CONF keep theirs**, because they stay plain and
+still need it. Restic snapshots are a strictly better answer for DATA anyway —
+they are history with a retention policy rather than an unbounded side-pile.
+
+**What about the existing 38.6 GiB?** Measured server-side, and it is not what it
+looks like:
+
+| | |
+|---|---|
+| total | 38.6 GiB across **1,187 backup directories** |
+| non-trivial (> 4 KiB) | 823 |
+| oldest | 2025-11 |
+| largest single directory | 4.52 GiB |
+| by month | 2025-12: 9.9 GiB · 2026-04: 8.1 GiB · 2026-05: 11.7 GiB · 2026-07: 0.01 GiB · 2026-08: 0.73 GiB |
+
+Because `sync_helper` purges on success, **every one of these is the residue of a
+sync that did not complete.** Cross-checking mymain's 783 local sync records
+finds exactly **one** incomplete record — jackfruit, the sync that was in flight
+while this was measured — and its ULID matches exactly one of the 1,188
+directories. The other ~1,187 are orphaned.
+
+The month profile also says the leak has largely stopped: 2026-04/05 contributed
+19.8 GiB between them, 2026-07/08 contributed 0.74 GiB. That is consistent with
+the v0.4.x–v0.5.x reliability work. What nothing ever did was clean up the
+backlog.
+
+**So the honest answer is that this is a pre-existing cleanup task that restic
+neither causes nor fixes**, and it should be its own ticket rather than smuggled
+into a storage change. Conversion stops the DATA half of the *source*; it
+reclaims nothing.
+
+A safe cleanup pass, if one is written:
+
+- report before deleting, oldest first, with sizes;
+- only consider directories older than a threshold (30 days is far beyond any
+  in-flight sync), because a backup referenced by a live incomplete sync is the
+  one case where it is not residue;
+- check **every machine's** incomplete records, not just the local ones. Only
+  mymain's 783 were examined here; macbook, macstudio, ideapad and pocket4 each
+  keep their own, and pocket4 is offline for days at a time.
+
+**This is a different problem from the stranded objects** the exclude extension
+left behind (files already pushed under a name that is now excluded, which go
+invisible and stay forever). Same directory tree, unrelated cause, unrelated fix.
+Do not merge the two.
+
+---
+
+## 10. Point-in-time recovery, and the retention decision
+
+Worth naming because it is a capability boxyard has never had, and because its
+flip side is a decision that must be made **before** this ships.
+
+restic keeps a snapshot **timeline**, not a current state. `restic snapshots`
+lists every snapshot with ID, time, host and tags; a box's DATA at any past
+snapshot can be restored to a scratch directory with the same
+`restore <snap>:<source> --target` this design already uses. So "what did this
+box look like three weeks ago" becomes answerable for boxes that are not git
+repos — notes, datasets, scraped corpora, design assets. That is most of the
+yard's bytes.
+
+**Not building it in this scope.** It costs a command over machinery that
+already exists, and it should wait until the storage change itself is settled.
+Naming it because the build order should not look like it was overlooked.
+
+### The retention decision, which cannot wait
+
+**With no `forget` policy, a restic repo keeps every snapshot forever.** That is
+a real decision with a real cost, and it needs an answer before conversion
+starts, not after. "How far back should a box's history be kept" is a policy
+question, and it belongs on the **existing** `_sync_policy` axis — a third
+dimension beside `data_interval` and `meta_interval`, resolved by the same rule
+(box `conf/sync.toml` → matched group policy → default), never a second
+mechanism:
+
+```toml
+[sync_policies.default]
+data_interval = "6h"
+retention     = "90d"
+
+[sync_policies.cold]
+groups        = ["archived", "dormant"]
+data_interval = "7d"
+retention     = "365d"
+```
+
+**First line of defence is structural, and is already in the design:** a box
+whose status resolves to `SYNCED` is never backed up at all, so snapshots
+accumulate with *actual changes*, not with passes. A no-op snapshot would cost
+**348 B** (287 B stored) — measured — but the design takes none. This alone
+bounds a quiet box at zero growth, which is most of the yard.
+
+The sections below critique the agreed design against measurement (10.1), settle
+the maintenance pass and cost it (10.2), work through the cadence interaction
+(10.3), and answer the correctness question that retention creates (10.4).
+**Retention is designed here and built last** — after `storage_format` and
+`boxyard convert` — but it is designed *now* because it and the pointer design
+are the same problem.
+
+### 10.1 Critique of the agreed design — three things the measurements change
+
+The agreed shape (retention as a policy dimension, `forget` split from `prune`,
+a weekly whole-yard `boxyard maintain` on mymain) is right, and most of it is
+confirmed below. Three parts do not survive measurement.
+
+#### (a) The stated justification is wrong. The conclusion is still right.
+
+> *"Every snapshot is a FILE in the repo's `snapshots/` directory. The cheap
+> keyless skip-check works by listing that directory for every box in one call.
+> So unbounded snapshot growth directly attacks the property that made per-box
+> repos viable."*
+
+It does not, for two independent reasons.
+
+**The skip check does not list `snapshots/`.** It reads
+`boxes/<box>/data.snapshot` — one file per box at depth 2, the same size
+whether the repo holds 1 snapshot or 100,000 — out of the bulk listing that
+`--skip-unchanged-meta` already runs (§2). Listing `snapshots/` per box was
+considered and rejected in favour of the pointer precisely because it costs a
+call per box. Snapshot count cannot touch it.
+
+**And snapshot count does not degrade repo operations anyway.** Measured on one
+repo grown in place, everything else held constant:
+
+| snapshots | `backup` | `snapshots` | `forget --dry-run` | `snapshots/` on disk |
+|---|---|---|---|---|
+| 0 | 0.86 s | 0.78 s | 0.82 s | 450 B |
+| 100 | 0.80 s | 0.79 s | 0.78 s | 50 KB |
+| 500 | 0.83 s | 0.83 s | 0.82 s | 248 KB |
+| 823 | — | — | 0.90 s | ~410 KB |
+
+Flat. All three are dominated by the ~780 ms key derivation; the snapshot list
+is noise beside it. Even 2,160 snapshots would be about 1 MB in one directory.
+
+This matters because the wrong reason licenses the wrong remedy: if snapshot
+growth were attacking the skip filter, `forget` would have to run continuously
+to defend it, which is the argument for putting it in the sync loop. It is not,
+so the case for retention rests entirely on **storage** — which is sufficient on
+its own, and points at a periodic pass rather than a hot-path one.
+
+#### (b) The proposed value expansion does not thin. Nor did mine.
+
+> *"`retention = "90d"` … expanding to `--keep-within 7d --keep-daily 90
+> --keep-last 10` — full granularity for a week, daily beyond, with a floor.
+> ~110 snapshots rather than 2,160."*
+
+The diagnosis — *retention must THIN, not merely expire* — is exactly right. The
+expansion does not do it. Measured against a repo of **823 snapshots all created
+the same day**, which is what an actively-edited box looks like, and what *every*
+box looks like if the DATA cadence is shortened after migration (§8):
+
+| policy | keeps | removes |
+|---|---|---|
+| `--keep-within 7d --keep-daily 90 --keep-last 10` *(proposed)* | **823** | **0** |
+| `--keep-within 90d` *(what I recommended in the previous draft)* | **823** | **0** |
+| `--keep-last 10 --keep-hourly 24 --keep-daily 30 --keep-weekly 13 --keep-monthly 3` | **11** | 812 |
+| the ladder **plus** `--keep-within 1d` as a "floor" | **823** | **0** |
+
+Three things follow, and the last is the trap.
+
+1. **`--keep-within` is an EXPIRY rule, not a thinning rule.** It keeps
+   *everything* newer than its window. Leading the expansion with
+   `--keep-within 7d` re-admits the whole week unthinned, which is the exact
+   problem the expansion was written to solve.
+2. **My own previous recommendation was wrong the same way**, and worse: a bare
+   `--keep-within 90d` thins nothing for 90 days. I had checked that it is
+   measured relative to the newest snapshot (so a dormant box keeps its history
+   — that part stands) and did not check that it thins. It does not. Withdrawn.
+3. **restic's policy is a UNION, so adding a `--keep-within` floor to a working
+   ladder destroys it** — 11 keeps becomes 823. "Protect the last day from
+   thinning" is not expressible as an addition; the protection of recent work is
+   `--keep-hourly`, which is bounded, and `--keep-last N`, which is a floor in
+   count rather than time.
+
+**Corrected sugar.** `retention = "<N>d"` still reads as "how far back history is
+kept", which is the question actually being asked, but it must expand to a pure
+`--keep-N` ladder:
+
+```
+retention = "90d"   ->  --keep-last 10 --keep-hourly 24 --keep-daily 30
+                        --keep-weekly 13 --keep-monthly 3
+retention = "365d"  ->  --keep-last 10 --keep-hourly 24 --keep-daily 30
+                        --keep-weekly 52 --keep-monthly 12
+```
+
+i.e. `--keep-last 10 --keep-hourly 24 --keep-daily min(N,30) --keep-weekly
+ceil(N/7) --keep-monthly ceil(N/30)`. Bounded at roughly 80 snapshots for `90d`
+and 130 for `365d` **regardless of how often the box changes**, which is the
+property the scalar has to have if it is going to be the common case. The
+explicit table form stays available for the rare box that wants something else:
+
+```toml
+[sync_policies.default.retention]
+hourly = 24
+daily  = 30
+weekly = 13
+```
+
+`--keep-last 1` is implied whatever the policy says, so a box can never lose its
+only snapshot to a config typo.
+
+#### (c) `forget` in the sync loop: viable, but it roughly doubles push cost
+
+> *"`forget` runs in the SYNC loop, on every machine, after a successful push.
+> It only deletes small snapshot files. Cheap."*
+
+**First, a correction to my own previous draft.** I said `forget` *cannot* run in
+the sync loop because it takes an exclusive lock. The lock is real —
+
+```
+unable to create lock in backend: repository is already locked exclusively
+  by PID 3203767 on mymain by lukastk
+```
+
+— but "cannot" was too strong, for two reasons I had not weighed. With **per-box**
+repos the contention is only between machines touching the *same* box, and the
+cadence note measures only 7 of 278 boxes (3%) as existing on more than one
+machine. And `--retry-lock` converts the collision from a failure into a wait:
+measured, a `backup --retry-lock 30s` colliding with a `forget` succeeded in 3
+trials of 3, waiting 5.83 / 5.88 / 5.85 s. So the lock is a manageable hazard,
+not a disqualifier — **provided every restic invocation passes `--retry-lock`**,
+which the design should mandate regardless.
+
+**The real objection is cost, and it is measured over the actual remote:**
+
+| operation, per box, over SFTP | time |
+|---|---|
+| repo open (`cat config`) | 2.02 s |
+| `forget --dry-run` | 2.18 s |
+| `forget` (real, removes snapshots) | 2.87 s |
+| `prune --max-unused 10%` (repacking) | 4.94 s |
+| `prune --max-unused 10%` (nothing to do) | 3.73 s |
+| *(for comparison)* no-op push | **3.1 s** |
+| *(for comparison)* first push | **4.6 s** |
+
+A `forget` after every push costs **2.87 s on top of a 3.1–4.6 s push** — it
+close to doubles the cost of the operation this entire design exists to make
+cheap. And by (a) it buys nothing that needed defending.
+
+**So: `forget` joins `prune` in the weekly pass, and neither is in the sync
+loop.** Not because `forget` is unsafe there — it is survivable with
+`--retry-lock` — but because it is not cheap there and there is no longer a
+reason to pay.
+
+The middle ground, if continuous thinning is ever wanted: run `forget` only when
+the push actually *created* a snapshot, never after a no-op. Real pushes are rare
+per box, so the amortised cost is small. It is a strictly optional refinement,
+and it should not be built first.
+
+### 10.2 `boxyard maintain` — weekly, on mymain, over the whole yard
+
+**Agreed, and the three reasons hold.** Maintenance acts on the repository, not a
+working tree, so inclusion is irrelevant and mymain servicing a box it has no
+copy of is the normal case — which dissolves the "who prunes, given 321 unowned
+boxes" problem rather than solving it. One writer means no contention by
+construction. And mymain is always on, wired and unmetered, where repacking
+belongs; a `prune` on macbook over wifi or termux on mobile data is exactly what
+this avoids.
+
+**The conf-availability measurement is confirmed**, independently, on the live
+remote and locally:
+
+| | claimed | measured |
+|---|---|---|
+| bulk `lsjson` over `boxes/*/conf/**` | 9.2 s | **9.3 s** |
+| boxes with any conf file on the remote | 5 of 594 | **5 of 594** |
+| local conf dirs on mymain | 68, of which 5 non-empty | **68, of which 5 non-empty** |
+
+The five are all `.rclone_exclude`. So resolving per-box overrides from mymain is
+one bulk listing plus a filtered copy of five files — the pattern
+`sync-missing-meta` already uses, not 594 round trips. And the consequence is
+worth stating in the design: **retention will in practice be a GROUP-level
+setting for essentially every box**, with `conf/sync.toml` as a rare escape
+hatch. That is the right shape, and it is what the per-dimension resolution in
+`resolve_policy` already gives.
+
+**Cost of the weekly pass**, from the measured per-box figures above:
+
+| pass | serial | at concurrency 8 |
+|---|---|---|
+| `forget` over all 594 boxes | ~28 min | ~3.5 min |
+| `prune` over all 594 boxes (mostly no-ops) | ~37 min | ~4.6 min |
+
+Both are affordable weekly on an always-on machine, and key derivation
+parallelises well enough to make the concurrency real (§1).
+
+**One correction to the operational plan:** *"`prune --max-unused` with a
+threshold, so most weeks are a listing and nothing else"* — a `prune` with
+nothing to do still costs **3.73 s per box**, because it still opens the repo and
+loads the index. `--max-unused` avoids the *repacking*, not the visit. Over 594
+boxes that is 37 minutes of doing nothing.
+
+The fix is a **local** gate rather than a remote one: only `prune` a box whose
+`forget` in this same run actually removed snapshots. `forget` reports that, it
+costs nothing extra to know, and it turns `prune` from 594 visits into the
+handful of boxes that changed. That is the difference between a weekly pass that
+is mostly free and one that takes half an hour to discover it had no work.
+
+**Rate-limiting and resumability come free from the cadence work**, as proposed:
+`_sync_policy.due_boxes(config, metas, part, now)` is already parameterised by
+part and already decides across 590 boxes in ~171 ms with zero remote calls.
+Adding a third schedulable part — `MAINTENANCE` — gives due-ness, most-overdue-
+first ordering, and degrade-to-due-now on a missing record, with no new
+mechanism. A run that cannot finish stops at N boxes and the rest are simply
+still due next week. Suggested `retention_interval = "7d"`, and the pass should
+carry a wall-clock budget so it can never overlap into a sync window.
+
+Not a threshold on reclaimable bytes as the trigger: computing that requires
+opening every repo, which is 594 × 2.02 s to decide whether to do any work at
+all. An interval is free local state.
+
+### 10.3 Retention interacts with cadence — and the interaction has a sharp edge
+
+Snapshot count is a function of how often a box actually *changes*, not of how
+often it is checked, because a `SYNCED` box is never backed up at all (§4). So:
+
+| policy | `data_interval` | max snapshots/day | `retention` | retained |
+|---|---|---|---|---|
+| `default` | 6h | 4 | `90d` | ~80 |
+| `cold` | 7d | ~0.14 | `365d` | ~52 |
+
+With the corrected ladder these are bounded by the *ladder*, not by the cadence,
+which is the point of fixing (b): the same config means the same thing at both
+ends.
+
+**The sharp edge:** §8 recommends shortening the DATA cadence back toward META's
+once boxes are converted, because a no-op DATA check stops being expensive. Under
+the *proposed* `--keep-within 7d` expansion that would have been actively
+harmful — a 15-minute cadence puts up to 672 snapshots inside the unthinned
+window. Under the ladder it is a non-event. So fixing the retention shape is a
+precondition for the cadence change, not an independent decision.
+
+What is never bounded by any of this is retained **content**: every version of
+every changed file is kept. Nothing for text; a lot for `tbi-investigation`
+(89.4 GiB) or `aisi-economy-index-v2` (82.9 GiB), where one regeneration costs
+the full unique size again. That is the real reason retention exists, and it is
+why `cold` — archived boxes that barely change — can afford a long window
+cheaply while an active data box cannot.
+
+### 10.4 The offline-machine correctness question — answered, and tested
+
+*A machine offline for weeks returns to a repo whose snapshots another machine
+has forgotten, holding a pointer to a snapshot that no longer exists.*
+
+This was the right thing to worry about, and **the first version of the prototype
+got it wrong, in the dangerous direction.**
+
+Two measured facts, which disagree with each other:
+
+| command, with a snapshot that no longer exists | behaviour |
+|---|---|
+| `restic snapshots --json <gone>` | **rc=0**, stdout `[]`, warning on stderr |
+| `restic backup --parent <gone>` | **rc=1**, no summary emitted |
+
+A returncode check misses the first entirely and reads the second as a general
+failure. The prototype's `local_is_modified` did exactly that — `rc != 0` →
+"assume changed" — so a clean replica that had merely been offline reported
+**CONFLICT**: no data lost, but the box stops syncing on that machine until a
+human intervenes. With pocket4 dark for days and most boxes unowned, that is
+routine, on the machine least able to notice.
+
+**The fix: the local state record carries `synced_at_unix` beside the snapshot
+ID.** When the recorded snapshot is gone, modification is decided by the
+timestamp — the same mtime-versus-record-time test the plain backend already
+applies in `get_sync_status`. Not a new mechanism, and not a weaker guarantee
+than today's.
+
+Behaviour now, all four cases tested end to end (e2e checks 9):
+
+| | verdict | action |
+|---|---|---|
+| base forgotten, replica **unmodified** | `NEEDS_PULL` | full restore (`full-base-forgotten`); converges byte-identically |
+| base forgotten, replica **edited** | `CONFLICT` | nothing touched; local work still on disk |
+| base present, remote moved | `NEEDS_PULL` | diff + targeted restore |
+| base present, both moved | `CONFLICT` | nothing touched |
+
+It degrades for a second, independent reason too: `pull` asks the base snapshot
+for its source path, gets `None`, and takes the full-restore branch. So even if
+the status layer were wrong, the transfer layer would not act on a bad diff.
+
+**It can never conclude "nothing changed"** — that verdict requires the remote
+pointer and the local record to be *equal*, and a forgotten base cannot make them
+equal. The failure direction is always "do more work", never "skip".
 
 ---
 
@@ -507,9 +962,15 @@ better.
 3. **`boxyard convert`** — the five-step procedure, verify-before-destroy, one
    box at a time, refusing unless this machine holds the box.
 4. **The DATA branch in `sync_box`**, dispatching on the box's actual format. The
-   plain path stays exactly as it is.
+   plain path stays exactly as it is. This is also where `preserve_exec_perms`
+   becomes plain-only (§9.1) — one branch, not a second mechanism.
 5. **`--skip-unchanged` extending the existing bulk listing.**
-6. Only then: `restic` as the resolved default for new boxes.
+6. **`retention` + `retention_interval` as policy dimensions, plus a
+   `boxyard maintain` that runs `forget`/`prune` deliberately** (§10). This has
+   to exist before the first box is converted, or repos start growing with no
+   ceiling and no command to give them one. The scheduling half is a third
+   schedulable part in `due_boxes` — no new mechanism.
+7. Only then: `restic` as the resolved default for new boxes.
 
 **Deliberately not building:**
 
@@ -520,7 +981,17 @@ better.
   `boxes/*/boxmeta.toml` at depth 2 is what box discovery rests on. Non-negotiable
   without a replacement discovery mechanism, and there is no reason to want one.
 - **Automatic conversion of existing boxes**, in either direction.
-- **`prune`/`forget` anywhere near the sync loop.**
+- **`prune` OR `forget` in the sync loop.** `forget` there is *survivable* with
+  `--retry-lock` (§10.1c corrects an earlier over-claim), but it costs 2.87 s per
+  box against a 3.1 s no-op push — it roughly doubles the operation this design
+  exists to make cheap, and by §10.1a it defends nothing. Both go in the weekly
+  pass.
+- **Point-in-time recovery as a command.** It becomes possible (§10) and it is
+  worth having; it is not this change.
+- **Reclaiming the 38.6 GiB of `sync_backups` residue.** Real, and a separate
+  ticket: restic neither causes it nor fixes it (§9.2).
+- **Removing `_utils/perms.py`.** It stays for plain boxes; SFTP has not changed
+  (§9.1).
 - **Our own chunker.** Unchanged: chunking is a weekend, a correct garbage
   collector is not.
 - **The Go port.** Python first. `feat/go-rewrite` is 24 commits behind main and

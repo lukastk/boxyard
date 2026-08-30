@@ -91,7 +91,7 @@ whole yard at the cost of reading, with no disk.
 
 ### `03_restic_backend_proto`
 
-**Status:** done (2026-08-30) — 22/22 checks
+**Status:** done (2026-08-30) — 30/30 checks
 ([`FINDINGS.md`](03_restic_backend_proto/FINDINGS.md))
 
 **Questions**
@@ -121,6 +121,12 @@ whole yard at the cost of reading, with no disk.
 - **Conversion is safe only if `sync_records/<box>/data.rec` is deleted too** —
   otherwise an un-upgraded machine with local changes resurrects the plain
   `data/` on the remote.
+- **restic carries Unix mode natively** (755/644/775 exact), so the exec-bit
+  manifest is redundant for restic-backed boxes — and `backup --exclude` anchors
+  by the OPPOSITE rule to `restore --include`.
+- **A forgotten base snapshot made a clean replica report CONFLICT.** Found and
+  fixed: the local state record now carries `synced_at_unix`, and modification
+  falls back to the mtime test the plain backend already uses.
 
 ---
 
@@ -133,13 +139,70 @@ including at least one remote-only box, and get a measured per-GiB conversion
 rate rather than the current 11.8 MiB/s extrapolation. Also: what a partially
 converted yard looks like to `doctor`.
 
-### `05_prune_and_retention` — `todo`
+### `05_prune_and_retention` — `in progress`
 
-Nothing in the design depends on it yet, but nothing has measured it either.
-What does `forget`/`prune` cost on a per-box repo over SFTP, what does a stale
-lock from a suspended machine actually do, and does `restic unlock` recover it
-cleanly? Retention policy is an unmade decision: with none, every snapshot is
-kept forever, which is cheap for text and not for the 89 GiB data boxes.
+**Substantially answered 2026-08-30**, and it changed three design decisions.
+
+**Snapshot count does NOT degrade anything.** One repo grown in place:
+
+| snapshots | `backup` | `snapshots` | `forget --dry-run` | `snapshots/` on disk |
+|---|---|---|---|---|
+| 0 | 0.86 s | 0.78 s | 0.82 s | 450 B |
+| 100 | 0.80 s | 0.79 s | 0.78 s | 50 KB |
+| 500 | 0.83 s | 0.83 s | 0.82 s | 248 KB |
+| 823 | — | — | 0.90 s | ~410 KB |
+
+Flat; all dominated by the ~780 ms key derivation. Combined with the fact that
+the skip filter reads the depth-2 `data.snapshot` pointer rather than listing
+`snapshots/`, snapshot growth cannot attack the skip filter. **Retention is
+justified by STORAGE, not by listing cost** — which points at a periodic pass
+rather than a hot-path one.
+
+**`--keep-within` expires; it does not thin.** Against 823 snapshots all created
+the same day (an actively-edited box, or any box if the DATA cadence shortens):
+
+| policy | keeps | removes |
+|---|---|---|
+| `--keep-within 7d --keep-daily 90 --keep-last 10` | **823** | **0** |
+| `--keep-within 90d` | **823** | **0** |
+| `--keep-last 10 --keep-hourly 24 --keep-daily 30 --keep-weekly 13 --keep-monthly 3` | **11** | 812 |
+| that ladder **plus** `--keep-within 1d` | **823** | **0** |
+
+restic's policy is a UNION, so any `--keep-within` re-admits its whole window and
+destroys a working ladder. A retention scalar must expand to a pure `--keep-N`
+ladder. (`--keep-within` IS measured relative to the newest snapshot, not to now
+— verified on a repo back-dated 200 days, `--keep-within 90d` kept 2 of 6 — so a
+dormant box never loses its history to the passage of time. That part is fine;
+it just does not thin.)
+
+**`forget` takes an exclusive lock, but `--retry-lock` survives it.**
+`unable to create lock in backend: repository is already locked exclusively`.
+A `backup --retry-lock 30s` colliding with a `forget` succeeded 3 trials of 3,
+waiting 5.83 / 5.88 / 5.85 s. So an earlier "forget cannot run in the sync loop"
+was too strong — it is survivable. It is excluded on COST instead (below).
+
+**Maintenance cost, per box, over the real remote** (scoped write to
+`boxyard-restic-probe2/`, purged and verified absent):
+
+| operation | time |
+|---|---|
+| repo open (`cat config`) | 2.02 s |
+| `forget --dry-run` | 2.18 s |
+| `forget` (real) | 2.87 s |
+| `prune --max-unused 10%` (repacking) | 4.94 s |
+| `prune --max-unused 10%` (**nothing to do**) | 3.73 s |
+| *no-op push, for comparison* | 3.1 s |
+
+So `forget` after every push nearly doubles push cost, and a `prune` with nothing
+to do is *not* free — gate `prune` on whether this run's `forget` actually
+removed anything, which is a free local signal.
+
+Whole-yard weekly pass: `forget` over 594 boxes ≈ 28 min serial / ~3.5 min at
+concurrency 8; `prune` ≈ 37 min / ~4.6 min.
+
+Still open: stale-lock recovery from a machine that suspended mid-operation
+(pocket4 goes dark for days) and whether `restic unlock` recovers cleanly; and
+the retention ladder numbers themselves, which are Lukas's call.
 
 ### `06_key_rotation` — `todo`
 
@@ -173,10 +236,29 @@ before it is needed rather than during an incident.
 - **Policy governs creation, not conversion.** `storage_format` defaults to
   `restic`; existing boxes change format only through an explicit, verified,
   per-box `boxyard convert`.
+- **The exec-bit manifest is skipped for restic-backed boxes.** restic carries
+  mode natively and exactly (755/644/775 all round-tripped; the manifest can only
+  approximate, and its v1 is additive-only). `_utils/perms.py` stays for plain
+  boxes. The push excludes `<data_path>/.boxyard-perms.json` so a converted box
+  does not carry one into every snapshot.
+- **`sync_backups/` stops for restic-backed DATA by construction** — that path no
+  longer calls `rclone sync`. META and CONF keep theirs.
+- **Neither `forget` nor `prune` ever runs in the sync loop.** Both take
+  exclusive locks (measured).
 
 ## Still to decide
 
-- Retention: what `forget` policy, if any, and per box or per group.
+- Retention: the ladder numbers. Proposed `retention = "90d"` expanding to
+  `--keep-last 10 --keep-hourly 24 --keep-daily 30 --keep-weekly 13
+  --keep-monthly 3`, with `cold` on `"365d"`, as a `retention` dimension on the
+  existing policy axis. **Must be settled before the first box is converted** —
+  with no policy, repos grow without bound.
+- Whether to build point-in-time recovery as a command. It becomes possible;
+  deliberately out of scope here.
+- The 38.6 GiB of `sync_backups` residue: 1,187 orphaned directories back to
+  2025-11, against exactly 1 live incomplete sync on mymain. A separate ticket —
+  restic neither causes nor fixes it, and it is NOT the same problem as the
+  stranded objects the exclude extension left behind.
 - Where the second, independent copy of the restic password lives.
 - Whether the DATA cadence should shorten back toward META's once boxes are
   converted (it should, but with numbers, after migration).

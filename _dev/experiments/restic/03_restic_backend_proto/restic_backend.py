@@ -193,11 +193,72 @@ def read_state(boxyard_data_path: Path, box_index_name: str) -> dict | None:
 
 
 def write_state(boxyard_data_path: Path, box_index_name: str, snapshot_id: str) -> None:
+    """
+    Record the snapshot this machine now agrees with, AND when it agreed.
+
+    `synced_at_unix` is not decoration. Retention (`restic forget`) can delete the
+    very snapshot this record names, and once it is gone the repo can no longer
+    answer "does my tree differ from what I last synced". The timestamp answers
+    it WITHOUT the repo -- the same mtime-versus-record-time test the plain
+    backend already uses in `get_sync_status`. See `local_is_modified`.
+    """
+    import time
+
     p = state_path(boxyard_data_path, box_index_name)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"snapshot": snapshot_id}))
+    tmp.write_text(json.dumps({"snapshot": snapshot_id, "synced_at_unix": time.time()}))
     os.replace(tmp, p)  # crash leaves the old record or the new one, never half
+
+
+def snapshot_exists(
+    snapshot_id: str, *, repo: str, rclone_program: str, env: dict[str, str]
+) -> bool:
+    """
+    Is this snapshot still in the repo?
+
+    Asked explicitly because restic does NOT signal absence the way callers
+    expect, and the two commands disagree with each other:
+
+        restic snapshots --json <gone>   -> rc=0, stdout `[]`, warning on stderr
+        restic backup --parent <gone>    -> rc=1, no summary
+
+    So a returncode check misses the first case entirely, and treats the second
+    as a general failure. Both were measured. This function looks at the LIST,
+    which is the one that answers the question without conflating it with a real
+    error.
+    """
+    proc = _restic(
+        ["snapshots", snapshot_id, "--json"],
+        repo=repo, rclone_program=rclone_program, env=env, check=False,
+    )
+    if proc.returncode != 0:
+        return False
+    try:
+        return bool(json.loads(proc.stdout))
+    except json.JSONDecodeError:
+        return False
+
+
+def _tree_modified_since(data_path: Path, since_unix: float) -> bool:
+    """
+    Repo-independent change detection: did anything under `data_path` change
+    after `since_unix`?
+
+    Deliberately the SAME test the plain backend already applies
+    (`check_last_time_modified` versus the sync record's timestamp), so the
+    fallback is not a new mechanism and not a weaker guarantee than today's.
+    Production should call `check_last_time_modified` itself, with the box's
+    effective exclude list, rather than this simplified walk.
+    """
+    for dirpath, dirnames, filenames in os.walk(data_path):
+        for name in list(dirnames) + list(filenames):
+            try:
+                if os.lstat(os.path.join(dirpath, name)).st_mtime > since_unix:
+                    return True
+            except OSError:
+                continue
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -206,15 +267,36 @@ def write_state(boxyard_data_path: Path, box_index_name: str, snapshot_id: str) 
 
 
 def local_is_modified(data_path: Path, snapshot_id: str | None, repo: str,
-                      rclone_program: str, env: dict[str, str]) -> bool:
+                      rclone_program: str, env: dict[str, str],
+                      synced_at_unix: float | None = None) -> bool:
     """
     Does this machine hold DATA changes the remote has not seen?
 
-    Answered with `backup --dry-run` against the recorded snapshot as parent:
-    restic reports what it WOULD add, and zero added bytes means nothing to
-    push. This reuses restic's own change detection rather than re-deriving one
-    from mtimes, which is what `get_sync_status` has to do for plain trees.
+    Normally answered with `backup --dry-run --parent <recorded snapshot>`:
+    restic reports what it WOULD add, and nothing added means nothing to push.
+    That reuses restic's own change detection rather than re-deriving one.
+
+    BUT the recorded snapshot can be GONE -- `restic forget` on another machine
+    is entitled to remove it, and a machine offline for weeks will come back to
+    exactly that. `backup --parent <gone>` exits 1, so the old
+    "returncode != 0 -> assume changed" rule turned a perfectly clean replica
+    into a permanent CONFLICT: the remote moved AND we "have local changes", with
+    no way out but human intervention. That is a correctness bug, not untidiness.
+
+    So when the parent is gone, fall back to the timestamp recorded alongside it
+    -- the same mtime-versus-record-time test the plain backend already uses.
+    Losing the snapshot costs a full restore instead of a targeted one; it must
+    never cost a false conflict.
     """
+    if snapshot_id and not snapshot_exists(
+        snapshot_id, repo=repo, rclone_program=rclone_program, env=env
+    ):
+        if synced_at_unix is None:
+            # No timestamp either (a record written by an older boxyard). Now we
+            # genuinely cannot tell, and "assume changed" is the safe direction.
+            return True
+        return _tree_modified_since(data_path, synced_at_unix)
+
     args = ["backup", "--dry-run", "--no-scan", "--json", str(data_path)]
     if snapshot_id:
         args += ["--parent", snapshot_id]
@@ -248,6 +330,7 @@ def get_status(
     env: dict[str, str],
     remote_snapshot: str | None,
     local_snapshot: str | None,
+    synced_at_unix: float | None = None,
 ) -> ResticStatus:
     """
     Map the (remote pointer, local record, local tree) triple onto a condition.
@@ -256,11 +339,18 @@ def get_status(
     strictly better informed: snapshots are a linear history with ids and
     parents, so "the remote moved past me" and "we both moved" are
     DISTINGUISHABLE facts rather than a timestamp comparison.
+
+    Survives retention: if the locally recorded snapshot has been forgotten, the
+    verdict is still correct -- an unmodified replica reports NEEDS_PULL and gets
+    a full restore, and only a genuinely edited one reports CONFLICT. See
+    `local_is_modified`.
     """
     if remote_snapshot is None:
         return ResticStatus(ResticCondition.UNINITIALISED, None, local_snapshot, True)
 
-    modified = local_is_modified(data_path, local_snapshot, repo, rclone_program, env)
+    modified = local_is_modified(
+        data_path, local_snapshot, repo, rclone_program, env, synced_at_unix
+    )
 
     if local_snapshot == remote_snapshot:
         return ResticStatus(
@@ -454,6 +544,11 @@ def pull(
     base_source = snapshot_source_path(
         base_snapshot, repo=repo, rclone_program=rclone_program, env=env
     )
+    if base_source is None:
+        # The base was FORGOTTEN by a retention pass on another machine. Normal
+        # and expected, not an error -- reported under its own name so the two
+        # causes stay distinguishable in diagnostics.
+        return _full("full-base-forgotten")
     if base_source != target_source:
         return _full("full-path-mismatch")
 

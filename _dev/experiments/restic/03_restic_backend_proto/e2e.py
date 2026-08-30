@@ -13,6 +13,9 @@ What it proves, in order:
   6. a DELETION on A propagates to B  (`restore --include` cannot do this alone)
   7. both machines editing produces CONFLICT, not silent loss
   8. converting an existing PLAIN box is safe against an un-upgraded machine
+  9. RETENTION: after `restic forget` deletes the snapshot a machine last synced
+     from, that machine still converges -- full restore, no false CONFLICT --
+     and a machine that DID edit locally still reports CONFLICT
 
 Run:  uv run python _dev/experiments/restic/03_restic_backend_proto/e2e.py
 """
@@ -33,6 +36,7 @@ from restic_backend import (  # noqa: E402
     BOX_SNAPSHOT_POINTER_REL_PATH,
     ResticCondition,
     _rclone_program,
+    _restic,
     get_status,
     pull,
     push,
@@ -40,6 +44,7 @@ from restic_backend import (  # noqa: E402
     read_state,
     repo_url,
     restic_env,
+    snapshot_exists,
 )
 
 PASSWORD = "prototype-scratch-password"
@@ -223,6 +228,58 @@ async def main():
     check("plain data/ was NOT resurrected on the remote",
           not (p_root / const.BOX_DATA_REL_PATH).exists())
     check("the restic repo survived", (p_root / BOX_RESTIC_REL_PATH).is_dir())
+
+    print("\n=== 9. retention: the snapshot B last synced from gets forgotten ===")
+    # Re-converge B onto A first, so B is a clean replica at a known snapshot.
+    (restored_root / "notes.md").write_text("A's third version\n")   # drop B's competing edit
+    pull(data_path=dataB, repo=repo, rclone_program=rclone_prog, env=env,
+         target_snapshot=snap4, base_snapshot=None,
+         boxyard_data_path=cfgB.boxyard_data_path, box_index_name=idx)
+    b_state = read_state(cfgB.boxyard_data_path, idx)
+    check("B's state records a snapshot AND when it synced",
+          b_state["snapshot"] == snap4 and b_state.get("synced_at_unix"))
+
+    # A keeps working; then a maintenance pass forgets everything but the latest.
+    (dataA / "notes.md").write_text("A's fourth version\n")
+    (dataA / "sub" / "late.txt").write_text("added after B went offline\n")
+    snap5 = push(data_path=dataA, parent=snap4, excludes=[".venv", "node_modules"],
+                 boxyard_data_path=cfgA.boxyard_data_path, box_index_name=idx, **common)
+    _restic(["forget", "--keep-last", "1", "--path", str(dataA)],
+            repo=repo, rclone_program=rclone_prog, env=env, check=False)
+    check("B's recorded snapshot has been forgotten",
+          not snapshot_exists(snap4, repo=repo, rclone_program=rclone_prog, env=env))
+
+    # B, unmodified, comes back. It must NOT report CONFLICT.
+    b_state = read_state(cfgB.boxyard_data_path, idx)
+    st = get_status(data_path=restored_root, repo=repo, rclone_program=rclone_prog, env=env,
+                    remote_snapshot=snap5, local_snapshot=b_state["snapshot"],
+                    synced_at_unix=b_state.get("synced_at_unix"))
+    check("unmodified B reports NEEDS_PULL, not a false CONFLICT",
+          st.condition == ResticCondition.NEEDS_PULL, st.condition.value)
+    res = pull(data_path=dataB, repo=repo, rclone_program=rclone_prog, env=env,
+               target_snapshot=snap5, base_snapshot=b_state["snapshot"],
+               boxyard_data_path=cfgB.boxyard_data_path, box_index_name=idx)
+    check("B degrades to a FULL restore rather than failing",
+          res["mode"].startswith("full"), res["mode"])
+    check("B converges byte-identically after the forget",
+          tree(restored_root) == tree(dataA))
+
+    # And the other direction: a machine that DID edit locally must still say CONFLICT.
+    (dataA / "notes.md").write_text("A's fifth version\n")
+    snap6 = push(data_path=dataA, parent=snap5, excludes=[".venv", "node_modules"],
+                 boxyard_data_path=cfgA.boxyard_data_path, box_index_name=idx, **common)
+    _restic(["forget", "--keep-last", "1", "--path", str(dataA)],
+            repo=repo, rclone_program=rclone_prog, env=env, check=False)
+    (restored_root / "sub" / "b-work.txt").write_text("real local work on B\n")
+    b_state = read_state(cfgB.boxyard_data_path, idx)
+    check("B's base was forgotten again",
+          not snapshot_exists(b_state["snapshot"], repo=repo, rclone_program=rclone_prog, env=env))
+    st = get_status(data_path=restored_root, repo=repo, rclone_program=rclone_prog, env=env,
+                    remote_snapshot=snap6, local_snapshot=b_state["snapshot"],
+                    synced_at_unix=b_state.get("synced_at_unix"))
+    check("EDITED B still reports CONFLICT, so its work is not silently lost",
+          st.condition == ResticCondition.CONFLICT, st.condition.value)
+    check("B's local work is still on disk", (restored_root / "sub" / "b-work.txt").exists())
 
     print(f"\n{sum(_results)}/{len(_results)} checks passed")
     shutil.rmtree(scratch, ignore_errors=True)
