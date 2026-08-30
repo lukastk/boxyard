@@ -1,0 +1,1032 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: .venv
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # _restic
+#
+# Content-addressed DATA storage. See
+# `_dev/RESTIC-DATA-STORAGE-DESIGN-NOTE.md` for the measurements and the
+# reasoning; this module is the mechanism, and NOTHING imports it yet.
+#
+# Scope is the DATA part only. META and CONF stay plain files, because box
+# discovery rests on one bulk `lsjson` over `boxes/*/boxmeta.toml` at depth 2
+# and an opaque snapshot would destroy it.
+#
+# Four moving parts:
+#
+# 1. **One repo per box**, at `boxes/<index_name>/data.restic/`. A single shared
+#    repo was measured to save 7.0% of stored bytes across mymain's whole 266 GiB
+#    checkout, against giving up per-box independence, keyless skip-filtering,
+#    `delete` as a directory removal, and a per-box index.
+# 2. **A plain pointer** at `boxes/<index_name>/data.snapshot`, depth 2 beside
+#    `boxmeta.toml`, so the bulk listing that already runs answers "did this
+#    box's DATA move" for the whole yard at no extra remote calls.
+# 3. **A machine-local state record**, which replaces the local half of the
+#    SyncRecord/ULID pair -- and which carries a TIMESTAMP as well as a snapshot
+#    id, because retention on another machine may delete the snapshot it names.
+# 4. **Pull is diff-driven where it can be, and full where it cannot.** Every
+#    fallback is in the direction of more work, never a wrong result.
+#
+# ## Two traps, both of which fail SILENTLY
+#
+# Both are covered by tests that fail if the fix is removed.
+#
+# **restic records the pusher's ABSOLUTE path**, and `restic diff` compares by
+# it, so two snapshots of byte-identical content taken under different paths
+# diff as everything-added/everything-removed (`Data Blobs: 0 new, 0 removed` --
+# deduplication is perfect and only the DIFF is useless). That is live here:
+# mymain has two checkout roots and the Macs use `/Users/...`. There is no way
+# to normalise it -- `backup --set-path` does not exist, `rewrite` changes host
+# and time but not paths, `cd <box> && backup .` still records the absolute
+# path, and backing up a symlink at a canonical path archives the SYMLINK. The
+# fix is `restore <snap>:<source> --target <dir>`, which places the snapshot's
+# CONTENTS at the target.
+#
+# **`backup --exclude` and `restore --include` anchor by OPPOSITE rules.**
+# `backup` patterns match the absolute path, so only a full absolute path
+# anchors; `restore --include` under the `<snap>:<subpath>` form anchors with a
+# LEADING SLASH relative to the subpath. Getting either wrong silently excludes
+# or restores the wrong set. See `data_root_exclude_args` and `anchored_include_args`.
+
+# %%
+#|default_exp _restic
+
+# %%
+#|hide
+from nblite import nbl_export, show_doc; nbl_export();
+
+# %%
+#|export
+import json
+import os
+import shutil
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+
+from boxyard import const
+from boxyard._utils import run_cmd_async
+
+# %% [markdown]
+# ## Failures
+
+# %%
+#|export
+class ResticError(Exception):
+    """A restic invocation failed. Carries the command's own stderr."""
+
+    def __init__(self, message: str, returncode: int | None = None, stderr: str = ""):
+        self.returncode = returncode
+        self.stderr = stderr
+        super().__init__(message)
+
+
+class ResticLocked(ResticError):
+    """
+    The repository is held by an EXCLUSIVE lock -- `forget` or `prune` on
+    another machine, or a stale lock from one that suspended mid-operation.
+
+    Its own class because it is the one restic failure with a standard remedy
+    (`restic unlock`, once the holder is known to be gone) and the one a caller
+    may legitimately choose to retry rather than report.
+    """
+
+# %% [markdown]
+# ## Finding the binary
+#
+# Mirrors `get_rclone_binary`, and for the same reason: a bare
+# `FileNotFoundError` at exec time tells the user nothing, and the tool must not
+# depend on the caller's `PATH` when it runs under supervisor.
+#
+# Deliberately NO `restic_path` config key yet. `Config` forbids extra fields,
+# so adding one is a change to the config model, and this module is meant to be
+# purely additive. It arrives with `storage_format`.
+
+# %%
+#|exporti
+_RESTIC_FALLBACK_DIRS = (
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/snap/bin",
+)
+
+_restic_binary: str | None = None
+
+
+def _is_executable(path: Path) -> bool:
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def _resolve_restic_binary() -> str:
+    searched: list[str] = []
+
+    env_path = os.environ.get(const.ENV_VAR_BOXYARD_RESTIC)
+    if env_path:
+        if _is_executable(Path(env_path).expanduser()):
+            return str(Path(env_path).expanduser())
+        raise ResticError(
+            f"{const.ENV_VAR_BOXYARD_RESTIC} is set to '{env_path}', but no executable "
+            f"restic binary exists there. Fix the path or unset "
+            f"{const.ENV_VAR_BOXYARD_RESTIC}."
+        )
+    searched.append(f"${const.ENV_VAR_BOXYARD_RESTIC} (env var, unset)")
+
+    which = shutil.which("restic")
+    if which:
+        return which
+    searched.append("PATH (via shutil.which)")
+
+    for d in _RESTIC_FALLBACK_DIRS:
+        candidate = Path(d) / "restic"
+        if _is_executable(candidate):
+            return str(candidate)
+        searched.append(str(candidate))
+
+    raise ResticError(
+        "boxyard could not find the `restic` binary. Searched:\n  - "
+        + "\n  - ".join(searched)
+        + f"\n\nInstall restic (https://restic.net/#installation), or set "
+        f"{const.ENV_VAR_BOXYARD_RESTIC} to its full path."
+    )
+
+# %%
+#|export
+def get_restic_binary() -> str:
+    """The resolved restic binary path, resolved and cached on first use."""
+    global _restic_binary
+    if _restic_binary is None:
+        _restic_binary = _resolve_restic_binary()
+    return _restic_binary
+
+# %% [markdown]
+# ## Addressing a repo
+#
+# `ResticRepo` is the whole context one invocation needs. It is a value object
+# on purpose: tests point it at a LOCAL directory and exercise every code path
+# below with no remote, no rclone and no network.
+
+# %%
+#|export
+@dataclass(frozen=True)
+class ResticRepo:
+    """
+    Where a repo is, and how to reach it.
+
+    `rclone_program` is what makes restic inherit BOXYARD'S storage-location
+    abstraction rather than replacing it with restic's own, much narrower, set
+    of backends. It is `None` for a local path, which is what tests use.
+    """
+
+    url: str
+    password: str
+    cache_dir: Path
+    rclone_program: str | None = None
+
+    def base_args(self) -> list[str]:
+        args = [get_restic_binary()]
+        if self.rclone_program is not None:
+            args += ["-o", f"rclone.program={self.rclone_program}"]
+        return args + ["-r", self.url]
+
+    def env(self) -> dict[str, str]:
+        """
+        The child environment. The password is passed HERE, fetched once per
+        process by the caller.
+
+        Not restic's `--password-command`: restic reruns it on every
+        invocation, and `secret get` measured 0.77-1.51 s, so at one invocation
+        per box that is minutes of 1Password round trips per pass for a value
+        that does not change.
+        """
+        env = dict(os.environ)
+        env["RESTIC_PASSWORD"] = self.password
+        env["RESTIC_CACHE_DIR"] = str(self.cache_dir)
+        # A password file or command inherited from the ambient environment
+        # would silently win over what we just set.
+        env.pop("RESTIC_PASSWORD_FILE", None)
+        env.pop("RESTIC_PASSWORD_COMMAND", None)
+        env.pop("RESTIC_REPOSITORY", None)
+        env.pop("RESTIC_REPOSITORY_FILE", None)
+        return env
+
+
+def rclone_program_for(rclone_config_path: "str | Path") -> str:
+    """
+    The `-o rclone.program` string that routes restic through boxyard's own
+    rclone configuration.
+    """
+    from boxyard._utils import get_rclone_binary
+
+    return f"{get_rclone_binary()} --config {rclone_config_path}"
+
+
+def repo_url_for_box(
+    store_path: Path, storage_location: str, remote_index_name: str
+) -> str:
+    """The rclone-backed repo URL for one box at one storage location."""
+    path = (
+        Path(store_path)
+        / const.REMOTE_BOXES_REL_PATH
+        / remote_index_name
+        / const.BOX_RESTIC_REL_PATH
+    )
+    return f"rclone:{storage_location}:{path.as_posix()}"
+
+
+def pointer_remote_path(store_path: Path, remote_index_name: str) -> Path:
+    """Where the snapshot pointer lives on the remote, at depth 2."""
+    return (
+        Path(store_path)
+        / const.REMOTE_BOXES_REL_PATH
+        / remote_index_name
+        / const.BOX_SNAPSHOT_POINTER_REL_PATH
+    )
+
+# %% [markdown]
+# ## Running restic
+
+# %%
+#|export
+async def run_restic(
+    repo: ResticRepo,
+    args: list[str],
+    *,
+    timeout: float | None = None,
+    check: bool = True,
+) -> tuple[int, str, str]:
+    """
+    Run one restic subcommand. Returns `(returncode, stdout, stderr)`.
+
+    Always argv, never a shell string: a box's DATA path comes off the
+    filesystem and may contain spaces, quotes, backticks or `$()`.
+
+    `check=False` is for the callers that must distinguish "restic said no" from
+    "restic failed" -- notably `snapshot_exists`, where restic's two relevant
+    commands disagree about how absence is reported.
+    """
+    cmd = repo.base_args() + args
+    returncode, stdout, stderr = await run_cmd_async(
+        cmd, timeout=timeout, env=repo.env()
+    )
+    if returncode == const.RESTIC_EXIT_LOCK_FAILED:
+        raise ResticLocked(
+            f"restic could not lock '{repo.url}': another operation holds it "
+            f"exclusively (`forget` or `prune`, or a stale lock from a machine "
+            f"that suspended). `restic unlock` clears a stale one.\n{stderr.strip()}",
+            returncode=returncode,
+            stderr=stderr,
+        )
+    if check and returncode != 0:
+        raise ResticError(
+            f"`restic {args[0] if args else ''}` failed on '{repo.url}' "
+            f"(exit {returncode}).\n{stderr.strip()}",
+            returncode=returncode,
+            stderr=stderr,
+        )
+    return returncode, stdout, stderr
+
+
+async def init_repo(repo: ResticRepo) -> None:
+    """Create the repository. Fails loudly if one is already there."""
+    await run_restic(repo, ["init"])
+
+
+async def repo_exists(repo: ResticRepo) -> bool:
+    """Whether a repository is already present and openable at this URL."""
+    returncode, _, _ = await run_restic(
+        repo, ["cat", "config"], timeout=const.RESTIC_METADATA_TIMEOUT, check=False
+    )
+    return returncode == 0
+
+# %% [markdown]
+# ## Trap 1: exclude and include anchor by OPPOSITE rules
+#
+# Measured, with a `.boxyard-perms.json` at the DATA root and another in a
+# subdirectory:
+#
+# | `backup --exclude ...` | manifests left in the snapshot |
+# |---|---|
+# | `.boxyard-perms.json` | 0 -- unanchored basename, matches at every depth |
+# | `/.boxyard-perms.json` | 2 -- anchors at the FILESYSTEM root, matches nothing |
+# | `<abs data path>/.boxyard-perms.json` | 1 -- exactly the root one |
+#
+# and for `restore <snap>:<source> --include ...`:
+#
+# | pattern | result |
+# |---|---|
+# | `/coordination/FLOOR-REPORT.md` | exactly that file |
+# | `coordination/FLOOR-REPORT.md` | works, but unanchored |
+# | `package.json` | 98 unrelated matches |
+# | `<abs>/coordination/FLOOR-REPORT.md` | 0 files |
+#
+# So `backup` matches the ABSOLUTE path and `restore --include` matches
+# RELATIVE to the subpath. Both wrong answers are silent, so both spellings live
+# in one named function each, with a test that fails if either is changed.
+
+# %%
+#|export
+def data_root_exclude_args(data_path: Path) -> list[str]:
+    """
+    `--exclude` arguments for things that must never enter a snapshot.
+
+    Today that is exactly the exec-bit manifest: restic carries Unix mode
+    natively and exactly (755/644/775 all round-trip), so the manifest is dead
+    weight for a restic-backed box -- and leaving it in would churn a generated
+    file inside the very thing that exists to avoid churning generated files.
+
+    ANCHORED TO THE ABSOLUTE PATH, because that is what `backup` matches
+    against. The bare basename would also exclude a `.boxyard-perms.json` that
+    is real content somewhere inside the box; a leading slash would exclude
+    nothing at all.
+    """
+    return [
+        "--exclude",
+        (Path(data_path) / const.BOX_PERMS_MANIFEST_REL_PATH).as_posix(),
+    ]
+
+
+def anchored_include_args(rel_paths: list[str]) -> list[str]:
+    """
+    `--include` arguments for a targeted restore, anchored to the snapshot
+    SUBPATH by a leading slash.
+
+    Without the leading slash restic matches the basename at any depth, so
+    restoring one changed `package.json` would restore every `package.json` in
+    the box. With an absolute path it matches nothing and restores silently
+    nothing at all.
+    """
+    args: list[str] = []
+    for rel in rel_paths:
+        args += [f"--include=/{rel.lstrip('/')}"]
+    return args
+
+# %% [markdown]
+# ## Snapshots
+#
+# `snapshot_exists` is its own function because restic does not report absence
+# the way a caller expects, and its two relevant commands disagree:
+#
+#     restic snapshots --json <gone>   -> rc=0, stdout `[]`, warning on stderr
+#     restic backup --parent <gone>    -> rc=1, no summary
+#
+# A returncode check misses the first entirely and reads the second as a general
+# failure. Getting this wrong turns a clean replica whose base was forgotten by
+# another machine's retention pass into a permanent false CONFLICT.
+
+# %%
+#|export
+async def snapshot_exists(repo: ResticRepo, snapshot_id: str) -> bool:
+    """Whether `snapshot_id` is still in the repo."""
+    returncode, stdout, _ = await run_restic(
+        repo,
+        ["snapshots", snapshot_id, "--json"],
+        timeout=const.RESTIC_METADATA_TIMEOUT,
+        check=False,
+    )
+    if returncode != 0:
+        return False
+    try:
+        return bool(json.loads(stdout))
+    except json.JSONDecodeError:
+        return False
+
+
+async def snapshot_source_path(repo: ResticRepo, snapshot_id: str) -> str | None:
+    """
+    The absolute path this snapshot was backed up FROM, or None if it is gone.
+
+    Needed on every pull: it is what lets `restore <snap>:<source>` place the
+    CONTENTS at an arbitrary local directory, so a box is restorable onto a
+    machine whose checkout root differs from the pusher's.
+    """
+    returncode, stdout, _ = await run_restic(
+        repo,
+        ["snapshots", snapshot_id, "--json"],
+        timeout=const.RESTIC_METADATA_TIMEOUT,
+        check=False,
+    )
+    if returncode != 0:
+        return None
+    try:
+        snapshots = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    if not snapshots or not snapshots[0].get("paths"):
+        return None
+    return snapshots[0]["paths"][0]
+
+
+async def latest_snapshot_id(repo: ResticRepo) -> str | None:
+    """The most recent snapshot's full id, or None for an empty repo."""
+    returncode, stdout, _ = await run_restic(
+        repo,
+        ["snapshots", "--json", "--latest", "1"],
+        timeout=const.RESTIC_METADATA_TIMEOUT,
+        check=False,
+    )
+    if returncode != 0:
+        return None
+    try:
+        snapshots = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    return snapshots[-1]["id"] if snapshots else None
+
+# %% [markdown]
+# ## The machine-local state record
+#
+# Degrades in ONE direction, exactly like `_sync_policy`'s check records: a
+# record that is missing, unreadable or malformed means "I do not know", and
+# every caller must read that as "do the work". Losing it costs a full restore,
+# never correctness, and the directory can be deleted at any time.
+#
+# `synced_at_unix` is not decoration. Retention on another machine may delete
+# the snapshot this record names, and once it is gone the repo can no longer
+# answer "does my tree differ from what I last synced". The timestamp answers it
+# WITHOUT the repo -- the same mtime-versus-record-time test the plain backend
+# already applies in `get_sync_status`.
+
+# %%
+#|export
+def state_path(boxyard_data_path: Path, box_index_name: str) -> Path:
+    return (
+        Path(boxyard_data_path)
+        / const.RESTIC_STATE_REL_PATH
+        / box_index_name
+        / "data.json"
+    )
+
+
+def read_state(boxyard_data_path: Path, box_index_name: str) -> dict | None:
+    """The snapshot this machine last agreed with, and when, or None."""
+    path = state_path(boxyard_data_path, box_index_name)
+    if not path.exists():
+        return None
+    try:
+        record = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+    if not isinstance(record, dict) or not record.get("snapshot"):
+        return None
+    return record
+
+
+def write_state(
+    boxyard_data_path: Path,
+    box_index_name: str,
+    snapshot_id: str,
+    now_unix: float | None = None,
+) -> Path:
+    """
+    Record agreement with `snapshot_id`, now.
+
+    Written via a temp file in the same directory then renamed, so a crash
+    mid-write leaves either the old record or the new one, never a truncated
+    file that reads as "never synced" and silently costs a full restore.
+    """
+    import tempfile
+    import time
+
+    path = state_path(boxyard_data_path, box_index_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "snapshot": snapshot_id,
+        "synced_at_unix": time.time() if now_unix is None else now_unix,
+    }
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(record))
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return path
+
+# %% [markdown]
+# ## The remote pointer
+
+# %%
+#|export
+async def read_pointer(
+    rclone_config_path: Path,
+    storage_location: str,
+    store_path: Path,
+    remote_index_name: str,
+) -> dict | None:
+    """
+    The remote's current snapshot pointer, or None if the box has never been
+    pushed in this format.
+
+    A single-box read, for the standalone paths. The scheduled pass gets this
+    for the WHOLE yard out of the bulk depth-2 listing it already runs.
+    """
+    from boxyard._utils import rclone_cat
+
+    exists, raw = await rclone_cat(
+        rclone_config_path=rclone_config_path,
+        source=storage_location,
+        source_path=pointer_remote_path(store_path, remote_index_name).as_posix(),
+    )
+    if not exists:
+        return None
+    return parse_pointer(raw)
+
+
+def parse_pointer(raw: str) -> dict | None:
+    """
+    Parse a pointer's contents.
+
+    Unreadable is reported as None -- "the remote has not told us anything we
+    can use" -- which routes to a full restore. A corrupt pointer must not be
+    able to make a box look UP TO DATE.
+    """
+    try:
+        pointer = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(pointer, dict) or not pointer.get("snapshot"):
+        return None
+    return pointer
+
+
+async def write_pointer(
+    rclone_config_path: Path,
+    storage_location: str,
+    store_path: Path,
+    remote_index_name: str,
+    snapshot_id: str,
+    source_path: str,
+) -> None:
+    """
+    Publish the snapshot the remote should now be considered to hold.
+
+    Written AFTER the snapshot exists, never before: the other order advertises
+    a snapshot that is not there yet, and a puller would fail on a repo that is
+    actually fine.
+    """
+    import tempfile
+
+    from boxyard._utils import rclone_copyto
+
+    body = json.dumps({"snapshot": snapshot_id, "path": source_path}, sort_keys=True)
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".snapshot", delete=False
+    ) as handle:
+        handle.write(body + "\n")
+        tmp = Path(handle.name)
+    try:
+        await rclone_copyto(
+            rclone_config_path=rclone_config_path,
+            source="",
+            source_path=tmp.as_posix(),
+            dest=storage_location,
+            dest_path=pointer_remote_path(
+                store_path, remote_index_name
+            ).as_posix(),
+            dry_run=False,
+        )
+    finally:
+        tmp.unlink(missing_ok=True)
+
+# %% [markdown]
+# ## Change detection
+#
+# Normally `backup --dry-run --parent <recorded snapshot>`: restic reports what
+# it WOULD add, and nothing added means nothing to push. That reuses restic's
+# own detection rather than re-deriving one.
+#
+# Two things this must get right, both found by measurement:
+#
+# - A perfect no-op reports **`Dirs: 0 new, 1 changed`** -- the root directory's
+#   own metadata is re-read. Consulting `dirs_changed` makes every box
+#   permanently `NEEDS_PUSH` and silently disables the entire skip filter.
+# - The recorded snapshot may have been FORGOTTEN by another machine's retention
+#   pass, and `backup --parent <gone>` exits 1. Reading that as "assume changed"
+#   turns a clean replica into a permanent false CONFLICT.
+
+# %%
+#|export
+async def parent_is_usable(
+    repo: "ResticRepo", parent_snapshot: str, data_path: Path
+) -> bool:
+    """
+    Can restic's own change detection answer for this (snapshot, path) pair?
+
+    Only if the snapshot still EXISTS and was taken from THIS EXACT PATH.
+
+    The path condition is the absolute-path trap in its third and most
+    consequential place. `backup --parent` matches the parent's tree BY PATH, so
+    a parent taken elsewhere makes every file look new: measured, byte-identical
+    content under a different path reports `files_new=1, files_unmodified=0`
+    against `files_new=0, files_unmodified=1` for the same content under the
+    same path.
+
+    Without this check every replica whose checkout path differs from the
+    pusher's reports CONFLICT instead of NEEDS_PULL, permanently. On this fleet
+    that is not an edge case: `~/dev/<box>` is `/Users/lukastk/...` on the Macs
+    and `/home/lukastk/...` on Linux, so EVERY box shared between a Mac and a
+    Linux machine would be stuck.
+
+    The consequence is that restic's fast, exact detection serves the machine
+    that last pushed -- in practice the `write_owner`, the one that actually
+    edits -- and every other replica falls back to the mtime test the plain
+    backend already uses. That is not a regression; it is today's semantics.
+    """
+    source = await snapshot_source_path(repo, parent_snapshot)
+    if source is None:
+        return False
+    return source == os.path.abspath(str(data_path))
+
+
+def tree_modified_since(data_path: Path, since_unix: float) -> bool:
+    """
+    Repo-independent change detection, for when the recorded snapshot is gone.
+
+    Deliberately the SAME question the plain backend already asks --
+    `check_last_time_modified` against the sync record's timestamp -- so the
+    fallback is not a new mechanism and not a weaker guarantee than today's.
+    """
+    from boxyard._utils import check_last_time_modified
+
+    last_modified = check_last_time_modified(Path(data_path))
+    if last_modified is None:
+        return False  # nothing there to have changed
+    return last_modified.timestamp() > since_unix
+
+
+async def local_is_modified(
+    repo: ResticRepo,
+    data_path: Path,
+    parent_snapshot: str | None,
+    *,
+    synced_at_unix: float | None = None,
+    excludes: list[str] | None = None,
+) -> bool:
+    """
+    Does this machine hold DATA changes the remote has not seen?
+    """
+    if parent_snapshot and not await parent_is_usable(repo, parent_snapshot, data_path):
+        if synced_at_unix is None:
+            # No timestamp either: a record written before this field existed.
+            # Now we genuinely cannot tell, and "assume changed" is the safe
+            # direction -- it costs a sync, never a wrong skip.
+            return True
+        return tree_modified_since(data_path, synced_at_unix)
+
+    args = ["backup", "--dry-run", "--no-scan", "--json"]
+    args += data_root_exclude_args(data_path)
+    for pattern in excludes or []:
+        args += ["--exclude", pattern]
+    if parent_snapshot:
+        args += ["--parent", parent_snapshot]
+    args.append(str(data_path))
+
+    returncode, stdout, _ = await run_restic(repo, args, check=False)
+    if returncode != 0:
+        return True  # cannot tell -> assume changed
+
+    for line in stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if message.get("message_type") == "summary":
+            return bool(
+                message.get("files_new")
+                or message.get("files_changed")
+                or message.get("dirs_new")
+            )
+    return True
+
+# %% [markdown]
+# ## Status
+#
+# The restic replacement for the SyncRecord/ULID comparison, and strictly better
+# informed: snapshots are a linear history with ids, so "the remote moved past
+# me" and "we both moved" are distinguishable facts rather than a timestamp
+# comparison.
+
+# %%
+#|export
+class ResticCondition(Enum):
+    """Named to line up with `SyncCondition`, so the mapping is mechanical."""
+
+    SYNCED = "synced"
+    NEEDS_PUSH = "needs_push"
+    NEEDS_PULL = "needs_pull"
+    CONFLICT = "conflict"
+    # No repo or no pointer on the remote: this box has never been pushed in
+    # this format. A legitimate, expected state, not an error.
+    UNINITIALISED = "uninitialised"
+
+
+@dataclass(frozen=True)
+class ResticStatus:
+    condition: ResticCondition
+    remote_snapshot: str | None = None
+    local_snapshot: str | None = None
+    local_modified: bool = False
+
+
+async def get_status(
+    repo: ResticRepo,
+    data_path: Path,
+    *,
+    remote_snapshot: str | None,
+    local_snapshot: str | None,
+    synced_at_unix: float | None = None,
+    excludes: list[str] | None = None,
+) -> ResticStatus:
+    """
+    Map (remote pointer, local record, local tree) onto a condition.
+
+    Survives retention: if the locally recorded snapshot has been forgotten, an
+    unmodified replica still reports NEEDS_PULL and only a genuinely edited one
+    reports CONFLICT. See `local_is_modified`.
+    """
+    if remote_snapshot is None:
+        return ResticStatus(ResticCondition.UNINITIALISED, None, local_snapshot, True)
+
+    modified = await local_is_modified(
+        repo,
+        data_path,
+        local_snapshot,
+        synced_at_unix=synced_at_unix,
+        excludes=excludes,
+    )
+
+    if local_snapshot == remote_snapshot:
+        return ResticStatus(
+            ResticCondition.NEEDS_PUSH if modified else ResticCondition.SYNCED,
+            remote_snapshot,
+            local_snapshot,
+            modified,
+        )
+
+    if modified:
+        return ResticStatus(
+            ResticCondition.CONFLICT, remote_snapshot, local_snapshot, True
+        )
+    return ResticStatus(
+        ResticCondition.NEEDS_PULL, remote_snapshot, local_snapshot, False
+    )
+
+# %% [markdown]
+# ## Push
+
+# %%
+#|export
+@dataclass
+class PushResult:
+    snapshot_id: str
+    source_path: str
+
+
+async def push(
+    repo: ResticRepo,
+    data_path: Path,
+    *,
+    parent: str | None = None,
+    excludes: list[str] | None = None,
+    exclude_file: Path | None = None,
+) -> PushResult:
+    """
+    Back the box's DATA up. Returns the new snapshot id and the path it records.
+
+    Deliberately does NOT write the pointer or the local state record: the
+    caller does that, so the ordering (snapshot first, then pointer, then local
+    state) stays visible at the call site rather than buried here.
+    """
+    args = ["backup", "--no-scan", "--json"]
+    args += data_root_exclude_args(data_path)
+    for pattern in excludes or []:
+        args += ["--exclude", pattern]
+    if exclude_file is not None:
+        args += ["--exclude-file", str(exclude_file)]
+    if parent:
+        args += ["--parent", parent]
+    args.append(str(data_path))
+
+    _, stdout, stderr = await run_restic(repo, args)
+
+    snapshot_id = None
+    for line in stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if message.get("message_type") == "summary":
+            snapshot_id = message.get("snapshot_id")
+    if not snapshot_id:
+        raise ResticError(
+            f"restic backup of '{data_path}' reported no snapshot id.\n"
+            f"{stdout}\n{stderr}"
+        )
+
+    source = await snapshot_source_path(repo, snapshot_id)
+    if source is None:
+        raise ResticError(
+            f"restic backup created snapshot {snapshot_id} but it has no "
+            f"recorded source path."
+        )
+    return PushResult(snapshot_id=snapshot_id, source_path=source)
+
+# %% [markdown]
+# ## Pull
+#
+# Three tiers, and the choice is the point of the design:
+#
+# * **Skip** -- the pointer has not moved. Decided by the caller, out of a bulk
+#   listing, at no remote cost.
+# * **Targeted** -- `restic diff` the two snapshots and restore only what moved,
+#   then apply removals. Measured 3.1-3.3 s for a 134k-file box against 14-65 s
+#   for a full restore, and byte-identical to it.
+# * **Full** -- `restore <snap>:<source> --target <data> --delete`. Correct
+#   always, O(destination tree).
+#
+# The full path is taken whenever the targeted one cannot be trusted, and every
+# such fallback carries its own name so diagnostics stay honest.
+
+# %%
+#|export
+class PullMode(Enum):
+    FULL = "full"
+    # Never restored here, or the state record was lost.
+    FULL_NO_BASE = "full-no-base"
+    # The base was FORGOTTEN by a retention pass on another machine. Normal and
+    # expected, not an error.
+    FULL_BASE_FORGOTTEN = "full-base-forgotten"
+    # Base and target were pushed from DIFFERENT absolute paths, so `restic
+    # diff` would report everything as added and removed. Acting on that diff
+    # would delete the box and restore it.
+    FULL_PATH_MISMATCH = "full-path-mismatch"
+    # `restic diff` itself failed.
+    FULL_DIFF_FAILED = "full-diff-failed"
+    DIFF = "diff"
+
+
+@dataclass
+class PullResult:
+    mode: PullMode
+    snapshot_id: str
+    changed: int = 0
+    removed: int = 0
+
+
+def parse_diff(stdout: str, source_prefix: str) -> tuple[list[str], list[str]]:
+    """
+    `(changed-or-added, removed)` as paths RELATIVE to the snapshot's source.
+
+    restic prints one line per path prefixed `+`, `-`, `M`, `U` or `T`, using
+    the absolute path recorded in the snapshot. Only `-` means "gone in the
+    newer snapshot"; everything else needs restoring.
+    """
+    changed: list[str] = []
+    removed: list[str] = []
+    prefix = source_prefix.rstrip("/")
+    for line in stdout.splitlines():
+        if len(line) < 2 or line[0] not in "+-MUT" or line[1] != " ":
+            continue
+        mark, path = line[0], line[2:].strip()
+        if not path.startswith(prefix):
+            continue
+        rel = path[len(prefix):].strip("/")
+        if not rel:
+            continue
+        (removed if mark == "-" else changed).append(rel)
+    return changed, removed
+
+
+def apply_removals(data_path: Path, rel_paths: list[str]) -> int:
+    """
+    Delete paths the newer snapshot no longer has. Returns how many were removed.
+
+    `restore --include` does NOT delete -- verified: a file absent from the
+    newer snapshot survives an --include restore and is only removed by a full
+    `restore --delete`. Without this a file deleted on another machine silently
+    comes back, which is the exact class of bug tombstones exist to prevent.
+    """
+    root = Path(data_path).resolve()
+    removed = 0
+    # Deepest first, so a directory is emptied before it is removed.
+    for rel in sorted(rel_paths, key=lambda p: p.count("/"), reverse=True):
+        # A path out of the repo is DATA, not an instruction: `..` must not
+        # escape the box's own DATA directory, and `.` must not delete the box.
+        normalised = os.path.normpath(rel)
+        if (
+            os.path.isabs(normalised)
+            or normalised in (".", "")
+            or normalised == ".."
+            or normalised.startswith(".." + os.sep)
+        ):
+            continue
+
+        victim = Path(data_path) / normalised
+        # Resolve the PARENT, not the victim. Resolving the victim follows it
+        # when it is itself a symlink, so a link pointing outside the box would
+        # look like an escape attempt and be skipped -- leaving a file the newer
+        # snapshot has deleted sitting on disk forever. Deleting the LINK is
+        # both correct and safe; it never touches what the link points at.
+        # Resolving the parent still catches the real escape, which is a
+        # symlinked DIRECTORY on the way down.
+        try:
+            victim.parent.resolve().relative_to(root)
+        except (ValueError, OSError):
+            continue
+
+        if victim.is_symlink():
+            victim.unlink(missing_ok=True)
+            removed += 1
+        elif victim.is_file():
+            victim.unlink(missing_ok=True)
+            removed += 1
+        elif victim.is_dir():
+            shutil.rmtree(victim, ignore_errors=True)
+            removed += 1
+    return removed
+
+
+async def pull(
+    repo: ResticRepo,
+    data_path: Path,
+    *,
+    target_snapshot: str,
+    base_snapshot: str | None,
+) -> PullResult:
+    """Bring the local tree to `target_snapshot`."""
+    data_path = Path(data_path)
+    data_path.mkdir(parents=True, exist_ok=True)
+
+    target_source = await snapshot_source_path(repo, target_snapshot)
+    if target_source is None:
+        raise ResticError(
+            f"snapshot {target_snapshot} is not in '{repo.url}', or has no "
+            f"recorded source path."
+        )
+
+    async def _full(mode: PullMode) -> PullResult:
+        # `<snap>:<source>` places the snapshot's CONTENTS at the target,
+        # rather than at `<target>/<absolute source path>` which the plain form
+        # produces. That is what makes the local checkout path independent of
+        # the pusher's -- mymain alone has two checkout roots.
+        await run_restic(
+            repo,
+            [
+                "restore",
+                f"{target_snapshot}:{target_source}",
+                "--target",
+                str(data_path),
+                "--delete",
+            ],
+        )
+        return PullResult(mode=mode, snapshot_id=target_snapshot)
+
+    if base_snapshot is None:
+        return await _full(PullMode.FULL_NO_BASE)
+    if base_snapshot == target_snapshot:
+        return await _full(PullMode.FULL)
+
+    base_source = await snapshot_source_path(repo, base_snapshot)
+    if base_source is None:
+        return await _full(PullMode.FULL_BASE_FORGOTTEN)
+    if base_source != target_source:
+        return await _full(PullMode.FULL_PATH_MISMATCH)
+
+    returncode, stdout, _ = await run_restic(
+        repo,
+        ["diff", base_snapshot, target_snapshot],
+        timeout=const.RESTIC_METADATA_TIMEOUT,
+        check=False,
+    )
+    if returncode != 0:
+        return await _full(PullMode.FULL_DIFF_FAILED)
+
+    changed, removed = parse_diff(stdout, target_source)
+
+    if changed:
+        await run_restic(
+            repo,
+            [
+                "restore",
+                f"{target_snapshot}:{target_source}",
+                "--target",
+                str(data_path),
+            ]
+            + anchored_include_args(changed),
+        )
+
+    removed_count = apply_removals(data_path, removed)
+    return PullResult(
+        mode=PullMode.DIFF,
+        snapshot_id=target_snapshot,
+        changed=len(changed),
+        removed=removed_count,
+    )

@@ -881,3 +881,54 @@ class TestModificationScanRespectsExcludes:
         f.write_text("x")
         assert check_last_time_modified(f, exclude_names={".DS_Store"}) is None
         assert check_last_time_modified(f) is not None
+
+# %% [markdown]
+# ## `run_cmd_async(env=...)`
+#
+# Added for restic, which takes its repository password through
+# `RESTIC_PASSWORD`. The alternatives were worse: `--password-command` reruns a
+# 1Password fetch per invocation, and mutating `os.environ` would race with the
+# other coroutines this function deliberately runs concurrently.
+
+# %%
+#|export
+def test_run_cmd_async_inherits_the_environment_by_default(monkeypatch):
+    import asyncio
+
+    from boxyard._utils import run_cmd_async
+
+    monkeypatch.setenv("BOXYARD_TEST_MARKER", "inherited")
+    rc, out, _ = asyncio.run(
+        run_cmd_async(["sh", "-c", "printf %s \"$BOXYARD_TEST_MARKER\""])
+    )
+    assert rc == 0
+    assert out == "inherited"
+
+
+def test_run_cmd_async_env_replaces_the_environment(monkeypatch):
+    import asyncio
+
+    from boxyard._utils import run_cmd_async
+
+    monkeypatch.setenv("BOXYARD_TEST_MARKER", "inherited")
+    rc, out, _ = asyncio.run(
+        run_cmd_async(
+            ["sh", "-c", "printf %s \"$BOXYARD_TEST_MARKER-$BOXYARD_TEST_OTHER\""],
+            env={"BOXYARD_TEST_OTHER": "supplied", "PATH": "/usr/bin:/bin"},
+        )
+    )
+    assert rc == 0
+    assert out == "-supplied", "the inherited variable leaked into the child"
+
+
+def test_run_cmd_async_env_does_not_mutate_the_parent(monkeypatch):
+    """The whole point: concurrent callers must not see each other's values."""
+    import asyncio
+    import os
+
+    from boxyard._utils import run_cmd_async
+
+    asyncio.run(
+        run_cmd_async(["true"], env={"BOXYARD_TEST_OTHER": "x", "PATH": "/usr/bin:/bin"})
+    )
+    assert "BOXYARD_TEST_OTHER" not in os.environ

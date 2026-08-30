@@ -36,12 +36,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Install rclone
+      - name: Install rclone and restic
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
-            brew install rclone
+            brew install rclone restic
           else
-            sudo apt-get update && sudo apt-get install -y rclone
+            sudo apt-get update && sudo apt-get install -y rclone restic
           fi
 
       - name: Run tests

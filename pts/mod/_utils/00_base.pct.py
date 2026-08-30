@@ -427,6 +427,7 @@ def _ensure_suspend_watchdog() -> None:
 async def run_cmd_async(
     cmd: list[str],
     timeout: float | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """
     Run `cmd`, returning `(returncode, stdout, stderr)`.
@@ -435,6 +436,13 @@ async def run_cmd_async(
     inherently bounded — listings and metadata reads. Transfers have no
     meaningful upper bound (a big box legitimately takes hours) and should be
     left unbounded; the suspend watchdog covers them instead.
+
+    `env` REPLACES the child's environment when given; `None` inherits this
+    process's, which is what every caller before restic wanted. It exists
+    because restic takes its repository password through `RESTIC_PASSWORD`, and
+    the alternatives are worse: `--password-command` reruns a 1Password fetch on
+    every invocation, and mutating `os.environ` would race with the other
+    coroutines this function deliberately runs concurrently.
 
     Raises `CommandTimeout` if `timeout` is exceeded, or `SuspendInterruption`
     if the machine resumed from sleep mid-run. Both kill the whole process
@@ -449,6 +457,7 @@ async def run_cmd_async(
             stderr=asyncio.subprocess.PIPE,
             # Own process group, so we can take its children down with it.
             start_new_session=True,
+            env=env,
         )
         _live_procs.add(proc)
         try:

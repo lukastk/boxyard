@@ -58,6 +58,45 @@ RCLONE_FILTERS_FILENAME = ".rclone_filters"
 # metadata (e.g. SFTP). See _utils/perms.py. Ships as ordinary synced content.
 BOX_PERMS_MANIFEST_REL_PATH = ".boxyard-perms.json"
 
+# --- restic-backed DATA (see _dev/RESTIC-DATA-STORAGE-DESIGN-NOTE.md) --------
+#
+# A restic-backed box keeps its DATA as a per-box restic repository beside the
+# plain parts, NOT in place of `data/`. The two names deliberately do not
+# collide: during the migration window a converted box and an unconverted one
+# must be distinguishable, and a half-finished conversion must never be
+# ambiguous about which format is authoritative.
+BOX_RESTIC_REL_PATH = "data.restic"
+
+# A plain JSON file at depth 2, beside `boxmeta.toml`, naming the snapshot the
+# remote currently considers current (and the absolute path it was backed up
+# from -- restic records the pusher's path and offers no way to normalise it).
+#
+# It sits at depth 2 so the ONE bulk `lsjson` that `sync-missing-meta` and
+# `--skip-unchanged-meta` already run answers "did this box's DATA move" for the
+# whole yard at no additional remote calls. The repo's own `snapshots/`
+# directory remains the truth; this is a hint, and a stale hint costs one repo
+# open, never correctness.
+BOX_SNAPSHOT_POINTER_REL_PATH = "data.snapshot"
+
+# Machine-local record of which snapshot this machine last agreed with, under
+# `~/.boxyard/`. Never synced -- like the placement records, it is a fact about
+# THIS machine.
+RESTIC_STATE_REL_PATH = "restic_state"
+
+ENV_VAR_BOXYARD_RESTIC = "BOXYARD_RESTIC"  # explicit full path to the restic binary
+ENV_VAR_BOXYARD_RESTIC_PASSWORD = "BOXYARD_RESTIC_PASSWORD"
+
+# Wall-clock ceiling for restic calls whose work is bounded: reading the
+# snapshot list, diffing two snapshots, resolving a snapshot's source path.
+# Backup and restore are NOT bounded by this -- a large box legitimately takes
+# a long time, exactly as for rclone transfers.
+RESTIC_METADATA_TIMEOUT = 600.0
+
+# restic exit code for "could not acquire the repository lock". `forget` and
+# `prune` take an EXCLUSIVE lock, so a concurrent `backup` against the same
+# per-box repo hits this. Named rather than spelled 11 at the call site.
+RESTIC_EXIT_LOCK_FAILED = 11
+
 SOFT_INTERRUPT_COUNT = 3
 
 # How often the suspend watchdog compares the wall and monotonic clocks, and how
