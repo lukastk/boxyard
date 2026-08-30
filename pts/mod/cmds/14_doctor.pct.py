@@ -142,6 +142,7 @@ DOCTOR_CHECK_NAMES = [
     "checkout-placement",
     "duplicate-checkout",
     "interrupted-relocation",
+    "storage-format-mismatch",
 ]
 
 # %% [markdown]
@@ -677,6 +678,47 @@ for _bm in sorted(box_metas, key=lambda b: b.index_name):
             "asks for is not being applied. It was written deliberately, so "
             "boxyard refuses to guess: fix the file, or delete it to fall back "
             "to the group policy.",
+            box_index_name=_bm.index_name,
+        )
+
+# ## Check: `storage-format-mismatch`
+#
+# The policy says what format a box SHOULD have; `boxmeta.storage_format` says
+# what it actually has. Only an explicit `boxyard convert` moves the second, so
+# that editing `config.toml` can never reformat the primary copy of everything
+# on the next pass -- the defect the removed `compress` field had in another
+# form. The gap between the two is therefore a normal, expected state during a
+# migration, and doctor's job is to make it visible rather than to close it.
+#
+# Fires on nothing today: the default is `plain`, every box is `plain`, and no
+# policy sets the key.
+#
+# The hint deliberately names NO command. `boxyard convert` does not exist yet,
+# and `test_doctor_hints_are_runnable` enforces that every command a hint names
+# actually parses -- a rule with a scar behind it, since `diverged-box` spent
+# months telling people to run something that exited 2. The hint gains the
+# command when the command lands.
+
+for _bm in sorted(box_metas, key=lambda b: b.index_name):
+    try:
+        _policy = _resolve_policy(config, _bm)
+    except Exception:
+        # Already reported as `sync-policy-conflict` or `unusable-box-sync-conf`
+        # by the loop above; not this check's business to report twice.
+        continue
+    if _policy.storage_format != _bm.storage_format:
+        _add_finding(
+            "storage-format-mismatch",
+            f"Box '{_bm.index_name}' is stored as '{_bm.storage_format.value}' "
+            f"but policy asks for '{_policy.storage_format.value}' "
+            f"(from {_policy.sources.get('storage_format', 'unset')})",
+            "Nothing converts a box automatically, in either direction. The "
+            "format changes only through an explicit conversion that verifies a "
+            "byte-identical restore before the old copy is removed, and that "
+            "command does not exist yet. Meanwhile the box syncs normally in "
+            "the format it actually has, and this finding is informational: "
+            "either leave it until conversion ships, or change the policy if "
+            "the box should stay as it is.",
             box_index_name=_bm.index_name,
         )
 

@@ -11,6 +11,7 @@ import os
 from enum import Enum
 
 from . import const
+from ._enums import StorageFormat
 
 # %% pts/mod/config.pct.py 5
 class StorageType(Enum):
@@ -121,7 +122,7 @@ class SyncPolicyConfig(const.StrictModel):
     take its DATA cadence from `conf/sync.toml` and its META cadence from the
     group policy. `None` here is a legitimate expected state, not a masked bug.
 
-    There is deliberately NO `compress` here. Compression is a property of the
+    There is deliberately no `compress` here. Compression is a property of the
     storage BACKEND, not a scheduling policy: a restic-backed box is compressed
     and deduplicated because that is what the backend does, and no per-box knob
     would change it. The field existed briefly, implemented nothing, and was
@@ -136,6 +137,12 @@ class SyncPolicyConfig(const.StrictModel):
 
     data_interval: str | None = None
     meta_interval: str | None = None
+    # The format a matching box SHOULD have. Governs box CREATION only: an
+    # existing box keeps whatever `BoxMeta.storage_format` says it actually has
+    # until an explicit `boxyard convert` changes it, and `doctor` reports the
+    # difference. A config edit that silently reformatted 594 boxes on the next
+    # pass is precisely the defect the removed `compress` field had.
+    storage_format: StorageFormat | None = None
     groups: list[str] = []
 
     def interval_seconds(self, part: str, policy_name: str) -> int | None:

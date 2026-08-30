@@ -1,0 +1,387 @@
+# ---
+# jupyter:
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # `storage_format` — the policy dimension and the recorded fact
+#
+# Two DIFFERENT questions share this type, and keeping them apart is the whole
+# point:
+#
+# - `BoxMeta.storage_format` is what a box ACTUALLY has on the remote.
+# - `sync_policies.*.storage_format` is what it SHOULD have.
+#
+# Policy governs CREATION; only an explicit, verified conversion moves the fact.
+# A config edit must never reformat the primary copy of everything on the next
+# pass — the defect the removed `compress` field had in another form.
+
+# %%
+#|default_exp unit.sync_policy.test_storage_format
+
+# %%
+#|export
+import tomllib
+from pathlib import Path
+
+import pytest
+import tomli_w
+
+from boxyard._enums import BoxPart, StorageFormat
+from boxyard._models import BoxMeta
+from boxyard._sync_policy import (
+    BOX_OVERRIDABLE,
+    DEFAULT_STORAGE_FORMAT,
+    PolicyConflict,
+    resolve_policy,
+)
+from boxyard.config import Config, SyncPolicyConfig
+
+BASE_CONFIG = {
+    "config_path": Path("/tmp/does-not-matter/config.toml"),
+    "default_storage_location": "remote",
+    "boxyard_data_path": Path("/tmp/boxyard-test"),
+    "box_timestamp_format": "date_only",
+    "user_boxes_path": Path("/tmp/boxes"),
+    "user_box_groups_path": Path("/tmp/box-groups"),
+    "storage_locations": {
+        "remote": {"storage_type": "local", "store_path": "/tmp/store"}
+    },
+    "box_groups": {},
+    "virtual_box_groups": {},
+    "default_box_groups": [],
+    "box_subid_character_set": "abcdefghijklmnopqrstuvwxyz0123456789",
+    "box_subid_length": 5,
+    "max_concurrent_rclone_ops": 3,
+}
+
+
+def make_config(sync_policies=None, **overrides) -> Config:
+    data = dict(BASE_CONFIG)
+    data.update(overrides)
+    if sync_policies is not None:
+        data["sync_policies"] = sync_policies
+    return Config(**data)
+
+
+def make_box(groups=None, name="a-box", **kwargs) -> BoxMeta:
+    return BoxMeta(
+        creation_timestamp_utc="20260822",
+        box_subid="aaaaa",
+        name=name,
+        storage_location="remote",
+        creator_hostname="host",
+        groups=list(groups or []),
+        parents=[],
+        **kwargs,
+    )
+
+
+# %% [markdown]
+# ## The default is `plain`, and stays `plain` until the switch is thrown
+
+# %%
+#|export
+def test_the_default_is_plain():
+    """
+    restic becomes the default LAST, once conversion exists and has been proven.
+    A default of `restic` before then would make every new box unreadable by
+    every machine that has not upgraded.
+    """
+    assert DEFAULT_STORAGE_FORMAT is StorageFormat.PLAIN
+
+
+def test_an_unconfigured_yard_resolves_to_plain():
+    resolved = resolve_policy(make_config(), make_box(groups=["proj"]))
+    assert resolved.storage_format is StorageFormat.PLAIN
+
+
+def test_a_box_is_actually_plain_unless_told_otherwise():
+    assert make_box().storage_format is StorageFormat.PLAIN
+
+
+# %% [markdown]
+# ## Resolution reuses the existing per-dimension shape
+
+# %%
+#|export
+def test_storage_format_is_a_box_overridable_dimension():
+    assert "storage_format" in BOX_OVERRIDABLE
+
+
+def test_a_group_policy_sets_the_intended_format():
+    config = make_config(
+        {"cold": {"groups": ["archived"], "storage_format": "restic"}}
+    )
+    resolved = resolve_policy(config, make_box(groups=["archived"]))
+    assert resolved.storage_format is StorageFormat.RESTIC
+    assert resolved.sources["storage_format"] == "sync_policies.cold"
+
+
+def test_the_default_policy_is_the_floor():
+    config = make_config({"default": {"storage_format": "restic"}})
+    resolved = resolve_policy(config, make_box(groups=["proj"]))
+    assert resolved.storage_format is StorageFormat.RESTIC
+    assert resolved.sources["storage_format"] == "sync_policies.default"
+
+
+def test_an_unmatched_box_falls_through_to_the_default_policy():
+    config = make_config(
+        {
+            "default": {"storage_format": "plain"},
+            "cold": {"groups": ["archived"], "storage_format": "restic"},
+        }
+    )
+    resolved = resolve_policy(config, make_box(groups=["proj"]))
+    assert resolved.storage_format is StorageFormat.PLAIN
+
+
+def test_two_policies_disagreeing_is_refused_not_joined():
+    """
+    There is no correct join direction for a storage format, and guessing one
+    would silently convert a box. Same rule as every other dimension.
+    """
+    config = make_config(
+        {
+            "cold": {"groups": ["archived"], "storage_format": "restic"},
+            "special": {"groups": ["dormant"], "storage_format": "plain"},
+        }
+    )
+    with pytest.raises(PolicyConflict) as excinfo:
+        resolve_policy(config, make_box(groups=["archived", "dormant"]))
+    assert "storage_format" in str(excinfo.value)
+
+
+def test_two_policies_agreeing_is_not_a_conflict():
+    """What makes `archived` + `dormant` both mapping to cold settings work."""
+    config = make_config(
+        {
+            "cold": {"groups": ["archived"], "storage_format": "restic"},
+            "also": {"groups": ["dormant"], "storage_format": "restic"},
+        }
+    )
+    resolved = resolve_policy(config, make_box(groups=["archived", "dormant"]))
+    assert resolved.storage_format is StorageFormat.RESTIC
+
+
+def test_a_disagreement_on_another_dimension_still_raises_for_that_one():
+    """storage_format must not mask, or be masked by, the existing dimensions."""
+    config = make_config(
+        {
+            "a": {"groups": ["archived"], "storage_format": "restic",
+                  "data_interval": "6h"},
+            "b": {"groups": ["dormant"], "storage_format": "restic",
+                  "data_interval": "7d"},
+        }
+    )
+    with pytest.raises(PolicyConflict) as excinfo:
+        resolve_policy(config, make_box(groups=["archived", "dormant"]))
+    assert "data_interval" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("bad", ["restik", "RESTIC", "tar", "", "compress", "true"])
+def test_an_unknown_format_is_refused_loudly(bad):
+    """
+    A typo must not silently fall back to `plain`. A config that SAYS restic
+    while every box stays plain, discoverable only by going and looking at the
+    remote, is exactly what `compress` did.
+    """
+    with pytest.raises(Exception):
+        config = make_config({"default": {"storage_format": bad}})
+        resolve_policy(config, make_box())
+
+
+def test_a_bad_format_in_a_box_conf_is_refused(tmp_path):
+    """
+    The path pydantic does NOT guard. A policy value is validated when the
+    config loads, but `conf/sync.toml` is plain TOML read into a dict, so the
+    only thing standing between a typo and a silent fallback to `plain` is the
+    check in `resolve_policy`. Mutation testing found this untested.
+    """
+    config = make_config(boxyard_data_path=tmp_path)
+    box = make_box()
+    conf = box.get_local_part_path(config, BoxPart.CONF)
+    conf.mkdir(parents=True, exist_ok=True)
+    (conf / "sync.toml").write_text('storage_format = "restik"\n')
+
+    with pytest.raises(ValueError) as excinfo:
+        resolve_policy(config, box)
+    assert "storage_format" in str(excinfo.value)
+    assert "restik" in str(excinfo.value)
+
+
+def test_a_good_format_in_a_box_conf_is_accepted(tmp_path):
+    config = make_config(boxyard_data_path=tmp_path)
+    box = make_box()
+    conf = box.get_local_part_path(config, BoxPart.CONF)
+    conf.mkdir(parents=True, exist_ok=True)
+    (conf / "sync.toml").write_text('storage_format = "restic"\n')
+
+    resolved = resolve_policy(config, box)
+    assert resolved.storage_format is StorageFormat.RESTIC
+    assert resolved.sources["storage_format"] == "conf/sync.toml"
+
+
+def test_resolution_still_answers_the_other_dimensions():
+    """Adding a dimension must not disturb the ones already there."""
+    config = make_config(
+        {"default": {"data_interval": "6h", "meta_interval": "15m",
+                     "storage_format": "restic"}}
+    )
+    resolved = resolve_policy(config, make_box())
+    assert resolved.data_interval_seconds == 6 * 3600
+    assert resolved.meta_interval_seconds == 15 * 60
+    assert resolved.storage_format is StorageFormat.RESTIC
+
+
+# %% [markdown]
+# ## Policy governs CREATION, not conversion
+#
+# The property that makes a config edit safe.
+
+# %%
+#|export
+def test_asking_for_restic_does_not_change_what_a_box_actually_is():
+    config = make_config({"default": {"storage_format": "restic"}})
+    box = make_box()
+    resolved = resolve_policy(config, box)
+
+    assert resolved.storage_format is StorageFormat.RESTIC, "intended"
+    assert box.storage_format is StorageFormat.PLAIN, "actual, unchanged"
+
+
+def test_a_converted_box_is_not_reverted_by_a_plain_policy():
+    """
+    The other direction, and the more dangerous one: a config that says `plain`
+    must not make boxyard treat a restic-backed box as a plain tree, which would
+    overwrite the repository with a directory.
+    """
+    config = make_config({"default": {"storage_format": "plain"}})
+    box = make_box(storage_format=StorageFormat.RESTIC)
+    resolve_policy(config, box)
+    assert box.storage_format is StorageFormat.RESTIC
+
+
+# %% [markdown]
+# ## Wire compatibility
+#
+# `boxmeta.toml` is SYNCED, so an addition that dirtied every file — or that an
+# older machine stripped — would be felt across the whole fleet.
+
+# %%
+#|export
+def _saveable(tmp_path, **kwargs):
+    """A box and a config whose `save()` writes under `tmp_path`."""
+    config = make_config(boxyard_data_path=tmp_path)
+    box = make_box(**kwargs)
+    box.get_local_part_path(config, BoxPart.META).parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    return config, box
+
+
+def test_saving_a_plain_box_writes_no_storage_format_key(tmp_path):
+    """
+    Byte-identical to what every earlier version wrote, so the upgrade does not
+    dirty 594 boxmetas and trigger a fleet-wide META sync. Exercises the real
+    `save()`, because that is where the omission lives.
+    """
+    config, box = _saveable(tmp_path)
+    box.save(config)
+    text = box.get_local_part_path(config, BoxPart.META).read_text()
+    assert "storage_format" not in text
+
+
+def test_saving_a_converted_box_does_write_the_key(tmp_path):
+    config, box = _saveable(tmp_path, storage_format=StorageFormat.RESTIC)
+    box.save(config)
+    text = box.get_local_part_path(config, BoxPart.META).read_text()
+    assert 'storage_format = "restic"' in text
+
+
+def test_boxmeta_round_trips_the_format_through_a_file(tmp_path):
+    path = tmp_path / "boxmeta.toml"
+    box = make_box(storage_format=StorageFormat.RESTIC)
+    path.write_text(
+        tomli_w.dumps(
+            {
+                "storage_location": "remote",
+                "creator_hostname": "host",
+                "groups": [],
+                "parents": [],
+                "storage_format": "restic",
+            }
+        )
+    )
+    loaded = BoxMeta.load_from_path(
+        path,
+        creation_timestamp_utc="20260822",
+        box_subid="aaaaa",
+        name="a-box",
+        storage_location="remote",
+    )
+    assert loaded.storage_format is StorageFormat.RESTIC
+    assert "storage_format" not in loaded.unknown_keys
+
+
+def test_an_absent_key_loads_as_plain(tmp_path):
+    """Every one of the 594 boxmetas that exist today."""
+    path = tmp_path / "boxmeta.toml"
+    path.write_text(
+        tomli_w.dumps(
+            {
+                "storage_location": "remote",
+                "creator_hostname": "host",
+                "groups": [],
+                "parents": [],
+            }
+        )
+    )
+    loaded = BoxMeta.load_from_path(
+        path,
+        creation_timestamp_utc="20260822",
+        box_subid="aaaaa",
+        name="a-box",
+        storage_location="remote",
+    )
+    assert loaded.storage_format is StorageFormat.PLAIN
+
+
+def test_an_unknown_format_in_a_boxmeta_is_refused(tmp_path):
+    """
+    A boxmeta naming a format this version cannot handle must fail loudly, not
+    fall back to `plain` and overwrite a repository with a directory.
+    """
+    path = tmp_path / "boxmeta.toml"
+    path.write_text(
+        tomli_w.dumps(
+            {
+                "storage_location": "remote",
+                "creator_hostname": "host",
+                "groups": [],
+                "parents": [],
+                "storage_format": "some-future-format",
+            }
+        )
+    )
+    with pytest.raises(Exception):
+        BoxMeta.load_from_path(
+            path,
+            creation_timestamp_utc="20260822",
+            box_subid="aaaaa",
+            name="a-box",
+            storage_location="remote",
+        )
+
+
+def test_the_policy_field_accepts_only_the_known_formats():
+    with pytest.raises(Exception):
+        SyncPolicyConfig(storage_format="restik")
+    assert (
+        SyncPolicyConfig(storage_format="restic").storage_format
+        is StorageFormat.RESTIC
+    )
+    assert SyncPolicyConfig().storage_format is None, "None means 'not stated here'"

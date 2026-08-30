@@ -50,3 +50,27 @@ class RenameScope(str, Enum):
 class SyncNameDirection(str, Enum):
     TO_LOCAL = "to_local"
     TO_REMOTE = "to_remote"
+
+
+class StorageFormat(str, Enum):
+    """
+    How a box's DATA is stored at its storage location.
+
+    `plain` is a directory tree synced file by file with rclone -- what every
+    box is today. `restic` is a per-box content-addressed repository; see
+    `_dev/RESTIC-DATA-STORAGE-DESIGN-NOTE.md`.
+
+    Two DIFFERENT questions use this type, and conflating them is the mistake
+    the removed `compress` field made in another form:
+
+    - `BoxMeta.storage_format` is the format a box ACTUALLY has on the remote.
+      It changes only through an explicit, verified `boxyard convert`.
+    - `sync_policies.*.storage_format` is the format a box SHOULD have, and it
+      governs CREATION only.
+
+    `doctor` reports where the two disagree. Editing config must never reformat
+    the primary copy of everything on the next pass.
+    """
+
+    PLAIN = "plain"
+    RESTIC = "restic"

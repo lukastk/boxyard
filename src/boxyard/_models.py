@@ -17,7 +17,7 @@ from . import const
 from .config import BoxGroupConfig, BoxTimestampFormat
 
 # %% pts/mod/_models.pct.py 5
-from ._enums import BoxPart
+from ._enums import BoxPart, StorageFormat
 
 # %% pts/mod/_models.pct.py 6
 def _validate_single_path_component(value: str, label: str) -> None:
@@ -177,6 +177,23 @@ class BoxMeta(const.StrictModel):
     # field exists first so that every machine can already read a boxmeta that
     # carries it before any machine can write one.
     write_owner: str | None = None
+
+    # The format this box's DATA ACTUALLY has on its storage location -- not the
+    # one policy would like it to have. It changes only through an explicit,
+    # verified `boxyard convert`, so that editing `config.toml` can never
+    # reformat the primary copy of everything on the next pass.
+    #
+    # `save()` OMITS the key when it is PLAIN, exactly as `write_owner` omits
+    # None, so every existing boxmeta.toml stays byte-identical and no upgrade
+    # triggers a fleet-wide META sync. A converted box is the only one that
+    # carries the key.
+    #
+    # Safe to add because `unknown_keys` exists: a machine on an older boxyard
+    # PRESERVES the key verbatim rather than stripping it, and reports it under
+    # doctor's `unknown-boxmeta-keys`. Without that passthrough, one
+    # `add-to-group` on an old machine would silently make a converted box look
+    # plain again.
+    storage_format: "StorageFormat" = StorageFormat.PLAIN
 
     # Forward-compat passthrough: keys found in `boxmeta.toml` that this
     # version of boxyard does not know. `load` collects them here and `save`
@@ -401,6 +418,9 @@ class BoxMeta(const.StrictModel):
         # `boxyard release` restore a file an older machine can still read.
         if model_dump["write_owner"] is None:
             del model_dump["write_owner"]
+        # Same reason: a plain box writes the file every earlier version wrote.
+        if model_dump["storage_format"] == StorageFormat.PLAIN.value:
+            del model_dump["storage_format"]
         # Keys a newer boxyard wrote go back exactly as they came in. They
         # cannot shadow a field this version owns: `validate_box_meta` rejects
         # a known field name in here, so the two key sets are disjoint.

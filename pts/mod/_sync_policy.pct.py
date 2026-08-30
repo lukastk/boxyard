@@ -56,7 +56,7 @@ from typing import Any
 import boxyard.config
 from boxyard import const
 from boxyard._models import BoxMeta
-from boxyard._enums import BoxPart
+from boxyard._enums import BoxPart, StorageFormat
 
 # %%
 #|export
@@ -107,6 +107,10 @@ class ResolvedPolicy:
 
     data_interval_seconds: int | None
     meta_interval_seconds: int | None
+    # The format this box SHOULD have. NOT what it has -- that is
+    # `BoxMeta.storage_format`, and only `boxyard convert` changes it. Nothing
+    # acts on this yet; `doctor` reports where the two differ.
+    storage_format: StorageFormat = StorageFormat.PLAIN
     sources: dict[str, str] = field(default_factory=dict)
 
     def interval_seconds(self, part: BoxPart) -> int | None:
@@ -120,7 +124,13 @@ class ResolvedPolicy:
 # The settings a box may override in its own conf/, and the policy field each
 # maps to. Kept explicit rather than derived from SyncPolicyConfig because
 # `groups` is a policy-level concept that a single box must not be able to set.
-BOX_OVERRIDABLE = ("data_interval", "meta_interval")
+BOX_OVERRIDABLE = ("data_interval", "meta_interval", "storage_format")
+
+# The format a box gets when no policy says otherwise. It is `plain` until the
+# restic backend is switched on fleet-wide -- the last step of the rollout, not
+# the first. See the design note's "restic as the default, and how the switch is
+# gated".
+DEFAULT_STORAGE_FORMAT = StorageFormat.PLAIN
 
 # %%
 #|export
@@ -256,9 +266,23 @@ def resolve_policy(
             raw, f"{sources[dimension]}.{dimension}"
         )
 
+    def _format() -> StorageFormat:
+        raw = resolved["storage_format"]
+        if raw is None:
+            return DEFAULT_STORAGE_FORMAT
+        try:
+            return StorageFormat(raw)
+        except ValueError:
+            raise ValueError(
+                f"Box '{box_meta.index_name}': storage_format must be one of "
+                f"{[f.value for f in StorageFormat]} (from "
+                f"{sources['storage_format']}); got {raw!r}"
+            ) from None
+
     return ResolvedPolicy(
         data_interval_seconds=_seconds("data_interval"),
         meta_interval_seconds=_seconds("meta_interval"),
+        storage_format=_format(),
         sources=sources,
     )
 
