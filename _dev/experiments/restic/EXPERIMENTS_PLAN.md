@@ -30,8 +30,16 @@ ticket's notes; no separate directory, the commands are all one-liners.
 **Findings**
 - The Hetzner restricted SSH shell answers this server-side in minutes:
   `ssh -p23 … "du --inodes --max-depth=1 ./boxyard/boxes"`. **593 boxes,
-  1,376,982 inodes, 592.7 GiB.** Median box 196 inodes / 5.0 MiB; top box 20.3%
-  of all inodes.
+  1,376,982 inodes, 1,107.0 GiB logical (592.8 GiB on disk).** Median box 196
+  inodes / 3.3 MiB; top box 20.3% of all inodes.
+- **`--apparent-size` is MANDATORY and its absence is a 2-3x error.** The first
+  pass here used plain `du`, which reports allocated blocks, and the storage box
+  compresses transparently (~1.9x on box data, ~3.0x on backup residue). Plain
+  `du` on `sync_backups` said 38.55 GiB where the logical size is 116.40 GiB —
+  and `du --apparent-size` agrees with an independent `rclone size` to three
+  decimal places, which is what validates the method. `du --count-links` gives
+  the same 38.55 GiB, ruling out hardlinks. The error is not even one-directional:
+  on many-tiny-file trees, block rounding makes plain `du` 1.05-2.47x too HIGH.
 - **The ticket's jackfruit figure is stale.** 687,876 files / 7.52 GiB was before
   the 2026-08-28 exclude extension; it is now **134,551 files / 3.760 GiB**
   locally (280,061 inodes still on the remote, because excludes never clean it).
@@ -255,7 +263,7 @@ before it is needed rather than during an incident.
   with no policy, repos grow without bound.
 - Whether to build point-in-time recovery as a command. It becomes possible;
   deliberately out of scope here.
-- The 38.6 GiB of `sync_backups` residue: 1,187 orphaned directories back to
+- The 116.4 GiB (logical) of `sync_backups` residue: 1,186 orphaned directories back to
   2025-11, against exactly 1 live incomplete sync on mymain. A separate ticket —
   restic neither causes nor fixes it, and it is NOT the same problem as the
   stranded objects the exclude extension left behind.

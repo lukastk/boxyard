@@ -32,10 +32,16 @@ box costs 0.67 s no matter how small the file. restic moves whole packs, so the
 remote sees tens of objects where it used to see hundreds of thousands.
 
 At yard scale, measured server-side (see *Measuring the remote cheaply* below):
-`boxyard/boxes` holds **1,376,982 inodes across 592.7 GiB in 593 box
-directories** — the registry lists 594, one of which is registered locally and
-not yet on the remote. Restic-backing the yard would replace essentially all of
-those objects with a few thousand packs.
+`boxyard/boxes` holds **1,376,982 inodes across 1,107.0 GiB of logical data,
+occupying 592.8 GiB on disk**, in 593 box directories — the registry lists 594,
+one of which is registered locally and not yet on the remote. Restic-backing the
+yard would replace essentially all of those objects with a few thousand packs.
+
+> The two byte figures differ because **the storage box's filesystem compresses
+> transparently, ~1.9x on this data**. That distinction is load-bearing here and
+> it is easy to get wrong — an earlier revision of this note quoted the on-disk
+> numbers as though they were logical ones. See *Measuring the remote cheaply*
+> for the trap, and §1 for the one conclusion it changes.
 
 ---
 
@@ -77,7 +83,26 @@ The "many boxes are worktrees or clones" intuition is true by count and false by
 bytes. The `ituc-*` worktree cluster deduplicates 74–97% *each* — and they are
 1.8 MiB boxes, so the whole cluster saves about 10 MiB. The 4.8x deduplication
 measured inside jackfruit is **within-box**, and per-box repos keep all of it.
-On the current corpus, per-box repos still give **266.59 GiB → 68.635 GiB, 3.9x**.
+On the current corpus, per-box repos still give **266.59 GiB → 68.635 GiB,
+3.9x** in logical bytes — which is what determines how much has to cross the
+wire.
+
+**But the saving in REMOTE QUOTA is smaller, and the note previously overstated
+it.** The storage box compresses plain trees transparently — measured 1.91x
+across the remote copies of these same 121 boxes, and 1.87x yard-wide — while
+restic's output is encrypted and therefore incompressible (a restic pack fed to
+`zstd -19` came back 1.00x; the plain source text it was made from compresses
+4.20x). So the comparison that decides quota is on-disk against on-disk:
+
+| | logical | on disk at the remote |
+|---|---|---|
+| plain, as today | 266.59 GiB | ~140 GiB (1.9x filesystem compression) |
+| per-box restic repos | 68.635 GiB | ~68.6 GiB (ciphertext, incompressible) |
+| **saving** | **3.9x** | **~2.0x** |
+
+Both numbers are real and they answer different questions: 3.9x is transfer
+volume, ~2.0x is the 5 TB quota. Neither is the primary argument, which is
+transaction cost.
 
 ### What per-box buys, and it is a lot
 
@@ -360,8 +385,9 @@ kept forever, which is cheap for text and not for the 89 GiB data boxes.
 
 ## 6. Migration
 
-**327 GiB exists only on the remote** (592.7 GiB total minus mymain's 266.6 GiB
-checkout, modulo what the Macs hold), and there is no server-side shortcut: the
+**Roughly 840 GiB of logical data exists only on the remote** (1,107.0 GiB total
+minus mymain's 266.6 GiB checkout, modulo what the Macs hold; ~450 GiB of it on
+disk after the remote's ~1.9x compression), and there is no server-side shortcut: the
 Hetzner restricted shell offers `du`, `df` and `borg 1.2.9`, but `restic` and
 `rclone` are "Command not found". Confirmed. Converting a remote-only box means
 download and re-ingest by some machine.
@@ -555,7 +581,7 @@ not just a removal.
 > under the `<snap>:<subpath>` form anchors with a **leading slash relative to
 > the subpath** (§2). Same-looking flags, opposite rules.
 
-### 9.2 `sync_backups/` — stops being written, and is already 38.6 GiB of residue
+### 9.2 `sync_backups/` — stops being written, and is already 116.4 GiB of residue
 
 `sync_helper` passes `--backup-dir` to every `rclone sync` so an overwrite is
 recoverable, then purges the directory on success (`delete_backup=True`).
@@ -566,15 +592,15 @@ nothing to switch off. **META and CONF keep theirs**, because they stay plain an
 still need it. Restic snapshots are a strictly better answer for DATA anyway —
 they are history with a retention policy rather than an unbounded side-pile.
 
-**What about the existing 38.6 GiB?** Measured server-side, and it is not what it
-looks like:
+**What about the existing 116.4 GiB?** Measured server-side, and it is not what
+it looks like:
 
 | | |
 |---|---|
-| total | 38.6 GiB across **1,187 backup directories** |
+| total | **116.4 GiB logical** (38.6 GiB on disk) across **1,186 backup directories** |
 | non-trivial (> 4 KiB) | 823 |
 | oldest | 2025-11 |
-| largest single directory | 4.52 GiB |
+| largest single directory | 4.52 GiB on disk |
 | by month | 2025-12: 9.9 GiB · 2026-04: 8.1 GiB · 2026-05: 11.7 GiB · 2026-07: 0.01 GiB · 2026-08: 0.73 GiB |
 
 Because `sync_helper` purges on success, **every one of these is the residue of a
@@ -595,13 +621,37 @@ reclaims nothing.
 
 A safe cleanup pass, if one is written:
 
-- report before deleting, oldest first, with sizes;
+- report before deleting, oldest first, with sizes; a dry-run manifest that a
+  person approves, then delete strictly by explicit approved path;
 - only consider directories older than a threshold (30 days is far beyond any
   in-flight sync), because a backup referenced by a live incomplete sync is the
   one case where it is not residue;
 - check **every machine's** incomplete records, not just the local ones. Only
-  mymain's 783 were examined here; macbook, macstudio, ideapad and pocket4 each
-  keep their own, and pocket4 is offline for days at a time.
+  mymain's were examined here; macbook, macstudio, ideapad and pocket4 each keep
+  their own, and pocket4 is offline for days at a time.
+
+**Costed, because 50,802 objects sounds expensive and is not.** Measured by
+uploading 500 small objects to a scoped probe path and timing their removal:
+
+| | rate | 50,802 objects |
+|---|---|---|
+| `rclone purge`, default concurrency | **10 ms/object** | **~8.5 min** |
+| `rclone purge --transfers 16 --checkers 16` | 13 ms/object | ~11 min |
+| *(upload, for contrast)* | 75 ms/object | — |
+
+Two things to take from this. The single-path probe figure of 0.67 s is
+**connection setup**, not per-operation cost — inside one rclone invocation the
+connection is reused and deletes run ~65x faster, so costing the cleanup at
+0.67 s/object would predict 9.5 hours for a job that takes about ten minutes.
+And raising concurrency does not help and slightly hurts, so the sane shape is
+**one `rclone delete --files-from <approved paths>` (or a purge per approved
+directory) at default concurrency**, not a fan-out and not a per-object loop.
+
+**The LOCAL `~/.boxyard/sync_backups` is a separate, trivial matter** — 20 KB
+across 4 directories on mymain. The remote figure implies nothing about it. (Its
+incomplete-record count is 0 or 1 depending on whether a sync is in flight at the
+moment you look; it was 1 during this measurement, for the jackfruit push that
+was running.)
 
 **This is a different problem from the stranded objects** the exclude extension
 left behind (files already pushed under a name that is now excluded, which go
@@ -896,7 +946,7 @@ precondition for the cadence change, not an independent decision.
 
 What is never bounded by any of this is retained **content**: every version of
 every changed file is kept. Nothing for text; a lot for `tbi-investigation`
-(89.4 GiB) or `aisi-economy-index-v2` (82.9 GiB), where one regeneration costs
+(95.2 GiB) or `aisi-economy-index-v2` (178.8 GiB), where one regeneration costs
 the full unique size again. That is the real reason retention exists, and it is
 why `cold` — archived boxes that barely change — can afford a long window
 cheaply while an active data box cannot.
@@ -988,7 +1038,7 @@ equal. The failure direction is always "do more work", never "skip".
   pass.
 - **Point-in-time recovery as a command.** It becomes possible (§10) and it is
   worth having; it is not this change.
-- **Reclaiming the 38.6 GiB of `sync_backups` residue.** Real, and a separate
+- **Reclaiming the 116.4 GiB of `sync_backups` residue.** Real, and a separate
   ticket: restic neither causes it nor fixes it (§9.2).
 - **Removing `_utils/perms.py`.** It stays for plain boxes; SFTP has not changed
   (§9.1).
@@ -1008,13 +1058,38 @@ offers `du` and `df` (but not `ls`, `find`, `restic` or `rclone`). Key auth is
 already set up.
 
 ```bash
-ssh -p 23 u508472@u508472.your-storagebox.de "du --inodes --max-depth=1 ./boxyard/boxes"
-ssh -p 23 u508472@u508472.your-storagebox.de "du -k --max-depth=1 ./boxyard/boxes"
+ssh -p 23 u508472@… "du --inodes --max-depth=1 ./boxyard/boxes"
+ssh -p 23 u508472@… "du -k --max-depth=1 --apparent-size ./boxyard/boxes"
 ```
 
 Server-side, no per-file network round trips, minutes rather than the hours an
-`rclone` recursive listing of 1.4M objects would take. This is how every number
-in *The result that decides the whole thing* about yard scale was obtained.
+`rclone` recursive listing of 1.4M objects would take. This is how every yard-
+scale number here was obtained.
+
+> **`--apparent-size` is mandatory, and leaving it off is a 2-3x error.** This
+> note's first revision quoted plain `du`, which reports *allocated blocks*, and
+> presented it as logical size. The storage box compresses transparently, so the
+> two differ badly:
+>
+> | | plain `du` (on disk) | `du --apparent-size` (logical) | ratio |
+> |---|---|---|---|
+> | `boxyard/sync_backups` | 38.55 GiB | **116.40 GiB** | 3.02x |
+> | `boxyard/boxes` | 592.8 GiB | **1,107.0 GiB** | 1.87x |
+> | whole `boxyard` store | 631.4 GiB | **1,223.4 GiB** | 1.94x |
+>
+> `du --apparent-size` on `sync_backups` returns 116.40 GiB against an
+> independent `rclone size` of 116.396 GiB — they agree, which is what confirms
+> the method rather than the tool. `du --count-links` returns the same 38.55 GiB,
+> so hardlink de-duplication is ruled out and compression is the cause.
+>
+> Note the error is not even in a consistent direction: on a tree of many tiny
+> files, block rounding pushes plain `du` the *other* way (measured 1.05-2.47x
+> too HIGH on three small boxes). So a plain-`du` figure cannot be corrected
+> after the fact by a fudge factor; it has to be re-measured.
+>
+> Both numbers have legitimate uses — on-disk is what consumes the 5 TB quota,
+> logical is what has to cross the wire — but they must be labelled. `df`
+> reporting 3.3 TiB used is an on-disk figure.
 
 Current shape of the yard, for reference:
 
@@ -1022,12 +1097,14 @@ Current shape of the yard, for reference:
 |---|---|
 | boxes | 593 |
 | inodes (files + dirs) | 1,376,982 |
-| bytes | 592.7 GiB |
-| median box | 196 inodes, 5.0 MiB |
-| p90 box | 3,034 inodes, 557 MiB |
+| bytes (logical) | 1,107.0 GiB |
+| bytes (on disk) | 592.8 GiB |
+| median box | 196 inodes, 3.3 MiB logical |
+| p90 box | 3,034 inodes, 872 MiB logical |
 | largest box | 280,061 inodes (`jackfruit-hq-mymain`) |
 | skew | top 1 box = 20.3% of inodes; top 10 = 49.2%; top 50 = 81.9% |
-| whole store | 632 GiB, including 39 GiB of `sync_backups` |
+| whole store | 1,223.4 GiB logical / 631.4 GiB on disk, including 116.4 GiB logical of `sync_backups` |
+| filesystem compression | ~1.9x on box data, ~3.0x on backup residue |
 
 > One correction to the ticket's premise while we are here. It cites
 > jackfruit-hq-mymain as 687,876 files / 7.52 GiB. Measured today with the
