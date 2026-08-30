@@ -61,7 +61,6 @@ class ResolvedPolicy:
 
     data_interval_seconds: int | None
     meta_interval_seconds: int | None
-    compress: bool
     sources: dict[str, str] = field(default_factory=dict)
 
     def interval_seconds(self, part: BoxPart) -> int | None:
@@ -75,7 +74,7 @@ class ResolvedPolicy:
 # The settings a box may override in its own conf/, and the policy field each
 # maps to. Kept explicit rather than derived from SyncPolicyConfig because
 # `groups` is a policy-level concept that a single box must not be able to set.
-BOX_OVERRIDABLE = ("data_interval", "meta_interval", "compress")
+BOX_OVERRIDABLE = ("data_interval", "meta_interval")
 
 # %% pts/mod/_sync_policy.pct.py 4
 def read_box_sync_override(
@@ -210,20 +209,9 @@ def resolve_policy(
             raw, f"{sources[dimension]}.{dimension}"
         )
 
-    compress = resolved["compress"]
-    if compress is None:
-        compress = False
-        sources["compress"] = "built-in default (False)"
-    if not isinstance(compress, bool):
-        raise ValueError(
-            f"Box '{box_meta.index_name}': compress must be true or false "
-            f"(from {sources['compress']}); got {compress!r}"
-        )
-
     return ResolvedPolicy(
         data_interval_seconds=_seconds("data_interval"),
         meta_interval_seconds=_seconds("meta_interval"),
-        compress=compress,
         sources=sources,
     )
 

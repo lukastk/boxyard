@@ -36,13 +36,13 @@ async def claim_box(
     """
     config = get_config(config_path)
     machine_name = require_machine_name(config, f"claim '{box_index_name}'")
-
+    
     boxyard_meta = get_boxyard_meta(config)
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' not found.")
-
+    
     box_meta = boxyard_meta.by_index_name[box_index_name]
-
+    
     if box_meta.get_storage_location_config(config).storage_type == StorageType.LOCAL:
         raise OwnershipRefused(
             f"Cannot claim '{box_index_name}': it is in the local storage location "
@@ -50,7 +50,7 @@ async def claim_box(
             f"there is nothing to coordinate."
         )
     from boxyard._checkout import get_box_checkout_status, LocalCheckoutState
-
+    
     _checkout = get_box_checkout_status(config, box_meta)
     if _checkout.state == LocalCheckoutState.UNAVAILABLE:
         raise OwnershipRefused(
@@ -66,7 +66,7 @@ async def claim_box(
             f"`boxyard include -r '{box_index_name}'`, then claim it."
         )
     from boxyard.cmds import sync_box
-
+    
     await sync_box(
         config_path=config_path,
         box_index_name=box_index_name,
@@ -79,12 +79,12 @@ async def claim_box(
     # another machine's claim arrives here.
     box_meta = BoxMeta.load(config, box_meta.storage_location, box_index_name)
     previous_owner = box_meta.write_owner
-
+    
     if previous_owner == machine_name:
         if verbose:
             print(f"'{box_index_name}' is already owned by this machine ({machine_name}).")
         return machine_name
-
+    
     if previous_owner is not None and not steal:
         raise OwnershipRefused(
             f"Cannot claim '{box_index_name}': it is owned by '{previous_owner}'.\n"
@@ -95,7 +95,7 @@ async def claim_box(
         )
     box_meta.write_owner = machine_name
     box_meta.save(config)
-
+    
     await sync_box(
         config_path=config_path,
         box_index_name=box_index_name,
@@ -108,7 +108,7 @@ async def claim_box(
     )
     if _remote_index_name is None:
         _remote_index_name = box_index_name
-
+    
     _remote_boxmeta_path = (
         config.storage_locations[box_meta.storage_location].store_path
         / const.REMOTE_BOXES_REL_PATH
@@ -120,7 +120,7 @@ async def claim_box(
         source=box_meta.storage_location,
         source_path=_remote_boxmeta_path.as_posix(),
     )
-
+    
     # A claim that did not reach the remote is not a claim. Say so loudly rather
     # than leaving this machine believing it owns a box the fleet disagrees about
     # -- the loser of a concurrent claim otherwise reverts with no message at all.
@@ -131,9 +131,9 @@ async def claim_box(
             f"this claim; re-run `boxyard claim -r '{box_index_name}'` once the "
             f"remote is reachable."
         )
-
+    
     import tomllib as _tomllib
-
+    
     _remote_owner = _tomllib.loads(_raw).get("write_owner")
     if _remote_owner != machine_name:
         raise OwnershipRefused(
@@ -145,9 +145,9 @@ async def claim_box(
             f"want the box anyway, run "
             f"`boxyard claim --steal -r '{box_index_name}'`."
         )
-
+    
     refresh_boxyard_meta(config)
-
+    
     if verbose:
         if previous_owner is None:
             print(f"Claimed '{box_index_name}' for '{machine_name}'.")

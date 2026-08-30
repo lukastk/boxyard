@@ -28,17 +28,17 @@ async def include_box(
     """
     config = get_config(config_path)
     from boxyard._models import get_boxyard_meta
-
+    
     boxyard_meta = get_boxyard_meta(config)
-
+    
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' does not exist.")
-
+    
     box_meta = boxyard_meta.by_index_name[box_index_name]
-
+    
     if box_meta.check_included(config):
         raise ValueError(f"Box '{box_index_name}' is already included.")
-
+    
     from boxyard._checkout import (
         load_placement,
         require_checkout_root,
@@ -47,7 +47,7 @@ async def include_box(
         LocalCheckoutState,
         get_box_checkout_status,
      )
-
+    
     _previous_placement = load_placement(config, box_meta)
     _selected_root = checkout_root or _previous_placement.authoritative_root
     _root_status = require_checkout_root(config, _selected_root, create=True)
@@ -61,7 +61,7 @@ async def include_box(
     from boxyard.cmds import sync_box
     from boxyard._models import BoxPart
     from boxyard._utils.sync_helper import SyncSetting, SyncDirection
-
+    
     _lock_manager = BoxyardLockManager(config.boxyard_data_path)
     _lock_path = _lock_manager.box_sync_lock_path(box_index_name)
     _lock_manager._ensure_lock_dir(_lock_path)
@@ -89,7 +89,7 @@ async def include_box(
             _skip_lock=True,
             _allow_missing_checkout=True,
         )
-
+    
         # Then sync the rest
         await sync_box(
             config_path=config_path,
@@ -102,12 +102,12 @@ async def include_box(
         )
     finally:
         _sync_lock.release()
-
+    
     print(f"Included box '{box_meta.name}' in checkout root '{_selected_root}'")
     from boxyard._models import BoxMeta as _BoxMeta
-
+    
     _included_meta = _BoxMeta.load(config, box_meta.storage_location, box_index_name)
-
+    
     if _included_meta.write_owner is None:
         # Unowned means unrestricted, so nothing is being withheld -- but a box
         # nobody has claimed is a box two machines can still diverge on, which is

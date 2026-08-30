@@ -3,7 +3,7 @@
 __all__ = ['BoxGroupConfig', 'BoxGroupTitleMode', 'BoxTimestampFormat', 'CheckoutRootConfig', 'Config', 'INTERVAL_UNITS', 'StorageConfig', 'StorageType', 'SyncPolicyConfig', 'VirtualBoxGroupConfig', 'get_config', 'parse_interval']
 
 # %% pts/mod/config.pct.py 3
-from pydantic import field_validator, model_validator
+from pydantic import model_validator
 from pathlib import Path
 from typing import Any, get_args, get_origin
 import tomllib
@@ -118,9 +118,17 @@ class SyncPolicyConfig(const.StrictModel):
 
     Every field is OPTIONAL, and `None` means "not stated at this level" rather
     than "off". That is what makes resolution work per DIMENSION -- a box can
-    take its cadence from `conf/sync.toml` and its `compress` from the group
-    policy. `None` here is a legitimate expected state, not a masked bug: the
-    resolver raises if a dimension is left unresolved by every level.
+    take its DATA cadence from `conf/sync.toml` and its META cadence from the
+    group policy. `None` here is a legitimate expected state, not a masked bug.
+
+    There is deliberately NO `compress` here. Compression is a property of the
+    storage BACKEND, not a scheduling policy: a restic-backed box is compressed
+    and deduplicated because that is what the backend does, and no per-box knob
+    would change it. The field existed briefly, implemented nothing, and was
+    removed once the measurements settled the direction (jackfruit-hq:
+    687,876 remote objects -> 56, 7.52 GiB -> 0.72 GiB). If a choice of storage
+    format is ever wanted it belongs here as `storage_format`, which is a
+    different question with a different answer.
 
     `groups` lists the box groups this policy applies to. A policy with no
     groups is reachable only by name from a box's own `conf/sync.toml`.
@@ -128,34 +136,7 @@ class SyncPolicyConfig(const.StrictModel):
 
     data_interval: str | None = None
     meta_interval: str | None = None
-    compress: bool | None = None
     groups: list[str] = []
-
-    @field_validator("compress")
-    @classmethod
-    def _compress_is_not_implemented(cls, value):
-        """
-        `compress = true` is REFUSED, loudly, because nothing implements it yet.
-
-        The field is specified -- the cadence design depends on the policy model
-        having a place for it -- but no code packs a box. Accepting the key
-        would mean a config that says "archived boxes are compressed" while
-        every archived box stays a plain tree, and the user only finds out by
-        going and looking at the remote. A setting that silently does nothing is
-        the worst of the three options; the other two are implementing it and
-        refusing it, and this is the one that is honest today.
-
-        TODO(cleanup): drop this validator -- when packing is actually
-        implemented, or when the decision not to implement it is final and the
-        field is removed instead.
-        """
-        if value is True:
-            raise ValueError(
-                "compress = true is not implemented yet: no code packs a box, "
-                "so setting it would silently do nothing. Leave it unset or "
-                "false. See _dev/SYNC-CADENCE-DESIGN-NOTE.md."
-            )
-        return value
 
     def interval_seconds(self, part: str, policy_name: str) -> int | None:
         text = self.data_interval if part == "data" else self.meta_interval

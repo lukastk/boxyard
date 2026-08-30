@@ -10,14 +10,14 @@ def create_user_symlinks(
 ):
     """ """
     config = get_config(config_path)
-
+    
     if user_box_groups_path is None:
         user_box_groups_path = config.user_box_groups_path
     from boxyard._models import refresh_boxyard_meta
-
+    
     refresh_boxyard_meta(config)
     from boxyard._models import create_user_box_group_symlinks
-
+    
     create_user_box_group_symlinks(
         config=config,
     )

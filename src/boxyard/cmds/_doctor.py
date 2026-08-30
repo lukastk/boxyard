@@ -115,29 +115,29 @@ async def run_doctor(
         }
     """
     config = get_config(config_path)
-
+    
     if storage_locations is not None:
         _unknown_sls = [sl for sl in storage_locations if sl not in config.storage_locations]
         if _unknown_sls:
             raise ValueError(f"Invalid storage location(s): {_unknown_sls}")
-
+    
     checks: dict[str, dict] = {
         check_name: {"skipped": False, "findings": []} for check_name in DOCTOR_CHECK_NAMES
     }
-
-
+    
+    
     def _add_finding(check_name: str, message: str, hint: str, **extra) -> None:
         finding = {"message": message, "hint": hint}
         for key, value in extra.items():
             finding[key] = str(value) if isinstance(value, Path) else value
         checks[check_name]["findings"].append(finding)
     from boxyard._models import BoxMeta, BoxyardMeta
-
+    
     registration_dirs_by_sl: dict[str, set[str]] = {}  # dirs in local_store/<sl>/
     registered_index_names: set[str] = set()  # dirs that have a boxmeta.toml
     problem_index_names: set[str] = set()  # dirs whose boxmeta is missing or fails to load
     box_metas: list[BoxMeta] = []
-
+    
     for sl_name in config.storage_locations:
         registration_dirs_by_sl[sl_name] = set()
         sl_local_path = config.local_store_path / sl_name
@@ -189,7 +189,7 @@ async def run_doctor(
         placement_path,
         root_configuration_findings,
      )
-
+    
     _root_statuses = {}
     for _root_name in sorted(config.configured_checkout_roots):
         _root_status = get_checkout_root_status(config, _root_name)
@@ -202,7 +202,7 @@ async def run_doctor(
                 checkout_root=_root_name,
                 path=_root_status.path,
             )
-
+    
     for _root_problem in root_configuration_findings(config):
         _add_finding(
             "checkout-root-config",
@@ -211,7 +211,7 @@ async def run_doctor(
             checkout_roots=_root_problem["names"],
             path=_root_problem["path"],
         )
-
+    
     _known_box_ids = {bm.box_id for bm in box_metas}
     if config.placements_path.is_dir():
         for _placement_file in sorted(config.placements_path.glob("*.json")):
@@ -222,7 +222,7 @@ async def run_doctor(
                     "Delete it only after confirming the box registration is permanently gone.",
                     path=_placement_file,
                 )
-
+    
     _checkout_by_id = {}
     _placement_problem_ids = set()
     for _bm in box_metas:
@@ -259,7 +259,7 @@ async def run_doctor(
             )
             _placement_problem_ids.add(_bm.box_id)
             continue
-
+    
         if _checkout.root_status is None:
             _add_finding(
                 "checkout-placement",
@@ -271,7 +271,7 @@ async def run_doctor(
             )
             _placement_problem_ids.add(_bm.box_id)
             continue
-
+    
         if _checkout.state == LocalCheckoutState.UNAVAILABLE:
             _add_finding(
                 "checkout-root-unavailable",
@@ -282,7 +282,7 @@ async def run_doctor(
                 local_path=_checkout.local_path,
             )
             continue  # never inspect paths beneath an unavailable guarded root
-
+    
         if _checkout.state == LocalCheckoutState.EXCLUDED and _copies:
             _add_finding(
                 "checkout-placement",
@@ -291,7 +291,7 @@ async def run_doctor(
                 index_name=_bm.index_name,
                 local_path=_copies[0][1],
             )
-
+    
         if _checkout.state == LocalCheckoutState.MISSING:
             _add_finding(
                 "checkout-placement",
@@ -313,7 +313,7 @@ async def run_doctor(
                 phase=_record.phase.value,
             )
     all_registration_dirs = set().union(*registration_dirs_by_sl.values())
-
+    
     for _root_name, _root_status in _root_statuses.items():
         if not _root_status.available or not _root_status.path.is_dir():
             continue
@@ -352,7 +352,7 @@ async def run_doctor(
         _metas_by_id.setdefault(bm.box_id, []).append(bm)
     from boxyard._sync_policy import PolicyConflict as _PolicyConflict
     from boxyard._sync_policy import resolve_policy as _resolve_policy
-
+    
     for _bm in sorted(box_metas, key=lambda b: b.index_name):
         try:
             _resolve_policy(config, _bm)
@@ -377,7 +377,7 @@ async def run_doctor(
                 "to the group policy.",
                 box_index_name=_bm.index_name,
             )
-
+    
     for _box_id, _bms in sorted(_metas_by_id.items()):
         if len(_bms) > 1:
             _locations = ", ".join(f"{bm.storage_location}/{bm.index_name}" for bm in _bms)
@@ -466,12 +466,12 @@ async def run_doctor(
                     "`boxyard create-user-symlinks` (called by most mutating commands) refuses to run while real files are in the group tree; move or delete the file.",
                     path=entry,
                 )
-
-
+    
+    
     if config.user_box_groups_path.is_dir():
         _walk_group_tree(config.user_box_groups_path)
     _sync_records_path = config.boxyard_data_path / const.SYNC_RECORDS_REL_PATH
-
+    
     if _sync_records_path.is_dir():
         for entry in sorted(_sync_records_path.iterdir(), key=lambda p: p.name):
             if entry.name.startswith("."):
@@ -484,7 +484,7 @@ async def run_doctor(
                     path=entry,
                 )
     from boxyard._models import SyncRecord
-
+    
     if _sync_records_path.is_dir():
         for entry in sorted(_sync_records_path.iterdir(), key=lambda p: p.name):
             if entry.name.startswith(".") or not entry.is_dir():
@@ -529,7 +529,7 @@ async def run_doctor(
                     "Left over from a removed or renamed storage location; delete the directory, or re-add the storage location to the config.",
                     path=entry,
                 )
-
+    
     if config.remote_indexes_path.is_dir():
         for entry in sorted(config.remote_indexes_path.iterdir(), key=lambda p: p.name):
             if entry.suffix == ".json" and entry.stem not in config.storage_locations:
@@ -542,7 +542,7 @@ async def run_doctor(
     _rclone_available = True
     try:
         from boxyard._utils.rclone import get_rclone_binary
-
+    
         get_rclone_binary()
     except Exception as e:
         _rclone_available = False
@@ -551,13 +551,13 @@ async def run_doctor(
             f"The rclone binary could not be resolved: {e}",
             f"Install rclone, or point boxyard at it via the {const.ENV_VAR_BOXYARD_RCLONE} env var or the `rclone_path` config key.",
         )
-
+    
     _rclone_sl_names = [
         sl_name
         for sl_name, sl_config in config.storage_locations.items()
         if sl_config.storage_type == StorageType.RCLONE
     ]
-
+    
     if _rclone_sl_names:
         if not config.rclone_config_path.is_file():
             _add_finding(
@@ -568,7 +568,7 @@ async def run_doctor(
             )
         else:
             import configparser
-
+    
             _rclone_conf_parser = configparser.ConfigParser(interpolation=None, strict=False)
             try:
                 _rclone_conf_parser.read_string(config.rclone_config_path.read_text())
@@ -588,7 +588,7 @@ async def run_doctor(
                             f"Add a [{sl_name}] remote to the rclone config, or remove the storage location from the boxyard config.",
                             storage_location=sl_name,
                         )
-
+    
     if not config.default_rclone_exclude_path.is_file():
         _add_finding(
             "rclone-config",
@@ -601,13 +601,13 @@ async def run_doctor(
         checks["tombstoned-box"]["skipped"] = True
     else:
         from boxyard._utils import rclone_lsjson
-
+    
         for sl_name, sl_config in config.storage_locations.items():
             if sl_config.storage_type != StorageType.RCLONE:
                 continue
             if storage_locations is not None and sl_name not in storage_locations:
                 continue
-
+    
             _ls_remote = await rclone_lsjson(
                 config.rclone_config_path,
                 source=sl_name,
@@ -649,7 +649,7 @@ async def run_doctor(
                         storage_location=sl_name,
                         missing_index_names=_missing_locally,
                     )
-
+    
             if _remote_reachable:
                 # Tombstones live at <store_path>/tombstones/<box_id>.json. The
                 # remote is known reachable here, so a failed listing just means
@@ -689,7 +689,7 @@ async def run_doctor(
             rclone_cat,
         )
         from boxyard._utils.rclone import RcloneFailed
-
+    
         # A remote record written at our own record's moment IS our record, so only
         # the rest need a round trip. rclone stamps the destination with the source
         # temp file's mtime, which is the moment the ULID was minted, so for one and
@@ -702,13 +702,13 @@ async def run_doctor(
         # alternative (fetching all ~2400 records) takes over two minutes and opens
         # enough SFTP connections to disturb the syncs running alongside doctor.
         _RECORD_TIME_SLACK = _timedelta(seconds=5)
-
+    
         # Long enough that no real push on this fleet is still running (the largest
         # box is ~100 GB and pushes in well under this), short enough that a genuine
         # wedge is reported the same day rather than months later.
         _INCOMPLETE_REMOTE_GRACE = _timedelta(hours=6)
         _now = _datetime.now(_timezone.utc)
-
+    
         def _parse_rclone_modtime(raw: str) -> "_datetime":
             # rclone emits RFC3339 with up to nanosecond precision, which
             # `fromisoformat` cannot parse on 3.11. Truncate to microseconds.
@@ -720,13 +720,13 @@ async def run_doctor(
                 )
                 text = f"{head}.{frac[:6]}{sign}{offset}"
             return _datetime.fromisoformat(text)
-
+    
         for _sl_name, _sl_config in config.storage_locations.items():
             if _sl_config.storage_type != StorageType.RCLONE:
                 continue
             if storage_locations is not None and _sl_name not in storage_locations:
                 continue
-
+    
             _boxes_here = [
                 bm for bm in box_metas
                 if bm.storage_location == _sl_name
@@ -735,7 +735,7 @@ async def run_doctor(
             ]
             if not _boxes_here:
                 continue
-
+    
             # ONE listing for every record on the remote. The per-box form would be
             # thousands of round trips; this is a single call.
             try:
@@ -762,7 +762,7 @@ async def run_doctor(
                 continue
             if _ls_recs is None:
                 continue  # nothing has ever been pushed here; an empty remote is fine
-
+    
             _remote_modtimes = {}
             for _entry in _ls_recs:
                 _parts = Path(_entry["Path"]).parts
@@ -771,7 +771,7 @@ async def run_doctor(
                 _remote_modtimes[(_parts[0], _parts[1][: -len(".rec")])] = (
                     _parse_rclone_modtime(_entry["ModTime"])
                 )
-
+    
             for _bm in _boxes_here:
                 for _part in BoxPart:
                     _local_rec_path = _bm.get_local_sync_record_path(config, _part)
@@ -786,15 +786,15 @@ async def run_doctor(
                         )
                     except Exception:
                         continue  # a malformed record is `interrupted-sync`'s business
-
+    
                     if not _local_rec.sync_complete:
                         continue  # `interrupted-sync` already owns this one
-
+    
                     # The prefilter: a remote record written at our own record's
                     # moment IS our record. Only the rest are worth a round trip.
                     if abs(_remote_modtime - _local_rec.ulid.datetime) <= _RECORD_TIME_SLACK:
                         continue
-
+    
                     _exists, _raw = await rclone_cat(
                         rclone_config_path=config.rclone_config_path,
                         source=_sl_name,
@@ -811,7 +811,7 @@ async def run_doctor(
                         _remote_rec = _SyncRecord.model_validate_json(_raw)
                     except Exception:
                         continue
-
+    
                     if not _remote_rec.sync_complete:
                         # The LOCAL record is complete but the remote one is not: a
                         # push from ANOTHER machine died half-way. No other check can
@@ -842,10 +842,10 @@ async def run_doctor(
                             storage_location=_sl_name,
                         )
                         continue
-
+    
                     if _local_rec.ulid == _remote_rec.ulid:
                         continue  # the prefilter was merely cautious
-
+    
                     # The records disagree. Whether the LOCAL side has also moved is
                     # what separates a real conflict from a plain needs-pull. This
                     # mirrors `get_sync_status` exactly -- same exclude-aware scan,
@@ -869,7 +869,7 @@ async def run_doctor(
                     _remote_newer = _remote_rec.ulid.datetime > _local_rec.ulid.datetime
                     if _remote_newer and not _local_changed:
                         continue  # NEEDS_PULL -- the next sync resolves it
-
+    
                     _add_finding(
                         "diverged-box",
                         f"The {_part.value} of '{_bm.index_name}' has diverged: local record "
@@ -887,7 +887,7 @@ async def run_doctor(
                         storage_location=_sl_name,
                     )
     _known_box_ids = {bm.box_id for bm in box_metas}
-
+    
     for bm in box_metas:
         for _parent_id in bm.parents:
             if _parent_id not in _known_box_ids:
@@ -899,7 +899,7 @@ async def run_doctor(
                     parent_box_id=_parent_id,
                 )
     import importlib.metadata as _importlib_metadata
-
+    
     try:
         _running_version = _importlib_metadata.version("boxyard")
     except _importlib_metadata.PackageNotFoundError:
@@ -907,7 +907,7 @@ async def run_doctor(
         # nothing about the version rather than inventing one.
         _running_version = None
     _running_suffix = f" (running {_running_version})" if _running_version else ""
-
+    
     for bm in box_metas:
         if not bm.unknown_keys:
             continue
@@ -952,17 +952,17 @@ async def run_doctor(
     for bm in box_metas:
         if bm.write_owner is not None:
             _owner_counts[bm.write_owner] = _owner_counts.get(bm.write_owner, 0) + 1
-
+    
     # Is there a machine in this yard that owns more than one box? Until there is,
     # "owns exactly one box" says nothing.
     _yard_has_an_established_owner = any(count > 1 for count in _owner_counts.values())
-
+    
     for bm in box_metas:
         if bm.write_owner is None:
             continue
         if bm.box_id in _placement_problem_ids:
             continue
-
+    
         if bm.write_owner == config.machine_name:
             _owner_checkout = get_box_checkout_status(config, bm)
             if _owner_checkout.state == LocalCheckoutState.UNAVAILABLE:
@@ -986,7 +986,7 @@ async def run_doctor(
                     storage_location=bm.storage_location,
                 )
             continue
-
+    
         if _yard_has_an_established_owner and _owner_counts[bm.write_owner] == 1:
             _add_finding(
                 "stale-owner",
@@ -1011,7 +1011,7 @@ async def run_doctor(
             write_denied_message,
         )
         from boxyard._utils import check_last_time_modified, literal_exclude_names
-
+    
         for bm in box_metas:
             if bm.write_owner is None or bm.write_owner == config.machine_name:
                 continue
@@ -1024,7 +1024,7 @@ async def run_doctor(
                 continue
             if not bm.check_included(config):
                 continue  # not here at all, so nothing of ours can be stranded
-
+    
             _data_path = bm.get_local_part_path(config, _BoxPart.DATA)
             _conf_exclude = (
                 bm.get_local_part_path(config, _BoxPart.CONF) / const.RCLONE_EXCLUDE_FILENAME
@@ -1032,7 +1032,7 @@ async def run_doctor(
             _effective_exclude = (
                 _conf_exclude if _conf_exclude.exists() else config.default_rclone_exclude_path
             )
-
+    
             _rec_path = bm.get_local_sync_record_path(config, _BoxPart.DATA)
             if not _rec_path.exists():
                 continue  # never synced here; `interrupted-sync`/`stale-cache` territory
@@ -1040,13 +1040,13 @@ async def run_doctor(
                 _rec = _SyncRec.model_validate_json(_rec_path.read_text())
             except Exception:
                 continue  # a malformed record is `interrupted-sync`'s business
-
+    
             _modified = check_last_time_modified(
                 _data_path, exclude_names=literal_exclude_names(_effective_exclude)
             )
             if _modified is None or _modified <= _rec.timestamp:
                 continue  # unchanged since our own record: nothing is stranded
-
+    
             # Only now is a remote call worth making. `needs_push` is not evidence
             # of a real change -- a single `.DS_Store` sets it -- so ask what a push
             # would ACTUALLY move, under the box's real filters.
@@ -1059,7 +1059,7 @@ async def run_doctor(
             _conf_path = bm.get_local_part_path(config, _BoxPart.CONF)
             _include_file = _conf_path / const.RCLONE_INCLUDE_FILENAME
             _filters_file = _conf_path / const.RCLONE_FILTERS_FILENAME
-
+    
             if not await push_would_transfer(
                 config,
                 local_path=_data_path,
@@ -1070,7 +1070,7 @@ async def run_doctor(
                 filters_path=_filters_file if _filters_file.exists() else None,
             ):
                 continue
-
+    
             _add_finding(
                 "write-denied",
                 write_denied_message(config, bm)
@@ -1081,12 +1081,12 @@ async def run_doctor(
                 storage_location=bm.storage_location,
             )
     from boxyard._models import read_meta_base
-
+    
     for bm in box_metas:
         _base = read_meta_base(config, bm)
         if _base is None:
             continue
-
+    
         # Compare the FIELDS, not the file bytes. A boxmeta rewritten with the same
         # content -- reordered keys, a trailing newline -- is not an edit, and
         # reporting it would train the reader to ignore this check.
@@ -1097,7 +1097,7 @@ async def run_doctor(
         ]
         if not _changed:
             continue
-
+    
         _add_finding(
             "unpushed-meta-edit",
             f"Box '{bm.index_name}' has local metadata changes ({', '.join(_changed)}) "

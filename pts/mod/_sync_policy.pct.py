@@ -20,11 +20,10 @@
 #    exactly today's behaviour, where a supervisor loop syncs everything on a
 #    fixed sleep. The feature is opt-in per fleet, and a machine that has not
 #    opted in must not quietly start skipping boxes.
-# 2. **Resolution is per DIMENSION, not per policy.** A box takes its cadence
-#    from `conf/sync.toml` and its `compress` from the group policy if that is
-#    what each level states. `type` and `schedule` are independent axes, so
-#    resolving them together would force a box to restate a setting it did not
-#    want to change.
+# 2. **Resolution is per DIMENSION, not per policy.** A box takes its DATA
+#    cadence from `conf/sync.toml` and its META cadence from the group policy if
+#    that is what each level states, so a box never has to restate a setting it
+#    did not want to change.
 # 3. **Ambiguity is refused, never joined.** A box matching two policies that
 #    disagree on one dimension is an error a person settles, reported by
 #    `doctor`. The alternatives were both worse: a global precedence list is a
@@ -108,7 +107,6 @@ class ResolvedPolicy:
 
     data_interval_seconds: int | None
     meta_interval_seconds: int | None
-    compress: bool
     sources: dict[str, str] = field(default_factory=dict)
 
     def interval_seconds(self, part: BoxPart) -> int | None:
@@ -122,7 +120,7 @@ class ResolvedPolicy:
 # The settings a box may override in its own conf/, and the policy field each
 # maps to. Kept explicit rather than derived from SyncPolicyConfig because
 # `groups` is a policy-level concept that a single box must not be able to set.
-BOX_OVERRIDABLE = ("data_interval", "meta_interval", "compress")
+BOX_OVERRIDABLE = ("data_interval", "meta_interval")
 
 # %%
 #|export
@@ -258,20 +256,9 @@ def resolve_policy(
             raw, f"{sources[dimension]}.{dimension}"
         )
 
-    compress = resolved["compress"]
-    if compress is None:
-        compress = False
-        sources["compress"] = "built-in default (False)"
-    if not isinstance(compress, bool):
-        raise ValueError(
-            f"Box '{box_meta.index_name}': compress must be true or false "
-            f"(from {sources['compress']}); got {compress!r}"
-        )
-
     return ResolvedPolicy(
         data_interval_seconds=_seconds("data_interval"),
         meta_interval_seconds=_seconds("meta_interval"),
-        compress=compress,
         sources=sources,
     )
 

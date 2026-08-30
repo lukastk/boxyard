@@ -14,8 +14,8 @@
 #
 # 1. **An absent policy config changes nothing.** Every box is always due. A
 #    machine that has not opted in must not start silently skipping boxes.
-# 2. **Resolution is per DIMENSION.** A box overriding only its cadence keeps
-#    the group policy's `compress`.
+# 2. **Resolution is per DIMENSION.** A box overriding only its DATA cadence
+#    keeps the group policy's META cadence.
 # 3. **Ambiguity raises.** Two policies disagreeing on one dimension is an
 #    error, not a join -- but two policies AGREEING is not an error, which is
 #    what makes `archived`+`dormant` both mapping to `cold` work.
@@ -82,12 +82,8 @@ def make_box(groups=None, name="a-box") -> BoxMeta:
 # The fleet's real shape, so the tests are about the actual configuration
 # rather than an invented one: cold is archived+dormant, and NOT null.
 FLEET_POLICIES = {
-    "default": {"data_interval": "6h", "meta_interval": "15m", "compress": False},
-    "cold": {
-        "data_interval": "7d",
-        "compress": False,
-        "groups": ["archived", "dormant"],
-    },
+    "default": {"data_interval": "6h", "meta_interval": "15m"},
+    "cold": {"data_interval": "7d", "groups": ["archived", "dormant"]},
 }
 
 
@@ -99,7 +95,6 @@ def test_no_policy_config_means_every_box_always_due():
     resolved = resolve_policy(config, make_box(groups=["proj"]))
     assert resolved.data_interval_seconds is None
     assert resolved.meta_interval_seconds is None
-    assert resolved.compress is False
 
 
 def test_default_policy_applies_to_an_unmatched_box():
@@ -107,7 +102,6 @@ def test_default_policy_applies_to_an_unmatched_box():
     resolved = resolve_policy(config, make_box(groups=["proj"]))
     assert resolved.data_interval_seconds == 6 * 3600
     assert resolved.meta_interval_seconds == 15 * 60
-    assert resolved.compress is False
     assert resolved.sources["data_interval"] == "sync_policies.default"
 
 
@@ -116,7 +110,6 @@ def test_group_policy_beats_the_default():
     resolved = resolve_policy(config, make_box(groups=["proj", "archived"]))
     assert resolved.data_interval_seconds == 7 * 86400
     assert resolved.sources["data_interval"] == "sync_policies.cold"
-    assert resolved.sources["compress"] == "sync_policies.cold"
 
 
 def test_resolution_is_per_dimension_not_per_policy():
@@ -141,13 +134,12 @@ def test_two_policies_agreeing_is_not_a_conflict():
     config = make_config(FLEET_POLICIES)
     resolved = resolve_policy(config, make_box(groups=["archived", "dormant"]))
     assert resolved.data_interval_seconds == 7 * 86400
-    assert resolved.sources["compress"] == "sync_policies.cold"
 
 
 def test_two_policies_disagreeing_raises_and_names_both():
     config = make_config(
         {
-            "default": {"data_interval": "6h", "compress": False},
+            "default": {"data_interval": "6h"},
             "cold": {"data_interval": "7d", "groups": ["archived"]},
             "hot": {"data_interval": "1h", "groups": ["live"]},
         }
@@ -163,19 +155,21 @@ def test_two_policies_disagreeing_raises_and_names_both():
 
 def test_a_policy_stating_nothing_for_a_dimension_does_not_conflict():
     """
-    `cold` sets no `compress`; `slow` sets no `compress` either. Neither states
-    it, so the default answers and there is nothing to disagree about.
+    `cold` and `slow` both set a data cadence and neither sets a meta cadence.
+    They agree on the one they state, and the default answers the other.
     """
     config = make_config(
         {
-            "default": {"data_interval": "6h", "compress": False},
+            "default": {"data_interval": "6h", "meta_interval": "15m"},
             "cold": {"data_interval": "7d", "groups": ["archived"]},
             "slow": {"data_interval": "7d", "groups": ["dormant"]},
         }
     )
     resolved = resolve_policy(config, make_box(groups=["archived", "dormant"]))
-    assert resolved.compress is False
     assert resolved.data_interval_seconds == 7 * 86400
+    # Neither states a meta cadence, so the default answers and there is
+    # nothing to disagree about.
+    assert resolved.meta_interval_seconds == 15 * 60
 
 
 def test_default_policy_is_never_counted_as_a_match():
@@ -233,12 +227,14 @@ def test_box_conf_override_beats_the_group_policy(tmp_path):
     resolved = resolve_policy(config, box)
     assert resolved.data_interval_seconds == 3600
     assert resolved.sources["data_interval"] == "conf/sync.toml"
+    assert resolved.meta_interval_seconds == 15 * 60
+    assert resolved.sources["meta_interval"] == "sync_policies.default"
 
 
 def test_box_conf_override_is_per_dimension(tmp_path):
     """
-    Overriding only the cadence must KEEP the group policy's `compress`.
-    Lukas's stated requirement: type and schedule are independent axes.
+    Overriding only the DATA cadence must keep the group policy's META cadence.
+    The dimensions are independent axes and must resolve independently.
     """
     config = config_at(tmp_path, FLEET_POLICIES)
     box = make_box(groups=["archived"])
@@ -246,16 +242,7 @@ def test_box_conf_override_is_per_dimension(tmp_path):
     resolved = resolve_policy(config, box)
     assert resolved.data_interval_seconds == 3600
     assert resolved.sources["data_interval"] == "conf/sync.toml"
-    assert resolved.sources["compress"] == "sync_policies.cold"
 
-
-def test_box_conf_can_override_compress_alone(tmp_path):
-    config = config_at(tmp_path, FLEET_POLICIES)
-    box = make_box(groups=["archived"])
-    write_box_conf(tmp_path, box, config, "compress = false\n")
-    resolved = resolve_policy(config, box)
-    assert resolved.compress is False
-    assert resolved.data_interval_seconds == 7 * 86400
 
 
 def test_box_conf_settles_a_policy_conflict(tmp_path):
@@ -323,29 +310,3 @@ def test_box_conf_with_a_non_string_interval_is_refused(tmp_path):
         resolve_policy(config, box)
 
 
-def test_box_conf_with_a_non_bool_compress_is_refused(tmp_path):
-    config = config_at(tmp_path, FLEET_POLICIES)
-    box = make_box()
-    write_box_conf(tmp_path, box, config, 'compress = "yes"\n')
-    with pytest.raises(ValueError, match="must be true or false"):
-        resolve_policy(config, box)
-
-
-
-def test_compress_true_is_refused_until_it_is_implemented():
-    """
-    Nothing packs a box yet. Accepting `compress = true` would mean a config
-    that SAYS archived boxes are compressed while every archived box stays a
-    plain tree, discoverable only by going and looking at the remote.
-
-    A setting that silently does nothing is worse than either implementing it
-    or refusing it. This is the refusal, and it is what stops the cadence work
-    from shipping a lie.
-    """
-    with pytest.raises(Exception) as excinfo:
-        make_config({"cold": {"data_interval": "7d", "compress": True}})
-    assert "not implemented" in str(excinfo.value)
-
-    # false and unset stay perfectly legal.
-    assert make_config({"cold": {"compress": False}}).sync_policies["cold"].compress is False
-    assert make_config({"cold": {"data_interval": "7d"}}).sync_policies["cold"].compress is None

@@ -76,8 +76,7 @@ def test_two_policies_agreeing_is_not_reported(temp_boxyard):
                    modifications={"groups": ["archived", "dormant"]})
     _set_policies(config_path, {
         "default": {"data_interval": "6h"},
-        "cold": {"data_interval": "7d", "compress": False,
-                 "groups": ["archived", "dormant"]},
+        "cold": {"data_interval": "7d", "groups": ["archived", "dormant"]},
     })
     assert _findings(_doctor(config_path), "sync-policy-conflict") == []
 

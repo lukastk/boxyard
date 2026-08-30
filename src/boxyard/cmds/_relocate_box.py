@@ -24,7 +24,7 @@ def relocate_box(
     config = get_config(config_path)
     from boxyard._models import get_boxyard_meta
     from boxyard._checkout import load_placement, PlacementState, relocate_box as _relocate
-
+    
     boxyard_meta = get_boxyard_meta(config)
     if box_index_name not in boxyard_meta.by_index_name:
         raise ValueError(f"Box '{box_index_name}' does not exist.")

@@ -70,8 +70,8 @@ def _run_multi_sync(config_path, *args):
 
 
 FLEET = {
-    "default": {"data_interval": "6h", "meta_interval": "15m", "compress": False},
-    "cold": {"data_interval": "7d", "compress": False, "groups": ["archived", "dormant"]},
+    "default": {"data_interval": "6h", "meta_interval": "15m"},
+    "cold": {"data_interval": "7d", "groups": ["archived", "dormant"]},
 }
 
 # %% pts/tests/integration/cmds/test_due_only_scheduling.pct.py 4
