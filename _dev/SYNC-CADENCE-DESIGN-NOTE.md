@@ -242,6 +242,25 @@ least, and the measured alternative — excluding `.svelte-kit` and `paraglide`,
 plus raising `RCLONE_TPSLIMIT` from 10 to 50 — turns the 10-hour box into a
 ~10-minute one with no format change at all.
 
+## Status: built, NOT switched on — deliberately
+
+Everything in this note is implemented and tested, and **no machine has
+`[sync_policies.*]` in its config**, so every box is always due and behaviour is
+exactly what it was before. That is the designed opt-in state, not an oversight.
+
+Lukas deferred switching it on (2026-08-30) until restic-backed DATA storage
+lands (ticket 72117181). The reason is sequencing rather than doubt: restic
+changes what a DATA sync COSTS by roughly two orders of magnitude (measured on
+the real remote: first push 4.6 s against 402.5 s, cold pull 3.4 s against
+227.1 s), and the right cadence for a 3-second pass is not the right cadence for
+a 7-hour one. Choosing interval values now would mean choosing them twice.
+
+What switching it on will involve, when the time comes:
+  - `[sync_policies.*]` in the myrig config template, with `cold` mapped to
+    `archived` + `dormant` (NOT `null` — see above)
+  - splitting the supervisor loops so META runs frequently and DATA rarely
+  - `--due-only` and `--skip-unchanged-meta` on the appropriate loops
+
 ## Open
 
 - **`compress`** — whether packing is the right answer at all is still being
