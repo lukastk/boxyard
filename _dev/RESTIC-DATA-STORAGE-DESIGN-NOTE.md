@@ -530,6 +530,33 @@ Unowned still means unrestricted — deliberately, and 321 boxes rely on it — 
 box two machines actually write is now a box worth claiming, and `doctor`'s
 existing `unowned-box` check is where that belongs.
 
+#### The losing snapshot is an ORPHAN, and that is an ordering constraint
+
+Follow the consequence one step further than "the work is safe". The losing
+push's snapshot is reachable from nothing: not the pointer, not any pointer's
+ancestor chain. It is safe, and it is **invisible**.
+
+`forget` applies its keep ladder to snapshots and does not ask whether anything
+points at them. So the moment retention ships, today's "narrowed race leaves
+recoverable work" becomes **"work silently deleted when it ages out"**.
+
+That is not a reason to change the race handling. It is a reason to make the
+orphan visible, and it creates the one ordering constraint between two otherwise
+independent features:
+
+> **`doctor`'s `orphaned-snapshot` check MUST exist before retention is
+> switched on.** It lists a box's snapshots, walks the pointer's ancestor chain,
+> and reports anything off it — with its time and hostname, so a person can find
+> the work. Without it, `forget` deletes orphans silently and nothing ever said
+> they were there.
+
+The check is in the tree now (one repo open per restic box, skipped entirely by
+`--no-remote`). Retention is not, and must not be switched on before it.
+
+Kept in proportion: measured across the fleet, only **7 of 278 checked-out boxes
+exist on more than one machine at all**, so the population that can race is tiny.
+That argues for making it visible and moving on, not for redesigning around it.
+
 Where single-writer *does* matter is **`prune`**, which takes an exclusive lock
 and rewrites packs. So:
 
@@ -755,6 +782,36 @@ better.
   field alongside `remote_modtime`/`remote_size`, and
   `meta_boxes_needing_sync` gains a DATA sibling with identical shape. **Zero
   additional remote calls per pass.**
+- **`--skip-unchanged` generalises the existing bulk listing, and fixes a bug in
+  it.** `boxes/<box>/data.snapshot` sits at depth 2 beside `boxmeta.toml`, so
+  ONE `rclone lsjson` per storage location answers both questions and the DATA
+  half costs no additional remote calls. Verified against rclone directly: with
+  `--files-only --recursive --max-depth 2` and the two `+` filters, the call
+  returns `boxA/boxmeta.toml`, `boxB/boxmeta.toml`, `boxB/data.snapshot` and
+  nothing from `data/` at depth 3+.
+
+  Two corrections came out of implementing it, and both were latent bugs in code
+  already on main:
+
+  1. **The listing must be keyed by BOX AND FILENAME.** rclone has no implicit
+     exclude, so the existing `+ boxmeta.toml` filter *already* returned
+     `data.snapshot` once restic-backed boxes existed — and keying by box alone
+     let one overwrite the other. A converted box's META stamp was then compared
+     against the POINTER's ModTime, so the box could never be skipped: the META
+     optimisation silently switched itself off for exactly the boxes a migration
+     creates.
+  2. **A box may be skipped only if EVERY REQUESTED PART is provably
+     unchanged.** `--skip-unchanged-meta` used to drop a box from the pass on
+     META evidence alone, so a full pass with the flag on would skip a box whose
+     DATA had changed locally — its boxmeta being settled says nothing about its
+     files. Latent only because the flag has never been switched on. It now
+     skips nothing on a pass that includes DATA unless `--skip-unchanged` is
+     given and the box is restic-backed.
+
+  The DATA half's two conditions are both cheap: the pointer's (ModTime, Size)
+  against the recorded stamp, and the local tree's mtime against the local state
+  record. A plain box is never skippable — it has no cheap remote signal, which
+  is precisely why its no-op sync costs 30 s.
 - **`--due-only` is unchanged** in mechanism, and much less important in effect.
   The 6h DATA cadence exists because a DATA pass is ruinously expensive; a no-op
   restic DATA check costs ~3 s against 30–400 s today. Once boxes are converted,

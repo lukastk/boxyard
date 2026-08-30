@@ -38,6 +38,7 @@ DOCTOR_CHECK_NAMES = [
     "duplicate-checkout",
     "interrupted-relocation",
     "storage-format-mismatch",
+    "orphaned-snapshot",
 ]
 
 # Subid format used by boxes created before the current config conventions.
@@ -989,6 +990,99 @@ async def run_doctor(
             config_path=config.config_path,
             unknown_keys=sorted(config.unknown_keys),
         )
+    if not check_remote or not _rclone_available:
+        checks["orphaned-snapshot"]["skipped"] = True
+    else:
+        from boxyard._enums import StorageFormat as _StorageFormat
+    
+        _restic_boxes = [
+            bm for bm in box_metas
+            if bm.storage_format is _StorageFormat.RESTIC
+            and config.storage_locations.get(bm.storage_location) is not None
+            and config.storage_locations[bm.storage_location].storage_type
+            == StorageType.RCLONE
+            and (storage_locations is None or bm.storage_location in storage_locations)
+        ]
+    
+        if _restic_boxes:
+            try:
+                from boxyard._restic import read_pointer as _read_pointer
+                from boxyard._restic import run_restic as _run_restic
+                from boxyard._restic_sync import repo_for_box as _repo_for_box
+            except Exception as _import_err:  # pragma: no cover - defensive
+                _restic_boxes = []
+    
+        for _bm in sorted(_restic_boxes, key=lambda b: b.index_name):
+            _store = config.storage_locations[_bm.storage_location].store_path
+            try:
+                _pointer = await _read_pointer(
+                    config.rclone_config_path, _bm.storage_location, _store, _bm.index_name
+                )
+            except Exception as _e:
+                _add_finding(
+                    "orphaned-snapshot",
+                    f"Box '{_bm.index_name}': could not read its snapshot pointer: {_e}",
+                    "Without the pointer there is no way to tell which snapshots are "
+                    "reachable. Fix the storage-location access and re-run.",
+                    box_index_name=_bm.index_name,
+                )
+                continue
+            if _pointer is None:
+                continue  # `storage-format-mismatch` and the sync path both report this
+    
+            try:
+                _repo = _repo_for_box(config, _bm, _bm.index_name)
+                _rc, _out, _ = await _run_restic(
+                    _repo, ["snapshots", "--json"],
+                    timeout=const.RESTIC_METADATA_TIMEOUT, check=False,
+                )
+            except Exception as _e:
+                _add_finding(
+                    "orphaned-snapshot",
+                    f"Box '{_bm.index_name}': could not open its repository: {_e}",
+                    "Set `restic_password_command` in the boxyard config (or "
+                    "$BOXYARD_RESTIC_PASSWORD) so doctor can read the repository.",
+                    box_index_name=_bm.index_name,
+                )
+                continue
+            if _rc != 0:
+                continue
+    
+            import json as _json
+    
+            try:
+                _snaps = _json.loads(_out)
+            except Exception:
+                continue
+    
+            _by_id = {s["id"]: s for s in _snaps}
+            # Walk the pointer's ancestor chain. Everything on it is history and is
+            # meant to be there; everything else is reachable from nothing.
+            _reachable = set()
+            _cursor = _pointer["snapshot"]
+            while _cursor and _cursor in _by_id and _cursor not in _reachable:
+                _reachable.add(_cursor)
+                _cursor = _by_id[_cursor].get("parent")
+    
+            _orphans = [s for s in _snaps if s["id"] not in _reachable]
+            if _orphans:
+                _detail = ", ".join(
+                    f"{s['id'][:8]} ({s.get('time', '?')[:19]} on "
+                    f"{s.get('hostname', '?')})"
+                    for s in sorted(_orphans, key=lambda s: s.get("time", ""))[:5]
+                )
+                _add_finding(
+                    "orphaned-snapshot",
+                    f"Box '{_bm.index_name}' has {len(_orphans)} snapshot(s) the "
+                    f"pointer does not reach: {_detail}",
+                    f"Almost always a push that raced another machine: the losing "
+                    f"side kept its work as its own snapshot rather than overwriting "
+                    f"the winner. Nothing is lost. Inspect one with `restic -r "
+                    f"<repo> ls <id>` and restore what you need, then leave it -- but "
+                    f"note a retention pass would eventually remove it, so deal with "
+                    f"it rather than relying on it staying.",
+                    box_index_name=_bm.index_name,
+                )
     _owner_counts: dict[str, int] = {}
     for bm in box_metas:
         if bm.write_owner is not None:

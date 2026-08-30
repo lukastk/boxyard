@@ -78,6 +78,18 @@ def cli_multi_sync(
             "differ."
         ),
     ),
+    skip_unchanged: bool = Option(
+        False,
+        "--skip-unchanged",
+        help=(
+            "Ask the remote ONCE, in bulk, which boxes moved, and skip the ones "
+            "where neither side changed -- for META and, on restic-backed boxes, "
+            "for DATA too. The DATA half rides the SAME listing, so it costs no "
+            "additional remote calls. A plain box's DATA is never skipped: it "
+            "has no cheap remote signal, which is the reason its no-op sync "
+            "costs 30 s in the first place."
+        ),
+    ),
     due_only: bool = Option(
         False,
         "--due-only",
@@ -143,6 +155,7 @@ show_progress = True
 print_skipped = False
 due_only = False
 skip_unchanged_meta = False
+skip_unchanged = False
 soft_interruption_enabled = True
 
 # %% [markdown]
@@ -222,16 +235,35 @@ if due_only:
 # so ~6.6 min for 590 boxes at concurrency 2 -- against roughly a minute for the
 # listing. Everything that survives goes through the ordinary sync path.
 _skipped_unchanged = []
-if skip_unchanged_meta:
+if skip_unchanged_meta or skip_unchanged:
     # `asyncio` is imported further down this command body, which makes it a
     # local and leaves it unbound here. Same reason as StorageType above.
     import asyncio as _aio
 
+    # `const` and `Path` are imported HERE, not taken from the enclosing scope:
+    # both are bound LATER in this command body, which makes them locals and
+    # leaves them unbound at this point. The same reason the nested listing
+    # function has always imported them itself.
+    from pathlib import Path as _Path
+
+    from boxyard import const as _const
     from boxyard._sync_policy import meta_boxes_needing_sync
     from boxyard._utils import is_in_event_loop, rclone_lsjson
 
-    async def _bulk_meta_listing():
-        """(index name) -> (ModTime, Size) for every boxmeta on every remote."""
+    async def _bulk_listing():
+        """
+        (index name) -> {filename: (ModTime, Size)} for every remote, from ONE
+        `lsjson` per storage location.
+
+        Keyed by BOX AND FILENAME, which is a fix as well as a generalisation.
+        The filter admits `boxmeta.toml`, and rclone has no implicit exclude, so
+        anything else at depth 2 comes back too -- which since restic-backed
+        boxes exist means `data.snapshot` does. Keying by box alone let one
+        overwrite the other, so a converted box's META stamp was compared
+        against the POINTER's ModTime and the box could never be skipped. That
+        silently disabled the META optimisation for exactly the boxes the
+        migration creates.
+        """
         # Imported here, not taken from the enclosing scope: `StorageType` is
         # bound LATER in this command body, which makes it a local and leaves it
         # unbound at this point. `Path` and `const` are imported for the same
@@ -253,32 +285,77 @@ if skip_unchanged_meta:
                 source_path=_sl_conf.store_path / const.REMOTE_BOXES_REL_PATH,
                 files_only=True,
                 recursive=True,
-                filter=[f"+ {const.BOX_METAFILE_REL_PATH}"],
+                filter=[
+                    f"+ {const.BOX_METAFILE_REL_PATH}",
+                    f"+ {const.BOX_SNAPSHOT_POINTER_REL_PATH}",
+                    "- **",
+                ],
                 max_depth=2,
             )
             for _entry in _entries or []:
-                listing[Path(_entry["Path"]).parts[0]] = (
+                _parts = Path(_entry["Path"]).parts
+                if len(_parts) != 2:
+                    continue
+                listing.setdefault(_parts[0], {})[_parts[1]] = (
                     _entry.get("ModTime"),
                     _entry.get("Size"),
                 )
         return listing
+
+
+    def _project(listing, filename):
+        """The single-file view the skip filters take."""
+        return {
+            box: entry[filename]
+            for box, entry in listing.items()
+            if filename in entry
+        }
 
     # Already inside a loop: skip the OPTIMISATION, not the work. Falling
     # through with every box still selected costs a slower pass; guessing which
     # boxes were unchanged without asking the remote would cost correctness.
     if is_in_event_loop():
         typer.echo(
-            "--skip-unchanged-meta: already in an event loop, syncing every "
+            "--skip-unchanged: already in an event loop, syncing every "
             "box instead of filtering.",
             err=True,
         )
     else:
-        _listing = _aio.run(_bulk_meta_listing())
-        _needed, _skipped_unchanged = meta_boxes_needing_sync(
-            config, box_metas, _listing
-        )
-        _needed_set = set(_needed)
-        box_metas = [bm for bm in box_metas if bm.index_name in _needed_set]
+        from boxyard._sync_policy import data_boxes_needing_sync
+
+        _listing = _aio.run(_bulk_listing())
+
+        # A box may be skipped only if EVERY REQUESTED PART is provably
+        # unchanged. Anything not provable makes the box needed, so the
+        # intersection starts as "everything" and each part narrows it.
+        #
+        # This CORRECTS `--skip-unchanged-meta`. It used to drop a box from the
+        # pass on META evidence alone, so a full pass with the flag on would
+        # skip a box whose DATA had changed locally -- its boxmeta was settled,
+        # which says nothing about its files. Latent only because the flag has
+        # never been switched on. Now `--skip-unchanged-meta` on a pass that
+        # includes DATA skips nothing, which is what it should always have done:
+        # a plain box's DATA has no cheap remote signal.
+        _skippable = {bm.index_name for bm in box_metas}
+        for _part in sync_choices:
+            if _part is BoxPart.META:
+                _, _provable = meta_boxes_needing_sync(
+                    config, box_metas,
+                    _project(_listing, _const.BOX_METAFILE_REL_PATH),
+                )
+            elif _part is BoxPart.DATA and skip_unchanged:
+                _, _provable = data_boxes_needing_sync(
+                    config, box_metas,
+                    _project(_listing, _const.BOX_SNAPSHOT_POINTER_REL_PATH),
+                )
+            else:
+                # CONF rides the DATA sync and has no independent signal; DATA
+                # without --skip-unchanged has none either.
+                _provable = []
+            _skippable &= set(_provable)
+
+        _skipped_unchanged = sorted(_skippable)
+        box_metas = [bm for bm in box_metas if bm.index_name not in _skippable]
 
 # A box whose policies disagree is synced anyway -- the ambiguity is about how
 # OFTEN, never about whether -- but it is never synced SILENTLY. Printed once
@@ -599,27 +676,42 @@ if not is_in_event_loop():
 #
 # Only boxes that were actually synced this pass need a new stamp; the ones the
 # filter skipped still hold a valid one.
-if skip_unchanged_meta and BoxPart.META in sync_choices and not is_in_event_loop():
+if (skip_unchanged_meta or skip_unchanged) and not is_in_event_loop():
     import asyncio as _aio
     import time as _stamp_time
 
+    from boxyard import const as _const
     from boxyard._sync_policy import write_check_record as _write_check_record
 
-    _final_listing = _aio.run(_bulk_meta_listing())
+    _final_listing = _aio.run(_bulk_listing())
     _now_unix = _stamp_time.time()
+
+    # One listing, both stamps. The DATA stamp is the POINTER's (ModTime, Size),
+    # which is exactly what the DATA skip filter compares next pass. A push
+    # always produces a NEW snapshot id and rewrites the pointer, so a real
+    # change always moves its ModTime -- which is the same safety argument the
+    # META stamp rests on.
+    _stamp_parts = []
+    if BoxPart.META in sync_choices:
+        _stamp_parts.append((BoxPart.META, _const.BOX_METAFILE_REL_PATH))
+    if skip_unchanged and BoxPart.DATA in sync_choices:
+        _stamp_parts.append((BoxPart.DATA, _const.BOX_SNAPSHOT_POINTER_REL_PATH))
+
     for _bm in box_metas:
         _stat = sync_stats.get(_bm.index_name)
         if _stat is None or _stat[1] not in ("Success", "Read-only", "Local"):
             continue
-        _modtime, _size = _final_listing.get(_bm.index_name, (None, None))
-        _write_check_record(
-            config,
-            _bm.index_name,
-            BoxPart.META,
-            _now_unix,
-            remote_modtime=_modtime,
-            remote_size=_size,
-        )
+        _entry = _final_listing.get(_bm.index_name, {})
+        for _part, _filename in _stamp_parts:
+            _modtime, _size = _entry.get(_filename, (None, None))
+            _write_check_record(
+                config,
+                _bm.index_name,
+                _part,
+                _now_unix,
+                remote_modtime=_modtime,
+                remote_size=_size,
+            )
 
 final_sync_stat_board = get_sync_stat_board(finished=True)
 console = Console()
