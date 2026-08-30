@@ -955,10 +955,11 @@ def test_a_machine_without_a_canonical_root_can_still_pull(
     repo, canon_root, two_machines, monkeypatch
 ):
     """
-    The termux story, and the reassuring half of it. `restore <snap>:<source>`
-    needs the source only as a STRING recorded in the repo -- the path need not
-    exist on the restoring machine. So a machine that cannot create the
-    canonical root reads everything normally; only its pushes degrade.
+    `restore <snap>:<source>` needs the source only as a STRING recorded in the
+    repo -- the path need not exist on the restoring machine. So a machine whose
+    canonical root is broken still reads everything normally; only its pushes
+    degrade. Every machine in the live fleet can use the canonical root, so this
+    is the defence-in-depth case, not an expected one.
     """
     idx, m1, m2 = two_machines
     first = run(push(repo, m1, box_index_name=idx))
@@ -976,9 +977,10 @@ def test_a_machine_without_a_canonical_root_still_pushes(
     repo, two_machines, monkeypatch
 ):
     """
-    termux runs as an untrusted_app uid and can write to NO fixed absolute path.
-    It must still be able to save work; the cost is that other machines lose
-    `--parent` matching for that box until one of them pushes again.
+    A machine whose `/tmp` is unusable -- a symlink, world-writable, or owned by
+    someone else -- must still be able to save work. The cost is that other
+    machines lose `--parent` matching for that box until one of them pushes
+    again, and `PushResult.canonical` is how the caller learns to say so.
     """
     idx, m1, _ = two_machines
     monkeypatch.setattr(

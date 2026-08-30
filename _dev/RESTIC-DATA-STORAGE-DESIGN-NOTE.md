@@ -287,17 +287,21 @@ created-if-missing: a crashed run can leave a link aimed at a checkout root the
 box has since left, and silently backing up the old location would be worse than
 any failure.
 
-**One machine cannot do this: termux.** It runs as an untrusted_app uid and can
-write to no fixed absolute path — `/tmp` (mode 0771, owned by `shell`),
-`/var/tmp` and `/data/local/tmp` are all refused, and its writable areas are all
-under `/data/data/com.termux/files/`, which Linux and macOS cannot create
-without root. It holds 3 boxes. It can still **pull** everything normally, since
-`restore <snap>:<source>` needs the source only as a string recorded in the repo
-— but a push from termux records its own path, and every other machine then
-falls back for that box until one of them pushes again.
+**Every machine that runs boxyard can do this.** They are all macOS or Linux and
+all have a usable `/tmp`.
 
-That is why the fallbacks stay. They are not belt-and-braces: they are what
-makes a fleet with termux in it, and a yard mid-conversion, correct.
+termux looked like a counter-example and is not one: it runs as an untrusted_app
+uid and can write to no fixed absolute path (`/tmp` is mode 0771 owned by
+`shell`; `/var/tmp` and `/data/local/tmp` are refused; its writable areas are
+under `/data/data/com.termux/files/`, which Linux and macOS cannot create without
+root). But **termux does not run boxyard at all** — verified: no `boxyard`
+binary, no `~/.boxyard`, and the three `~/dev` entries are plain git repos with
+no registration. myrig sets `no_pyinfra = true` for termux and boxyard is
+installed by a pyinfra step, so it has never been installed there. What is left
+is rendered leftovers, being removed separately.
+
+So the canonical path is not a best-effort optimisation with a permanent hole in
+it. It is the normal path for the whole live fleet.
 
 The restore fix, verified, and still needed — the canonical path makes the
 source a constant, but a box pushed before conversion, or from a machine that
@@ -397,16 +401,30 @@ Two things genuinely improve:
   > path (§2) buys, and why it is not an optimisation but a correctness
   > mechanism. Without it every Mac↔Linux replica would report CONFLICT forever.
   >
-  > Where the paths do NOT agree — a box pushed from termux, or one whose
-  > snapshot predates conversion — `parent_is_usable` detects the mismatch and
-  > falls back to the mtime-versus-record-time test the plain backend already
-  > applies in `get_sync_status`. That is not a regression; it is today's
-  > semantics, and it is why the local state record carries `synced_at_unix`.
+  > **In the live fleet that means exact detection everywhere.** Every machine
+  > that runs boxyard is macOS or Linux and can use the canonical root.
   >
-  > So the honest statement is: **exact for every machine that can use the
-  > canonical root, today's mtime semantics for any that cannot, and never a
-  > wrong answer in either case.** The failure direction is always "do more
-  > work", never "skip".
+  > `parent_is_usable` is the fallback, and it stays, because two distinct
+  > things reach it and only one of them expires:
+  >
+  > 1. **The parent snapshot no longer exists.** Permanent, and routine once
+  >    retention ships: any machine's `forget` can remove the snapshot another
+  >    machine's state record names. This is not a migration artefact and never
+  >    goes away, so there is deliberately no `TODO(cleanup)` here.
+  > 2. **The parent's recorded source path is not the one we are about to back
+  >    up through.** Two sub-cases: snapshots taken before the canonical root
+  >    existed, which expires when conversion completes; and the canonical root
+  >    being unusable at runtime — a `/tmp` that is a symlink, world-writable, or
+  >    owned by someone else, a machine we have not met, a platform we have not
+  >    met. That half is defence in depth and also does not expire.
+  >
+  > When it fires, detection falls back to the mtime-versus-record-time test the
+  > plain backend already applies in `get_sync_status` — which is why the local
+  > state record carries `synced_at_unix`.
+  >
+  > So the honest statement is: **exact across the live fleet; today's mtime
+  > semantics in the two cases above; and never a wrong answer in either.** The
+  > failure direction is always "do more work", never "skip".
 
   > **Trap, found by the prototype:** a perfect no-op reports `Dirs: 0 new, 1
   > changed` — the root directory's own metadata is re-read. Consulting

@@ -340,10 +340,11 @@ async def repo_exists(repo: ResticRepo) -> bool:
 # Verified on macOS as well as Linux: `/tmp` is itself a symlink to `private/tmp`
 # there, and the path is still recorded verbatim.
 #
-# **One machine cannot do this: termux.** It runs as an untrusted_app uid and can
-# write to no fixed absolute path -- `/tmp` (mode 0771, owned by `shell`),
-# `/var/tmp` and `/data/local/tmp` are all refused. It holds boxes, so the
-# fallbacks below are not decoration; see `parent_is_usable`.
+# Every machine that runs boxyard is macOS or Linux and can use the canonical
+# root. (termux cannot write any fixed absolute path, but it does not run
+# boxyard -- no binary, no `~/.boxyard` -- so it is not a constraint here.)
+# `parent_is_usable` is still the fallback, for a forgotten parent snapshot and
+# for a canonical root that cannot be validated; see its docstring.
 
 # %%
 #|export
@@ -760,16 +761,22 @@ async def parent_is_usable(
     against `files_new=0, files_unmodified=1` for the same content under the
     same path.
 
-    Without this check every replica whose checkout path differs from the
-    pusher's reports CONFLICT instead of NEEDS_PULL, permanently. On this fleet
-    that is not an edge case: `~/dev/<box>` is `/Users/lukastk/...` on the Macs
-    and `/home/lukastk/...` on Linux, so EVERY box shared between a Mac and a
-    Linux machine would be stuck.
+    The canonical path (see `canonical_link`) is what normally makes both
+    conditions hold on every machine, so this is NOT the usual route -- exact
+    detection is. Two distinct things still reach it, and only one expires:
 
-    The consequence is that restic's fast, exact detection serves the machine
-    that last pushed -- in practice the `write_owner`, the one that actually
-    edits -- and every other replica falls back to the mtime test the plain
-    backend already uses. That is not a regression; it is today's semantics.
+    1. **The parent snapshot is gone.** Permanent, and routine once retention
+       ships: any machine's `forget` can remove the snapshot another machine's
+       state record names. Deliberately no `TODO(cleanup)` -- this never goes
+       away.
+    2. **The parent was taken through a different path.** Either a snapshot
+       predating the canonical root, which expires when conversion completes, or
+       a canonical root that cannot be validated right now -- a `/tmp` that is a
+       symlink, world-writable or owned by someone else, a machine or platform
+       we have not met. That half is defence in depth and also does not expire.
+
+    When it fires, detection falls back to the mtime-versus-record-time test the
+    plain backend already applies. Not a regression: it is today's semantics.
     """
     source = await snapshot_source_path(repo, parent_snapshot)
     if source is None:
@@ -798,13 +805,13 @@ def _backup_path(box_index_name: str | None, data_path: Path):
     """
     The path restic should be pointed at, and whether it is the canonical one.
 
-    Falls back to the real path when the canonical root is unavailable -- which
-    on this fleet means termux, and only termux. Falling back DEGRADES (every
-    other machine loses `--parent` matching and diff-based pulls for this box)
-    but stays CORRECT, because `parent_is_usable` and `PullMode.FULL_PATH_MISMATCH`
-    both key off the recorded path. Refusing instead would leave that machine
-    unable to save work at all, which is worse; the caller is told which path was
-    used so `doctor` can report it.
+    Falls back to the real path when the canonical root cannot be validated.
+    That should not happen on any machine in the live fleet, so it means
+    something is wrong with `/tmp` -- but falling back DEGRADES rather than
+    fails: it stays correct, because `parent_is_usable` and
+    `PullMode.FULL_PATH_MISMATCH` both key off the recorded path. Refusing
+    instead would leave a machine unable to save work because of a permissions
+    problem somewhere else entirely. The caller is told which path was used.
     """
     if box_index_name is None:
         yield Path(data_path), False
@@ -964,9 +971,15 @@ class PushResult:
     snapshot_id: str
     source_path: str
     # False when this machine could not use the canonical root and backed up
-    # through its own path instead. The box still syncs, but every other machine
-    # loses `--parent` matching and diff-based pulls for it until a machine that
-    # CAN use the canonical root pushes again. `doctor` should say so.
+    # through its own path instead. Expected to be True on every machine in the
+    # live fleet, so a False is a MACHINE-level fault worth reporting -- a `/tmp`
+    # that is a symlink, world-writable, or owned by someone else. The box still
+    # syncs correctly; the cost is that every other machine loses `--parent`
+    # matching and diff-based pulls for it until one of them pushes again.
+    #
+    # It is returned rather than logged here because this layer takes paths and
+    # knows nothing about boxes or machines -- the same reason ownership is
+    # decided in `sync_box` and not in `sync_helper`.
     canonical: bool = True
 
 

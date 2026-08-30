@@ -273,13 +273,16 @@ around it?
 - `/tmp` is `drwxrwxrwt` on mymain, ideapad and macOS, so the root must be
   created 0700 and validated as a real, self-owned directory before use.
 - Atomic re-point costs 0.033 ms.
-- **termux cannot participate**: untrusted_app uid, and `/tmp` (0771, owned by
-  `shell`), `/var/tmp` and `/data/local/tmp` are all unwritable. It holds 3
-  boxes. It can still PULL normally; only its pushes degrade.
+- termux cannot write any fixed absolute path (untrusted_app uid; `/tmp` is 0771
+  owned by `shell`, `/var/tmp` and `/data/local/tmp` refused) — but it **does not
+  run boxyard**: no binary, no `~/.boxyard`, and its three `~/dev` entries are
+  plain git repos. Verified. So it is not a constraint on this design.
 
-**Decision:** adopt the canonical path; KEEP `parent_is_usable` and
-`PullMode.FULL_PATH_MISMATCH` as the correctness backstop, because termux and
-any pre-conversion snapshot still produce mismatched paths.
+**Decision:** adopt the canonical path — it is the normal path for the whole live
+fleet, which is entirely macOS and Linux. KEEP `parent_is_usable` and
+`PullMode.FULL_PATH_MISMATCH`, not for termux but because a forgotten parent
+snapshot (permanent, routine once retention ships) and an unusable canonical root
+(defence in depth) both reach them.
 
 ---
 
