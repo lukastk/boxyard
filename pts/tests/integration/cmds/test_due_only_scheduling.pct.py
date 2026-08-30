@@ -412,3 +412,65 @@ def test_the_scheduler_is_checkout_root_independent(temp_boxyard, tmp_path):
 
     write_check_record(config, index_name, _BoxPart.DATA, time.time())
     assert due_boxes(config, [meta], _BoxPart.DATA, time.time()).due == []
+
+
+# %% [markdown]
+# ## `boxyard new -g` with a group the defaults already supply
+#
+# Found by using the CLI: `boxyard new -n x -g ctx/mymain` cloned and registered
+# the box, then failed with "Groups must be unique" because
+# `default_box_groups` already contained `ctx/mymain` — leaving a fully
+# registered orphan in `~/dev` and in `local_store`.
+#
+# That is the same class of bug the pre-flight `--group`/`--parent` validation
+# exists to prevent, reached by a path that validation could not see: the group
+# NAME was perfectly valid, the collision only appeared once it was merged with
+# the config defaults, after `new_box` had already done its work.
+
+# %%
+#|export
+def test_new_with_a_group_the_defaults_already_have(temp_boxyard, monkeypatch):
+    """
+    Must succeed with the group listed once, and leave no orphan. Asking for a
+    group the box would already have is a no-op, not a mistake -- which is how
+    `add-to-group` already treats it.
+    """
+    import tomllib as _tomllib
+
+    from typer.testing import CliRunner
+
+    from boxyard._cli.app import app
+    from boxyard._models import get_boxyard_meta
+
+    from boxyard import const as _const
+
+    remote_name, _, config, config_path, _ = temp_boxyard
+
+    # The real environment sets DEFAULT_BOX_GROUPS (myrig supplies ctx/<machine>),
+    # and it merges ADDITIVELY with the config. Pinned here so the test asserts
+    # on the config it wrote rather than on whichever machine it runs on.
+    monkeypatch.setenv(_const.ENV_VAR_DEFAULT_BOX_GROUPS, '["ctx/test-machine"]')
+
+    with open(config_path, "rb") as f:
+        dump = _tomllib.load(f)
+    dump["default_box_groups"] = ["ctx/test-machine"]
+    config_path.write_text(tomli_w.dumps(dump))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "--config", str(config_path), "new",
+            "-n", "dupe-group-box",
+            "-s", remote_name,
+            "-g", "ctx/test-machine",
+            "--no-claim",
+        ],
+    )
+    assert result.exit_code == 0, f"exited {result.exit_code}\n{result.output}"
+
+    config = get_config(config_path)
+    metas = [
+        m for m in get_boxyard_meta(config).box_metas if m.name == "dupe-group-box"
+    ]
+    assert len(metas) == 1, f"expected exactly one box, got {[m.index_name for m in metas]}"
+    assert metas[0].groups == ["ctx/test-machine"], metas[0].groups

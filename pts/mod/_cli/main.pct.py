@@ -538,12 +538,27 @@ def cli_new(
         from boxyard.config import get_config
 
         config = get_config(app_state["config_path"])
+        # Deduplicated, order preserved. A plain concatenation raised
+        # "Groups must be unique" whenever `-g` named a group that
+        # `default_box_groups` already contains -- which on this fleet is every
+        # `ctx/<machine>`, since DEFAULT_BOX_GROUPS supplies it. That failure
+        # landed AFTER `new_box` had already cloned and registered the box, so
+        # it left a fully registered orphan behind: exactly the class of bug the
+        # pre-flight validation above was added to stop, reached by a path that
+        # validation could not see.
+        #
+        # Deduplicating rather than refusing, because asking for a group a box
+        # would already have is a no-op, not a mistake -- which is precisely how
+        # `add-to-group` already treats it.
+        _merged_groups: list[str] = []
+        for _g in list(config.default_box_groups) + list(groups):
+            if _g not in _merged_groups:
+                _merged_groups.append(_g)
+
         modify_boxmeta(
             config_path=app_state["config_path"],
             box_index_name=box_index_name,
-            modifications={
-                "groups": config.default_box_groups + groups,
-            },
+            modifications={"groups": _merged_groups},
         )
 
     if _parent_box_id is not None:
