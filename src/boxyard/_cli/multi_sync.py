@@ -179,7 +179,10 @@ def cli_multi_sync(
                     source_path=_sl_conf.store_path / const.REMOTE_BOXES_REL_PATH,
                     files_only=True,
                     recursive=True,
-                    filter=[f"+ {const.BOX_METAFILE_REL_PATH}"],
+                    # See `sync_missing_boxmetas` for why `- **` is load-bearing
+                    # and why the pattern is anchored one level down rather than at
+                    # the root. Same listing shape, same trap.
+                    filter=[f"+ /*/{const.BOX_METAFILE_REL_PATH}", "- **"],
                     max_depth=2,
                 )
                 for _entry in _entries or []:
@@ -200,11 +203,28 @@ def cli_multi_sync(
             )
         else:
             _listing = _aio.run(_bulk_meta_listing())
-            _needed, _skipped_unchanged = meta_boxes_needing_sync(
+            _needed, _provably_unchanged = meta_boxes_needing_sync(
                 config, box_metas, _listing
             )
-            _needed_set = set(_needed)
-            box_metas = [bm for bm in box_metas if bm.index_name in _needed_set]
+            # The filter proves something about META and NOTHING about the other
+            # parts, so it may only drop a box from a pass that asks for META
+            # ALONE. Dropping it from a full pass would skip a box whose DATA had
+            # changed locally -- its boxmeta being settled says nothing about its
+            # files, and DATA has no cheap remote signal to ask about. Latent only
+            # because this flag has never been switched on; the flag exists for the
+            # fast META loop (`multi-sync -c meta`), which is unaffected.
+            if set(sync_choices) <= {BoxPart.META}:
+                _skipped_unchanged = _provably_unchanged
+                _skippable = set(_provably_unchanged)
+                box_metas = [bm for bm in box_metas if bm.index_name not in _skippable]
+            else:
+                _skipped_unchanged = []
+                typer.echo(
+                    "--skip-unchanged-meta proves nothing about "
+                    f"{sorted(p.value for p in sync_choices if p is not BoxPart.META)}, "
+                    "so no box was skipped. Use `-c meta` for the fast META loop.",
+                    err=True,
+                )
     
     # A box whose policies disagree is synced anyway -- the ambiguity is about how
     # OFTEN, never about whether -- but it is never synced SILENTLY. Printed once

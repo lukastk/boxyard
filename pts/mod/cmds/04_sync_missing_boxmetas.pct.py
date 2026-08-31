@@ -137,7 +137,19 @@ for sl_name, sl_config in config.storage_locations.items():
         source_path=sl_config.store_path / const.REMOTE_BOXES_REL_PATH,
         files_only=True,
         recursive=True,
-        filter=[f"+ {const.BOX_METAFILE_REL_PATH}"],
+        # `- **` IS LOAD-BEARING. rclone has no implicit exclude: a filter list
+        # of only `+` rules includes everything that does not match, so without
+        # it this returns EVERY file at depth 2 and the `+` reads as a comment.
+        # Harmless while `boxmeta.toml` is the only file a box directory holds
+        # at that depth, and not harmless the moment anything else lands there.
+        #
+        # And the pattern must be anchored ONE LEVEL DOWN, not at the root:
+        # measured, `+ /boxmeta.toml` with `- **` matches NOTHING, because
+        # boxmetas live at `<box>/boxmeta.toml`. That combination would make
+        # every box look permanently missing on a loop that runs every 15
+        # minutes on every machine. Both listings below use the same filter on
+        # purpose -- the code diffs the two sets, so they must agree.
+        filter=[f"+ /*/{const.BOX_METAFILE_REL_PATH}", "- **"],
         max_depth=2,
     )
     _ls_remote = {f["Path"] for f in _ls_remote} if _ls_remote else set()
@@ -148,7 +160,7 @@ for sl_name, sl_config in config.storage_locations.items():
         source_path=config.local_store_path / sl_name,
         files_only=True,
         recursive=True,
-        filter=[f"+ /{const.BOX_METAFILE_REL_PATH}"],
+        filter=[f"+ /*/{const.BOX_METAFILE_REL_PATH}", "- **"],
         max_depth=2,
     )
     _ls_local = {f["Path"] for f in _ls_local} if _ls_local else set()
