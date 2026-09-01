@@ -101,6 +101,7 @@ from boxyard._restic import (
     ResticError,
     ResticRepo,
     get_status,
+    init_repo,
     mark_pull_started,
     pointer_remote_path,
     pull,
@@ -204,21 +205,61 @@ async def sync_data_restic(
     # over a repository or the reverse.
     if pointer is None:
         if not await repo_exists(repo):
-            return (
-                _status(
-                    SyncCondition.ERROR,
-                    local_exists=data_path.is_dir(),
-                    remote_exists=False,
-                    error=(
-                        f"Box '{index_name}' declares storage_format = restic, but "
-                        f"there is no repository at {repo.url} and no data.snapshot "
-                        f"pointer. A conversion did not finish, or this boxmeta "
-                        f"arrived before the data. Re-run "
-                        f"`boxyard convert -r '{index_name}'` on the machine that "
-                        f"holds the box."
+            # NEITHER a repository NOR a pointer: this box has never been
+            # pushed. That is a brand-new restic box on its first sync, and it
+            # is the ordinary path once `restic` is the default -- exactly as a
+            # new plain box's first sync creates its remote `data/`.
+            #
+            # Distinguished from an unfinished CONVERSION by the repository:
+            # a conversion that stopped after removing the plain tree leaves a
+            # repo with no pointer, which is the branch below.
+            if not data_path.is_dir():
+                return (
+                    _status(SyncCondition.SYNCED, local_exists=False,
+                            remote_exists=False),
+                    False,
+                )
+            if not may_push:
+                if not any(data_path.iterdir()):
+                    return (
+                        _status(SyncCondition.SYNCED, local_exists=True,
+                                remote_exists=False),
+                        False,
+                    )
+                return (
+                    _status(
+                        SyncCondition.WRITE_DENIED,
+                        local_exists=True,
+                        remote_exists=False,
+                        error=write_denied_message(config, box_meta),
                     ),
-                ),
-                False,
+                    False,
+                )
+            if sync_direction == SyncDirection.PULL:
+                raise SyncUnsafe(
+                    f"Box '{index_name}' has never been pushed, so there is "
+                    f"nothing to pull."
+                )
+
+            _say(f"Creating the repository for '{index_name}'.")
+            await init_repo(repo)
+            result = await push(
+                repo, data_path, parent=None, excludes=excludes,
+                box_index_name=index_name,
+            )
+            await write_pointer(
+                config.rclone_config_path, box_meta.storage_location, store,
+                remote_index_name, result.snapshot_id, result.source_path,
+            )
+            write_state(
+                config.boxyard_data_path, index_name, result.snapshot_id,
+                files=result.files,
+            )
+            _say(f"Pushed '{index_name}' as {result.snapshot_id[:8]}.")
+            return (
+                _status(SyncCondition.NEEDS_PUSH, local_exists=True,
+                        remote_exists=True),
+                True,
             )
         return (
             _status(

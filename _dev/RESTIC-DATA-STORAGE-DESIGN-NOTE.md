@@ -749,21 +749,106 @@ shape.
    never surprised.
 2. **A new box created on an upgraded machine is restic immediately**, and an
    un-upgraded machine that discovers it finds `boxmeta.toml` (which it can read)
-   and no `data/` and no `data.rec` — the refusal state above. It reports an
-   error and touches nothing. Verified.
+   and no `data/` and no `data.rec`. Measured, that machine **registers the box,
+   reports it SYNCED, and refuses to check it out** — it is `boxyard include`
+   that fails, not the sync pass, because a box with no local checkout and no
+   remote `data/` is indistinguishable from one simply not included here. The
+   refusal is what matters: without a checkout it can never push a plain `data/`
+   beside the repository. But the ordinary pass is SILENT, which is why the
+   release order below is a condition. See "What a stale machine does with a box
+   that was NEVER plain".
 3. **`boxyard convert` refuses unless this machine holds the box and can verify
    the restore**, which is step 2 of the procedure.
-4. **`doctor` gains a check** naming boxes whose format the local boxyard cannot
-   handle, so an un-upgraded machine has one clear message rather than a per-pass
-   mystery.
-5. **pocket4 is offline for days at a time.** Nothing above requires it to be
-   reachable, because there is no negotiation — only a refusal state. When it
-   comes back and is upgraded, it converges.
+4. **`doctor` gains a check** naming boxes whose intended format differs from
+   their actual one, with `boxyard convert` as the fix. Note what this does and
+   does not buy: the check runs on an UPGRADED machine. A stale one has no such
+   check and cannot be given one retroactively — the most it says is the
+   pre-existing `unknown-boxmeta-keys`, because `storage_format` is a key it has
+   never heard of. That is a real signal, but only for someone who runs
+   `doctor`.
+5. **pocket4 is offline for days at a time, and this is the one gate it does
+   hold up.** CONVERSION never needs it reachable: there is no negotiation, only
+   a refusal state, so it converges whenever it comes back. CREATION is
+   different once the default flips — a new box on an upgraded machine is
+   restic, and a stale pocket4 registers it and reports it SYNCED **silently**.
+   So the release order's step 2 is not satisfied until pocket4 is upgraded, and
+   nothing new should be created before then. This is a change from the
+   pre-default-flip design, where creation was as unconditional as conversion.
 
 The one thing this design deliberately does **not** do is make the default flip
 convert anything. `plain` must remain reachable for the migration window, for
 `local` storage locations, and as a rollback path, and the honest way to keep it
 reachable is to keep conversion explicit in both directions.
+
+### What a stale machine does with a box that was NEVER plain
+
+A CONVERTED box has history on a stale machine: a local checkout and a local
+`data.rec`, against a remote whose `data/` and `data.rec` are gone. Those
+absences drive `get_sync_status` into its ERROR branch and the machine refuses
+loudly.
+
+A box that was **never plain** gives it none of that, and once `restic` is the
+default this is the normal path for every new box. Measured, end to end, against
+a build with the restic branch disabled — which is what 0.6.1 is:
+
+| the stale machine | what happens |
+|---|---|
+| `sync-missing-meta` | **discovers it** and registers it, like any other box; it appears in `boxyard list` and the group symlinks |
+| `sync_box` | reports **SYNCED and does nothing** — no local checkout and no remote `data/` is the shape of a box that is simply not included here, so there is nothing to refuse |
+| `boxyard include` | **REFUSES** — `SyncFailed`, because it pulls a `data/` that does not exist |
+| `boxyard doctor` | reports **`unknown-boxmeta-keys`**, because `storage_format` is a key it does not know |
+
+Two things follow.
+
+**The refusal to check the box out is what closes the divergence hazard.**
+Without a local checkout the stale machine can never push a plain `data/` beside
+the repository, which is the one way it could have made the box exist in two
+formats at once. It refuses for the right reason and says it badly — the error
+carries rclone's empty output and never mentions the format. That is left as it
+is on purpose: the fix belongs in a build that understands `storage_format`, and
+by definition the machine hitting this does not have one.
+
+**But the ordinary pass is SILENT.** A stale machine reports the box as SYNCED
+and says nothing. `doctor`'s `unknown-boxmeta-keys` is the only signal, and it
+only fires when someone runs `doctor`. That is why the release order below is a
+condition and not a preference: no code gate can make a build warn about a
+format it has never heard of.
+
+### The release order, and what to check between the steps
+
+The default flipping and the fleet upgrade are **one coordinated change, not
+two**. 0.6.1 understands nothing about restic, so a release that flips the
+default while machines are still on 0.6.1 would create boxes those machines can
+register but not read.
+
+1. **Merge the restic work and cut a release** — call it 0.7.0. Flipping the
+   default is part of THIS release, not a later one: a release that understands
+   the format but does not use it is a step nobody needs, and it doubles the
+   number of fleet upgrades.
+2. **Upgrade every machine, and verify by reading the installed source, not the
+   version string.** `boxyard --version` says what the package claims; what
+   matters is whether the installed code has the DATA branch:
+
+   ```bash
+   for m in mymain macbook macstudio ideapad pocket4; do
+     printf '%-10s ' "$m"
+     ssh-target "$m" 'boxyard --version 2>/dev/null; \
+       python3 -c "import boxyard._restic_sync" 2>&1 | tail -1' \
+       || echo UNREACHABLE
+   done
+   ```
+
+   `UNREACHABLE` is not a pass. **pocket4 is the one that will hold this up** —
+   it is offline for days at a time, and it was offline for the whole of this
+   work.
+3. **Only then create anything new.** Until step 2 completes for every machine,
+   a new box is invisible on any that lag.
+4. **Only after that, convert one box Lukas picks**, starting with
+   `boxyard convert -r <box> --dry-run --estimate-size`.
+
+Between steps 1 and 2 the fleet is mixed and **nothing should be created or
+converted**. That window is the whole risk, and it is bounded by how long the
+last laptop takes to come back.
 
 ---
 
@@ -1355,6 +1440,70 @@ equal. The failure direction is always "do more work", never "skip".
 - **The Go port.** Python first. `feat/go-rewrite` is 24 commits behind main and
   has no notion of named checkout roots; two of its tests fail for that reason
   alone and it is not this ticket's business.
+
+---
+
+## Appendix: the bugs this work found in the sync-cadence code
+
+Two bugs, plus a trap in fixing the first that is worse than the bug itself.
+All were in code already on main, all were latent, and all were found by
+building on top of the code rather than by reading it. Extracted and landed
+separately as 0.6.1 (`f0bce14`), because they are correct on their own terms and
+one of them sits in a loop that runs on every machine every 15 minutes.
+
+### Bug 1. `rclone` has no implicit exclude, so the filters matched everything
+
+Two bulk `lsjson` calls list `boxes/*/` at `--max-depth 2` with a `+` filter and
+no terminating `- **`: `sync-missing-meta`, and `--skip-unchanged-meta`'s bulk
+listing. A filter list of only `+` rules includes everything that does not match,
+so both actually returned **every** file at depth 2 and the `+ boxmeta.toml`
+read as documentation rather than as a filter.
+
+Harmless while `boxmeta.toml` was the only file at that depth — and this design
+puts `data.snapshot` right beside it, on purpose, so that the listing can see it.
+
+### The trap: the obvious fix for bug 1 is WORSE than the bug
+
+This is the part worth remembering before anyone "simplifies" the filter. The
+natural fix is to add the terminating `- **`. Measured against rclone directly:
+
+| filter | returns |
+|---|---|
+| `+ boxmeta.toml` | both boxmetas **and the stray** — the bug |
+| `+ /boxmeta.toml` | both boxmetas **and the stray** — the bug |
+| `+ /boxmeta.toml` and `- **` | **NOTHING AT ALL** |
+| `+ boxmeta.toml` and `- **` | the two boxmetas |
+| `+ /*/boxmeta.toml` and `- **` | the two boxmetas — what the code does |
+
+The local listing's pattern was `+ /boxmeta.toml`, and the leading slash anchors
+at the listing ROOT while boxmetas live at `<box>/boxmeta.toml`. Adding `- **`
+to *that* returns nothing, which would have emptied the LOCAL side of the diff
+and made **every box in the yard look permanently missing**, on a loop that runs
+every 15 minutes on every machine. Strictly worse than the defect it fixes.
+
+The pattern is now anchored one level down and is **identical on both sides**,
+because the code diffs the two listings and they must ask the same question.
+There is a test pinning the root-anchored form so the trap cannot be reintroduced
+by simplification.
+
+### Bug 2. `--skip-unchanged-meta` skipped more than it had proved
+
+It dropped a box from the pass entirely, but the filter proves something about
+META and nothing about DATA or CONF. A FULL pass with the flag on would therefore
+skip a box whose DATA had changed locally — its boxmeta being settled says
+nothing about its files. Latent only because the flag has never been switched on
+anywhere. It now skips only when the pass asks for META alone, which is the fast
+META loop the flag exists for.
+
+### What this says about the technique
+
+Both bugs, and the trap, were found by mutation testing or by building on the
+code, not by review — and one mutation initially **survived** because the test was passing for
+a different reason than its name claimed. Worth recording as a limit of the
+method: *a mutation that does not express what its name claims is a false
+negative the "did the mutation land" check cannot catch.* Verifying that the
+mutated line reached `src/` proves the edit happened, not that the edit meant
+what you thought.
 
 ---
 

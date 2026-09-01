@@ -19,3 +19,12 @@ store_path = "boxyard"
 [box_groups]
 
 [virtual_box_groups]
+
+# State the storage format rather than inheriting the fleet default.
+#
+# The default is `restic` for an rclone storage location, so without this every
+# box built from this fixture would be restic and the suite would stop
+# exercising the PLAIN path -- which is what all existing boxes use and what
+# must keep working. A test that wants restic says so.
+[sync_policies.default]
+storage_format = "plain"

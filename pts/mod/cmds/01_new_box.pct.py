@@ -29,6 +29,9 @@ import asyncio
 from boxyard._utils.locking import BoxyardLockManager, LockAcquisitionError, GLOBAL_LOCK_TIMEOUT
 from filelock import Timeout
 from boxyard._models import generate_unique_box_id, validate_box_name
+from boxyard._enums import StorageFormat
+from boxyard._sync_policy import PolicyConflict, resolve_policy
+from boxyard._restic import ResticError, resolve_restic_password
 
 
 def _extract_box_name_from_git_url(url: str) -> str:
@@ -349,6 +352,46 @@ box_meta = BoxMeta(
     groups=config.default_box_groups,
     write_owner=_write_owner,
 )
+
+# The storage format is stamped ONCE, at creation, from the resolved policy.
+# It is a FACT about the box from here on, not a preference re-read on every
+# sync: a later config edit changes what NEW boxes get and never reformats this
+# one. `doctor` reports the difference; `boxyard convert` is the only thing that
+# closes it.
+#
+# Resolved with the box's groups already set, so a `[sync_policies.*]` keyed on
+# `default_box_groups` applies to the box being created rather than to the box
+# it would have been without them.
+try:
+    box_meta.storage_format = resolve_policy(config, box_meta).storage_format
+except (PolicyConflict, ValueError) as _policy_error:
+    # A box cannot be created in an ambiguous format: unlike a cadence, which
+    # only decides how OFTEN, this decides what the box IS, and guessing would
+    # write the primary copy of the user's work in a format they did not ask
+    # for. `doctor` reports the same conflict for existing boxes.
+    raise ValueError(
+        f"Cannot decide what storage format to create '{box_name}' in: "
+        f"{_policy_error}"
+    ) from None
+
+# A restic box is unusable without the repository password, and the first place
+# that becomes true is the box's first SYNC -- long after creation, with a
+# confusing failure. Fail HERE instead, at the only moment a person can act on
+# it, and name the key.
+#
+# Deliberately NOT a silent fallback to `plain`: that would make a box's format
+# depend on whether config happened to be present, so two machines could create
+# two different formats for the same yard and nothing would say so.
+if box_meta.storage_format is StorageFormat.RESTIC:
+    try:
+        resolve_restic_password(config)
+    except ResticError as _no_password:
+        raise ValueError(
+            f"Cannot create '{box_name}' as a restic box: {_no_password}\n"
+            f"Set `restic_password_command` in '{config.config_path}', or set "
+            f"`storage_format = \"plain\"` under [sync_policies.default] to keep "
+            f"creating plain boxes."
+        ) from None
 
 # %% [markdown]
 # Create the box folder, populate it, and `git init` it.

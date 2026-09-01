@@ -249,6 +249,15 @@ def temp_boxyard(tmp_path):
     # Without one `doctor` reports `machine-name-unset` in every test that uses
     # this fixture. Tests that want the unset state clear the key themselves.
     config_dump["machine_name"] = "test-machine"
+    # State the storage format rather than inheriting the fleet default.
+    #
+    # The default is `restic` for a remote storage location, so without this
+    # every fixture-built box would be restic and the suite would stop
+    # exercising the PLAIN path -- which is what all 596 existing boxes use and
+    # what must keep working. A test that wants restic says so.
+    config_dump.setdefault("sync_policies", {}).setdefault(
+        "default", {}
+    )["storage_format"] = "plain"
 
     # Set up a rclone remote path (alias to local folder)
     config.rclone_config_path.write_text(
@@ -313,6 +322,11 @@ def create_boxyards(remote_name="my_remote", num_boxyards=1):
         # name -- multi-machine tests compare these. Without one `doctor`
         # reports `machine-name-unset` in every test built on this helper.
         config_dump["machine_name"] = f"test-machine-{i + 1}"
+        # See `_setup_boxyard_from_fixture`: state the format rather than
+        # inheriting the fleet default, so the suite keeps testing PLAIN.
+        config_dump.setdefault("sync_policies", {}).setdefault(
+            "default", {}
+        )["storage_format"] = "plain"
 
         # Set up a rclone remote path
         config.rclone_config_path.write_text(

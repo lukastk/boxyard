@@ -24,7 +24,6 @@
 
 # %%
 #|export
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -35,6 +34,7 @@ from boxyard._models import BoxMeta
 from boxyard._sync_policy import (
     BOX_OVERRIDABLE,
     DEFAULT_STORAGE_FORMAT,
+    DEFAULT_STORAGE_FORMAT_LOCAL,
     PolicyConflict,
     resolve_policy,
 )
@@ -81,25 +81,52 @@ def make_box(groups=None, name="a-box", **kwargs) -> BoxMeta:
 
 
 # %% [markdown]
-# ## The default is `plain`, and stays `plain` until the switch is thrown
+# ## The default: `restic` remotely, `plain` locally
+#
+# `plain` is now the deliberate exception rather than the rule. Note
+# `BASE_CONFIG`'s storage location is of type `local`, so a test that wants the
+# REMOTE default has to say so -- several tests below used to pass on the old
+# `plain` default without ever exercising the distinction.
 
 # %%
 #|export
-def test_the_default_is_plain():
-    """
-    restic becomes the default LAST, once conversion exists and has been proven.
-    A default of `restic` before then would make every new box unreadable by
-    every machine that has not upgraded.
-    """
-    assert DEFAULT_STORAGE_FORMAT is StorageFormat.PLAIN
+REMOTE_STORAGE = {"remote": {"storage_type": "rclone", "store_path": "boxyard"}}
 
 
-def test_an_unconfigured_yard_resolves_to_plain():
+def test_the_default_is_restic_for_a_remote_storage_location():
+    assert DEFAULT_STORAGE_FORMAT is StorageFormat.RESTIC
+    config = make_config(storage_locations=REMOTE_STORAGE)
+    resolved = resolve_policy(config, make_box(groups=["proj"]))
+    assert resolved.storage_format is StorageFormat.RESTIC
+
+
+def test_the_default_is_plain_for_a_local_storage_location():
+    """
+    A `local` store has no remote, so the per-file transaction cost the whole
+    design exists to remove is not there -- and a repository would add a
+    password to lose for no benefit.
+    """
+    assert DEFAULT_STORAGE_FORMAT_LOCAL is StorageFormat.PLAIN
     resolved = resolve_policy(make_config(), make_box(groups=["proj"]))
     assert resolved.storage_format is StorageFormat.PLAIN
 
 
-def test_a_box_is_actually_plain_unless_told_otherwise():
+def test_an_unknown_storage_location_falls_back_to_plain():
+    """
+    Never guess `restic` for a location we cannot classify: the cost of being
+    wrong is a box in a format nothing can read.
+    """
+    box = make_box(groups=["proj"])
+    box.storage_location = "a-location-this-config-has-never-heard-of"
+    resolved = resolve_policy(make_config(storage_locations=REMOTE_STORAGE), box)
+    assert resolved.storage_format is StorageFormat.PLAIN
+
+
+def test_an_existing_box_is_still_actually_plain():
+    """
+    The default governs CREATION. Every one of the 596 boxes that exists today
+    is plain and stays plain until someone converts it.
+    """
     assert make_box().storage_format is StorageFormat.PLAIN
 
 
@@ -133,7 +160,8 @@ def test_an_unmatched_box_falls_through_to_the_default_policy():
         {
             "default": {"storage_format": "plain"},
             "cold": {"groups": ["archived"], "storage_format": "restic"},
-        }
+        },
+        storage_locations=REMOTE_STORAGE,
     )
     resolved = resolve_policy(config, make_box(groups=["proj"]))
     assert resolved.storage_format is StorageFormat.PLAIN
@@ -189,7 +217,7 @@ def test_an_unknown_format_is_refused_loudly(bad):
     while every box stays plain, discoverable only by going and looking at the
     remote, is exactly what `compress` did.
     """
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         config = make_config({"default": {"storage_format": bad}})
         resolve_policy(config, make_box())
 
@@ -304,7 +332,6 @@ def test_saving_a_converted_box_does_write_the_key(tmp_path):
 
 def test_boxmeta_round_trips_the_format_through_a_file(tmp_path):
     path = tmp_path / "boxmeta.toml"
-    box = make_box(storage_format=StorageFormat.RESTIC)
     path.write_text(
         tomli_w.dumps(
             {
@@ -367,7 +394,7 @@ def test_an_unknown_format_in_a_boxmeta_is_refused(tmp_path):
             }
         )
     )
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         BoxMeta.load_from_path(
             path,
             creation_timestamp_utc="20260822",
@@ -378,7 +405,7 @@ def test_an_unknown_format_in_a_boxmeta_is_refused(tmp_path):
 
 
 def test_the_policy_field_accepts_only_the_known_formats():
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         SyncPolicyConfig(storage_format="restik")
     assert (
         SyncPolicyConfig(storage_format="restic").storage_format

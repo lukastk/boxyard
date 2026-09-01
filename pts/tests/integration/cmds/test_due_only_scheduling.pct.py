@@ -113,7 +113,15 @@ def test_a_yard_with_no_policies_syncs_everything(temp_boxyard):
         _make_box(config_path, remote_name, f"box-{i}", [])
 
     config = get_config(config_path)
-    assert config.sync_policies == {}, "fixture must start with no policies"
+    # The property under test is that no CADENCE is configured, not that the
+    # policy table is literally empty. The shared fixture now states
+    # `storage_format` so the suite keeps exercising the plain path once restic
+    # is the default -- a format is not a cadence and must not make a box due
+    # or not due.
+    assert all(
+        policy.data_interval is None and policy.meta_interval is None
+        for policy in config.sync_policies.values()
+    ), f"fixture must start with no cadence: {config.sync_policies}"
 
     metas = get_boxyard_meta(config).box_metas
     result = due_boxes(config, metas, BoxPart.DATA, time.time())
