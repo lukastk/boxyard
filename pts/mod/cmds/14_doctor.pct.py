@@ -87,6 +87,12 @@
 # 28. **duplicate-checkout** — one box physically present in multiple roots.
 # 29. **interrupted-relocation** — a durable local move transaction requiring
 #     idempotent recovery.
+# 30. **orphaned-sync-backups** / **orphaned-remote-sync-backups** —
+#     `sync_backups/<ulid>/` directories that no incomplete sync record claims.
+#     A sync purges its own backup directory when it finishes; a purge whose
+#     failure went unreported grew one remote to 1,186 orphaned directories and
+#     116.4 GiB before anybody noticed. Local and remote are separate names
+#     because only the remote half is skippable, like stale-meta-mirror.
 #
 # Doctor never mutates or auto-fixes anything.
 
@@ -142,6 +148,8 @@ DOCTOR_CHECK_NAMES = [
     "checkout-placement",
     "duplicate-checkout",
     "interrupted-relocation",
+    "orphaned-sync-backups",
+    "orphaned-remote-sync-backups",
 ]
 
 # %% [markdown]
@@ -250,7 +258,8 @@ async def run_doctor(
     Args:
         config_path: Path to the boxyard config file.
         check_remote: If False, skip checks that access remote storage
-            (stale-meta-mirror and tombstoned-box), so doctor works offline.
+            (stale-meta-mirror, tombstoned-box, diverged-box and
+            orphaned-remote-sync-backups), so doctor works offline.
         storage_locations: If given, restrict the remote checks to these
             storage locations. Local checks always cover all storage
             locations.
@@ -1300,6 +1309,208 @@ else:
                     box_part=_part.value,
                     storage_location=_sl_name,
                 )
+
+# %% [markdown]
+# ## Checks: `orphaned-sync-backups` and `orphaned-remote-sync-backups`
+#
+# Backup directories, local and remote, that no sync is waiting on.
+#
+# Every sync writes the files it is about to overwrite or delete into
+# `sync_backups/<ulid>/` and purges that directory when it finishes. Until the
+# change that added this check, the purge's return value was discarded, so a
+# failed purge left the directory behind and said nothing. That is not
+# hypothetical: by 2026-08 one
+# remote held **1,186 orphaned directories, 50,802 objects, 116.4 GiB**, the
+# oldest from 2025-11. Finding them took a hand-rolled survey across every
+# machine in the fleet; the condition that survey computed is exactly this
+# check, and had it existed the answer would have arrived in 2025-11 as a
+# doctor finding instead of a 116 GiB investigation in 2026-09.
+#
+# The condition is "no incomplete sync record names this ULID", plus an age
+# grace — and the grace is REQUIRED for correctness rather than a nicety. A
+# successful sync replaces the incomplete record with a completed one carrying
+# a *different* ULID, and only then purges, so between those two steps every
+# in-flight backup directory legitimately matches no record at all. Without the
+# grace this check would report the healthiest possible yard mid-sync.
+#
+# Remote records are not read. Deciding a remote directory's fate from them
+# would mean fetching every record on the remote (~1,800 on this fleet, minutes
+# of SFTP), the same cost `diverged-box` above refuses to pay. A ULID carries
+# its own creation time, so the grace comes free out of the listing, and past
+# it the two possible explanations — a purge that failed here, or another
+# machine's push interrupted for over a day — both deserve a look. The hint
+# says so rather than pretending to know which.
+#
+# **A `discard-local` keepsake matches this predicate and cannot be told apart
+# from residue.** `discard-local` pulls the remote copy over the local one with
+# `delete_backup=False` precisely so the discarded work survives — and it
+# survives in THIS directory, under a ULID name. It is claimed by no record
+# either: the pull writes an incomplete record under ULID X, then on success
+# replaces it with the REMOTE's completed record, which carries a different
+# ULID, so nothing ever names X again. Verified by running the command, 2026-09-01.
+#
+# So the finding is honest only if the hint says what it does NOT prove.
+# "No incomplete record names this ULID" proves no sync is waiting to resume;
+# it says nothing about whether the contents exist anywhere else. That
+# distinction is not academic: ticket ee2986e4 deleted 1,186 remote directories
+# on this very predicate, and the 791 MiB of only-copy content inside them was
+# saved only because a SECOND test — does this content exist elsewhere — was run
+# first. This check is the ongoing version of the first test alone, so it must
+# not hand anyone a list the first test would justify deleting.
+#
+# Local and remote are separate check names because only the remote half needs
+# the network. One hybrid check would have to call itself either "skipped"
+# under `--no-remote` (hiding real local findings, which the CLI does not print
+# for a skipped check) or "ok" (a clean bill of health for a remote nobody
+# looked at — the exact false all-clear `diverged-box` exists to end).
+
+# %%
+#|export
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+from ulid import ULID as _ULID
+
+from boxyard._models import SyncRecord as _SyncRecord
+from boxyard._utils import rclone_lsjson as _rclone_lsjson
+from boxyard._utils.rclone import RcloneFailed as _RcloneFailed
+
+# Long enough that no sync anywhere on a fleet is still running (the largest box
+# here is ~100 GB and pushes in well under a day), and long enough to cover the
+# window described above, where a finished sync's backup directory matches no
+# record until the purge lands. Short enough that residue is reported the next
+# day rather than accumulating for nine months.
+_SYNC_BACKUP_GRACE = _td(hours=24)
+_SYNC_BACKUP_GRACE_H = int(_SYNC_BACKUP_GRACE.total_seconds() // 3600)
+_backup_now = _dt.now(_tz.utc)
+
+# ULIDs of syncs that are in flight or interrupted HERE. A backup directory
+# named by one of these belongs to a sync this machine may still be resuming,
+# so it is not residue however old it is.
+_live_backup_ulids: set[str] = set()
+if _sync_records_path.is_dir():
+    for _rec_path in sorted(_sync_records_path.glob("*/*.rec")):
+        try:
+            _live_rec = _SyncRecord.model_validate_json(_rec_path.read_text())
+        except Exception:
+            continue  # unparseable records are `interrupted-sync`'s business
+        if not _live_rec.sync_complete:
+            _live_backup_ulids.add(str(_live_rec.ulid))
+
+
+def _classify_backup_entries(names: list[str]) -> tuple[list[str], list[str]]:
+    """
+    Split backup-directory names into (orphaned, debris).
+
+    `orphaned` are ULID-named directories past the grace that no incomplete
+    record claims. `debris` is anything not ULID-shaped: nothing in boxyard
+    writes such an entry, so it needs no grace and no record to be wrong.
+    """
+    orphaned, debris = [], []
+    for name in sorted(names):
+        try:
+            _entry_ulid = _ULID.from_str(name)
+        except ValueError:
+            debris.append(name)
+            continue
+        if name in _live_backup_ulids:
+            continue
+        if _backup_now - _entry_ulid.datetime < _SYNC_BACKUP_GRACE:
+            continue  # young enough that its sync may still be running
+        orphaned.append(name)
+    return orphaned, debris
+
+
+def _report_orphaned_backups(
+    orphaned: list[str], debris: list[str], *, check: str, where: str, **extra
+) -> None:
+    if orphaned:
+        _add_finding(
+            check,
+            f"{len(orphaned)} sync-backup director(ies) under {where} are older "
+            f"than {_SYNC_BACKUP_GRACE_H}h and match no incomplete sync record "
+            f"(oldest: {orphaned[0]}, "
+            f"{_ULID.from_str(orphaned[0]).datetime:%Y-%m-%d})",
+            "This proves only that NO SYNC IS WAITING on them. It does not "
+            "prove their contents exist anywhere else: a survey of 1,186 such "
+            "directories found 791 MiB that did not. `boxyard discard-local` "
+            "also keeps the work it discarded right here, ULID-named and named "
+            "by no record, so a keepsake you asked for is indistinguishable "
+            "from failed-purge residue from the outside; on a remote, one can "
+            "belong to another machine whose push was interrupted. Look inside "
+            "before deleting anything.",
+            count=len(orphaned),
+            backup_dirs=orphaned,
+            **extra,
+        )
+    if debris:
+        _add_finding(
+            check,
+            f"{len(debris)} entr(ies) under {where} are not sync backups "
+            f"(first: {debris[0]})",
+            "Sync backups are named by sync ULID and nothing else belongs in "
+            "that directory. Inspect and remove.",
+            count=len(debris),
+            backup_dirs=debris,
+            **extra,
+        )
+
+
+_local_backups_path = config.local_sync_backups_path
+if _local_backups_path.is_dir():
+    _report_orphaned_backups(
+        *_classify_backup_entries(
+            [e.name for e in _local_backups_path.iterdir() if not e.name.startswith(".")]
+        ),
+        check="orphaned-sync-backups",
+        where=f"'{_local_backups_path}'",
+        path=_local_backups_path,
+    )
+
+# %% [markdown]
+# The remote half. Skipped with the other remote checks so doctor still works
+# offline; one non-recursive listing per rclone storage location.
+
+# %%
+#|export
+if not check_remote or not _rclone_available:
+    checks["orphaned-remote-sync-backups"]["skipped"] = True
+else:
+    for _sl_name, _sl_config in config.storage_locations.items():
+        if _sl_config.storage_type != StorageType.RCLONE:
+            continue
+        if storage_locations is not None and _sl_name not in storage_locations:
+            continue
+
+        _backups_remote_path = _sl_config.store_path / const.REMOTE_BACKUP_REL_PATH
+        try:
+            _ls_backups = await _rclone_lsjson(
+                config.rclone_config_path,
+                source=_sl_name,
+                source_path=_backups_remote_path,
+            )
+        except _RcloneFailed as e:
+            # Same reasoning as `diverged-box`: never report "nothing left
+            # behind" when we were unable to look.
+            _add_finding(
+                "orphaned-remote-sync-backups",
+                f"Could not list the sync backups on '{_sl_name}', so none could "
+                f"be checked: {e}",
+                "Check connectivity and the rclone config, or pass --no-remote to "
+                "skip the remote checks deliberately.",
+                storage_location=_sl_name,
+            )
+            continue
+        if _ls_backups is None:
+            continue  # no backups directory at all: nothing has leaked here
+
+        _report_orphaned_backups(
+            *_classify_backup_entries(
+                [f["Name"] for f in _ls_backups if not f["Name"].startswith(".")]
+            ),
+            check="orphaned-remote-sync-backups",
+            where=f"'{_sl_name}:{_backups_remote_path}'",
+            storage_location=_sl_name,
+            path=_backups_remote_path,
+        )
 
 # %% [markdown]
 # ## Check: `tree-orphans`

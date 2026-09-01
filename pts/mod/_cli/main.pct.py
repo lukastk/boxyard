@@ -3430,7 +3430,7 @@ def cli_doctor(
     no_remote: bool = Option(
         False,
         "--no-remote",
-        help="Skip checks that access remote storage (stale-meta-mirror, tombstoned-box and diverged-box), so doctor works offline.",
+        help="Skip checks that access remote storage (stale-meta-mirror, tombstoned-box, diverged-box and orphaned-remote-sync-backups), so doctor works offline.",
     ),
     storage_locations: list[str] | None = Option(
         None,
@@ -3451,8 +3451,9 @@ def cli_doctor(
     syncs, leftovers from removed storage locations, rclone configuration,
     remote boxmetas missing from the local mirror and boxes tombstoned on the
     remote (both unless --no-remote), boxes referencing unknown parents,
-    boxmetas or a config carrying keys written by a newer boxyard, and a
-    missing `machine_name`.
+    boxmetas or a config carrying keys written by a newer boxyard, a missing
+    `machine_name`, and sync-backup directories that no sync is waiting on
+    (the remote half of that one also needs --no-remote to skip).
 
     Never mutates or auto-fixes anything. Exit code is 0 when healthy and 1
     when there is at least one finding, so it can be asserted by cron jobs and
@@ -3493,13 +3494,19 @@ def cli_doctor(
             typer.echo(f"✗ {check_name}: {len(findings)} finding(s)")
             for finding in findings:
                 typer.echo(f"    - {finding['message']}")
-                missing = finding.get("missing_index_names")
-                if missing:
-                    for index_name in missing[:_max_listed]:
-                        typer.echo(f"        {index_name}")
-                    if len(missing) > _max_listed:
+                # Findings that name many things list a few of them inline; the
+                # rest are one `-o json` away. A check like
+                # `orphaned-sync-backups` can carry over a thousand names, and
+                # printing them all would bury every other finding.
+                for _list_key in ("missing_index_names", "backup_dirs"):
+                    listed = finding.get(_list_key)
+                    if not listed:
+                        continue
+                    for item in listed[:_max_listed]:
+                        typer.echo(f"        {item}")
+                    if len(listed) > _max_listed:
                         typer.echo(
-                            f"        ... and {len(missing) - _max_listed} more (use `-o json` for the full list)"
+                            f"        ... and {len(listed) - _max_listed} more (use `-o json` for the full list)"
                         )
                 typer.echo(f"      hint: {finding['hint']}")
         typer.echo("")

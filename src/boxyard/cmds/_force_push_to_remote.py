@@ -7,7 +7,7 @@ from ..config import get_config
 from .._models import get_boxyard_meta, BoxPart, SyncRecord, BoxMeta
 from .._ownership import owner_gate
 from .._remote_index import find_remote_box_by_id
-from .._utils.rclone import rclone_sync, rclone_mkdir, rclone_purge
+from .._utils.rclone import rclone_sync, rclone_mkdir, rclone_purge, RcloneFailed
 from .._utils.perms import generate_exec_manifest
 from .._utils.locking import BoxyardLockManager, BOX_SYNC_LOCK_TIMEOUT, acquire_lock_async
 from .._utils import check_interrupted, SoftInterruption
@@ -101,8 +101,8 @@ async def force_push_to_remote(
         / f"{BoxPart.DATA.value}.rec"
     )
     
-    # Backup paths
-    local_sync_backups_path = config.local_sync_backups_path / box_meta.index_name / BoxPart.DATA.value
+    # Backup path. Only the REMOTE one exists: a force push never pulls, so it
+    # never writes a local backup.
     remote_sync_backups_path = (
         sl_config.store_path
         / const.REMOTE_BACKUP_REL_PATH
@@ -195,15 +195,35 @@ async def force_push_to_remote(
         if verbose:
             print("Sync records updated.")
     
-        # Clean up backup
-        await rclone_purge(
-            rclone_config_path=config.rclone_config_path.as_posix(),
-            source=storage_location,
-            source_path=backup_path.as_posix(),
-        )
+        # Clean up backup. Caught rather than raised for the same reason as in
+        # `sync_helper`: the push is done and both records say so, so a failed
+        # purge leaves tidy-up residue, not a broken box, and turning it into a
+        # raised error would report a successful force push as a failed one. Caught
+        # LOUDLY, though -- silently dropping this return value is what leaked
+        # 1,186 backup directories onto the remote, and `boxyard doctor`'s
+        # `orphaned-sync-backups` check counts whatever is left behind.
+        try:
+            await rclone_purge(
+                rclone_config_path=config.rclone_config_path.as_posix(),
+                source=storage_location,
+                source_path=backup_path.as_posix(),
+            )
+        except RcloneFailed as e:
+            print(
+                f"WARNING: the force push of '{box_index_name}' completed, but the "
+                f"backup directory it made could not be deleted afterwards: "
+                f"'{storage_location}:{backup_path.as_posix()}'.\n"
+                f"  The push itself is fine and fully recorded; the directory is "
+                f"leftover storage holding the files this push overwrote.\n"
+                f"  Delete it once you are sure you do not want what is in it. "
+                f"`boxyard doctor` reports these under `orphaned-sync-backups`.\n"
+                f"  rclone said: {e}"
+            )
+        else:
+            if verbose:
+                print("Backup cleaned up.")
     
         if verbose:
-            print("Backup cleaned up.")
             print(f"Force push complete: {source_path} -> {storage_location}:{remote_data_path}")
     
     finally:

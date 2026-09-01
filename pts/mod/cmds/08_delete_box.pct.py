@@ -131,7 +131,7 @@ assert (remote_rclone_path / box_meta.get_remote_path(config)).exists()
 import shutil
 from boxyard import const
 from boxyard._models import BoxPart, refresh_boxyard_meta, BoxMeta
-from boxyard._utils import rclone_purge
+from boxyard._utils import rclone_purge_absent_ok
 from boxyard.config import StorageType
 
 _lock_manager = BoxyardLockManager(config.boxyard_data_path)
@@ -190,8 +190,14 @@ try:
             last_known_name=box_meta.name,
         )
 
-        # Delete remote box
-        await rclone_purge(
+        # Delete remote box. `_absent_ok` because a box that was never pushed
+        # has no remote directory, and that is an ordinary delete, not a
+        # failure. Anything else RAISES -- which is what the comment further
+        # down already promised and the code did not deliver: this return value
+        # used to be discarded, so an unreachable remote left the box's data
+        # sitting there forever while the delete reported success and removed
+        # the registration that was the only way to find it again.
+        await rclone_purge_absent_ok(
             config.rclone_config_path,
             source=storage_location,
             source_path=box_meta.get_remote_path(config),
@@ -208,7 +214,12 @@ try:
     if _sl_is_remote:
         _store_path = box_meta.get_storage_location_config(config).store_path
         for _rel in (const.SYNC_RECORDS_REL_PATH, const.REMOTE_BACKUP_REL_PATH):
-            await rclone_purge(
+            # Absent is the NORMAL outcome for the backups path: `sync_helper`
+            # keys remote backups by sync ULID (`sync_backups/<ulid>/`), not by
+            # index name, so `sync_backups/<index_name>` exists only for boxes
+            # written by a boxyard old enough to have used that layout. A real
+            # failure still raises, for the same reason as the purge above.
+            await rclone_purge_absent_ok(
                 config.rclone_config_path,
                 source=storage_location,
                 source_path=_store_path / _rel / box_meta.index_name,

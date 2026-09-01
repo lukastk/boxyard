@@ -112,6 +112,8 @@ Checks:
 | `checkout-placement` | Unknown roots, missing included checkouts, malformed/orphan placement records, or excluded boxes with DATA |
 | `duplicate-checkout` | The same box physically present in multiple available roots |
 | `interrupted-relocation` | A durable relocation transaction that needs `boxyard relocate -r BOX` recovery |
+| `orphaned-sync-backups` | Local `sync_backups/<ulid>/` directories that no incomplete sync record claims — usually a backup copy that was never cleaned up, but a `discard-local` keepsake is indistinguishable, so look before deleting |
+| `orphaned-remote-sync-backups` | The same, on the remote; skipped with `--no-remote` |
 
 Every finding comes with a one-line hint on how to fix it.
 

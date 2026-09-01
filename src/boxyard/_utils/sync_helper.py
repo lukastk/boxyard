@@ -212,6 +212,7 @@ async def sync_helper(
                 print(f"Source does not exist and allow_missing_source=True. Skipping sync.")
             return sync_status, False
     from boxyard._utils import rclone_sync, BisyncResult, rclone_mkdir, rclone_purge
+    from boxyard._utils.rclone import RcloneFailed
     from boxyard._utils.perms import generate_exec_manifest, apply_exec_manifest
     
     
@@ -353,9 +354,43 @@ async def sync_helper(
         raise SyncFailed(f"Sync failed. Rclone output:\n{stdout}\n{stderr}")
     
     if res and delete_backup:
-        await rclone_purge(
-            rclone_config_path=rclone_config_path,
-            source=backup_remote,
-            source_path=backup_path,
-        )
+        # The transfer is done and BOTH sync records already say so, so a failure
+        # here is a tidiness problem and nothing more: what is left behind is the
+        # copy of the files this sync overwrote, which nothing in boxyard ever
+        # reads back. Raising would therefore report a completed, correctly
+        # recorded sync as a failed one -- and worse, `multi-sync` would retry the
+        # box on every pass and mint a FRESH backup directory each time, so the one
+        # thing a raise would reliably do is accelerate the leak it was meant to
+        # stop.
+        #
+        # So it is caught. What must never happen again is it being caught
+        # SILENTLY: this is the exact line whose discarded return value grew 1,186
+        # orphaned directories and 116.4 GiB on the remote between 2025-11 and
+        # 2026-08 without one word of complaint. Hence two things instead of a
+        # return value nobody read -- an unconditional warning naming the path (not
+        # gated on `verbose`; the point is that it is seen), and the durable
+        # signal, `boxyard doctor`'s `orphaned-sync-backups` check, which counts
+        # the residue however it got there. The warning catches this run; doctor
+        # catches the ones nobody was watching, including leaks from a process that
+        # was killed before it ever reached this line.
+        try:
+            await rclone_purge(
+                rclone_config_path=rclone_config_path,
+                source=backup_remote,
+                source_path=backup_path,
+            )
+        except RcloneFailed as e:
+            _backup_str = (
+                f"{backup_remote}:{backup_path}" if backup_remote else str(backup_path)
+            )
+            print(
+                f"WARNING: the sync of '{local_path}' completed, but the backup "
+                f"directory it made could not be deleted afterwards: "
+                f"'{_backup_str}'.\n"
+                f"  The sync itself is fine and fully recorded; the directory is "
+                f"leftover storage holding the files this sync overwrote.\n"
+                f"  Delete it once you are sure you do not want what is in it. "
+                f"`boxyard doctor` reports these under `orphaned-sync-backups`.\n"
+                f"  rclone said: {e}"
+            )
     return sync_status, True
