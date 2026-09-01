@@ -239,14 +239,24 @@ def test_a_stale_machine_cannot_check_the_box_out(fresh_restic_box, monkeypatch)
     )
 
 
-def test_doctor_on_a_stale_machine_names_the_unknown_key(
+def test_doctor_reports_a_boxmeta_key_this_build_does_not_know(
     fresh_restic_box, monkeypatch
 ):
     """
-    The one signal a stale machine DOES get. `storage_format` is a key its
-    `BoxMeta` does not know, so it lands in `unknown_keys` and doctor reports
-    `unknown-boxmeta-keys` -- which is the thread a person pulls to discover
-    they are behind.
+    The one signal a stale machine DOES get: a key its `BoxMeta` does not
+    declare lands in `unknown_keys`, and doctor reports `unknown-boxmeta-keys`
+    -- the thread a person pulls to discover they are behind.
+
+    This build KNOWS `storage_format`, so asking it about that key would prove
+    nothing; an earlier version of this test did exactly that and passed
+    vacuously, because `report["checks"]` is keyed by every check name whether
+    or not it found anything. So the test injects a key no build knows, which
+    exercises the same path `storage_format` takes on a real 0.6.x machine.
+
+    That the specific case behaves this way is not inferred: running the
+    pre-restic build (`ef04aa3`) against a restic box gave
+    `unknown-boxmeta-keys: Box '...' has boxmeta key(s) this boxyard does not
+    know: storage_format`. See the design note.
     """
     from boxyard.cmds import run_doctor
 
@@ -261,8 +271,20 @@ def test_doctor_on_a_stale_machine_names_the_unknown_key(
         "the boxmeta must carry the format, or a stale machine gets no signal"
     )
 
+    # Stand in for a key this build does not declare, which is what
+    # `storage_format` IS to a 0.6.x build.
+    meta_path.write_text(
+        meta_path.read_text() + '\na_key_from_the_future = "x"\n'
+    )
+
     report = run(run_doctor(config_path=fresh_restic_box["cpB"], check_remote=False))
-    assert "unknown-boxmeta-keys" in report["checks"]
+    # `report["checks"]` is keyed by EVERY check name whether or not it found
+    # anything, so testing for the key proves nothing. Test the findings.
+    findings = report["checks"]["unknown-boxmeta-keys"]["findings"]
+    assert findings, "doctor must actually report the unknown key, not just run the check"
+    message = " ".join(str(f) for f in findings)
+    assert fresh_restic_box["idx"] in message
+    assert "a_key_from_the_future" in message
 
 
 # %% [markdown]

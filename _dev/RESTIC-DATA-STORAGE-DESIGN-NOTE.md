@@ -691,9 +691,14 @@ How a person should confirm it, before converting anything:
 ```bash
 for m in mymain macbook macstudio ideapad pocket4; do
   printf '%-10s ' "$m"
-  ssh-target "$m" 'boxyard --version' 2>/dev/null || echo UNREACHABLE
+  ssh-target "$m" 'python3 -c "import boxyard._restic_sync" && echo OK' \
+    2>/dev/null || echo UNREACHABLE
 done
 ```
+
+Import the module rather than read `boxyard --version`: the version string says
+what the package claims, and what matters is whether the code that can read a
+converted box is actually installed.
 
 `UNREACHABLE` is not a pass. A machine that cannot be checked is a machine that
 might be stale, and the honest reading is "not yet". termux is deliberately not
@@ -755,8 +760,8 @@ shape.
    remote `data/` is indistinguishable from one simply not included here. The
    refusal is what matters: without a checkout it can never push a plain `data/`
    beside the repository. But the ordinary pass is SILENT, which is why the
-   release order below is a condition. See "What a stale machine does with a box
-   that was NEVER plain".
+   rollout below gates creation on the pin rather than on anyone noticing. See
+   "What a stale machine does with a box that was NEVER plain".
 3. **`boxyard convert` refuses unless this machine holds the box and can verify
    the restore**, which is step 2 of the procedure.
 4. **`doctor` gains a check** naming boxes whose intended format differs from
@@ -766,14 +771,17 @@ shape.
    pre-existing `unknown-boxmeta-keys`, because `storage_format` is a key it has
    never heard of. That is a real signal, but only for someone who runs
    `doctor`.
-5. **pocket4 is offline for days at a time, and this is the one gate it does
-   hold up.** CONVERSION never needs it reachable: there is no negotiation, only
-   a refusal state, so it converges whenever it comes back. CREATION is
-   different once the default flips — a new box on an upgraded machine is
-   restic, and a stale pocket4 registers it and reports it SYNCED **silently**.
-   So the release order's step 2 is not satisfied until pocket4 is upgraded, and
-   nothing new should be created before then. This is a change from the
-   pre-default-flip design, where creation was as unconditional as conversion.
+5. **pocket4 is offline for days at a time, and the config pin is what stops
+   that mattering.** CONVERSION never needs it reachable: there is no
+   negotiation, only a refusal state, so it converges whenever it comes back.
+   CREATION would be different — once the default is live, a new box on an
+   upgraded machine is restic, and a stale pocket4 registers it and reports it
+   SYNCED **silently**. That is precisely what the pinned window removes: while
+   the pin is in place, creation goes on producing plain boxes whose boxmetas
+   pocket4 cannot distinguish from its own, so normal work continues on the
+   other four machines with pocket4 offline and nothing accumulating against it.
+   Only step 4 — deleting the pin — needs the whole fleet present, and by then
+   it is.
 
 The one thing this design deliberately does **not** do is make the default flip
 convert anything. `plain` must remain reachable for the migration window, for
@@ -798,6 +806,20 @@ a build with the restic branch disabled — which is what 0.6.1 is:
 | `boxyard include` | **REFUSES** — `SyncFailed`, because it pulls a `data/` that does not exist |
 | `boxyard doctor` | reports **`unknown-boxmeta-keys`**, because `storage_format` is a key it does not know |
 
+The last row was re-measured after the test asserting it turned out to be
+vacuous — `report["checks"]` is keyed by every check name whether or not it
+found anything, so `"unknown-boxmeta-keys" in report["checks"]` is always true.
+Running the pre-restic build (`ef04aa3`) against a restic box gives the real
+answer, and it is the one the table already claimed:
+
+```
+unknown-boxmeta-keys: Box '20260901_vydnz__borndigital' has boxmeta key(s)
+this boxyard does not know: storage_format
+```
+
+The in-suite test now injects a key no build declares, which exercises the same
+path without pretending this build is a stale one.
+
 Two things follow.
 
 **The refusal to check the box out is what closes the divergence hazard.**
@@ -814,41 +836,150 @@ only fires when someone runs `doctor`. That is why the release order below is a
 condition and not a preference: no code gate can make a build warn about a
 format it has never heard of.
 
-### The release order, and what to check between the steps
+### The rollout: pin, deploy, upgrade pocket4, unpin
 
-The default flipping and the fleet upgrade are **one coordinated change, not
-two**. 0.6.1 understands nothing about restic, so a release that flips the
-default while machines are still on 0.6.1 would create boxes those machines can
-register but not read.
+This replaces the single coordinated release an earlier draft of this note
+argued for. That version tied "the code is deployed" to "the behaviour changed"
+and made both wait on the least available machine — pocket4, which is offline
+for days at a time and was offline for the whole of this work. The two are
+separable, and separating them gates the risky half on the condition that
+actually matters.
 
-1. **Merge the restic work and cut a release** — call it 0.7.0. Flipping the
-   default is part of THIS release, not a later one: a release that understands
-   the format but does not use it is a step nobody needs, and it doubles the
-   number of fleet upgrades.
-2. **Upgrade every machine, and verify by reading the installed source, not the
-   version string.** `boxyard --version` says what the package claims; what
-   matters is whether the installed code has the DATA branch:
+The lever is that **policy resolution sits above the `DEFAULT_STORAGE_FORMAT`
+module constant**. A config stanza —
 
-   ```bash
-   for m in mymain macbook macstudio ideapad pocket4; do
-     printf '%-10s ' "$m"
-     ssh-target "$m" 'boxyard --version 2>/dev/null; \
-       python3 -c "import boxyard._restic_sync" 2>&1 | tail -1' \
-       || echo UNREACHABLE
-   done
-   ```
+```toml
+[sync_policies.default]
+storage_format = "plain"
+```
 
-   `UNREACHABLE` is not a pass. **pocket4 is the one that will hold this up** —
-   it is offline for days at a time, and it was offline for the whole of this
-   work.
-3. **Only then create anything new.** Until step 2 completes for every machine,
-   a new box is invisible on any that lag.
-4. **Only after that, convert one box Lukas picks**, starting with
-   `boxyard convert -r <box> --dry-run --estimate-size`.
+— beats the constant, so 0.7.0 can ship with the constant already `restic` and
+still create nothing but plain boxes. Deleting that one line is the flip.
 
-Between steps 1 and 2 the fleet is mixed and **nothing should be created or
-converted**. That window is the whole risk, and it is bounded by how long the
-last laptop takes to come back.
+That claim is the whole plan, so it is pinned by
+`src/tests/integration/cmds/test_rollout_pin.py`, which exercises it in both
+directions and is mutation-tested twice: once making the constant win over
+config, once making the pin be read but silently ignored. Both mutations fail
+the tests.
+
+**Step 1 — pin the template, then deploy 0.7.0 to the four reachable machines.**
+Add the stanza to myrig's config template *before or with* the deploy, never
+after. Order matters here and the reason is in the next section: an absent
+`[sync_policies]` table does not mean plain.
+
+*Check:* run `boxyard doctor` on each machine and confirm it reports **no
+`storage-format-mismatch`**. That is a better check than grepping the config for
+a string, because it asks the question through the same `resolve_policy` the
+creation path uses: on a pinned machine policy and every box both say plain, so
+the finding fires on nothing; on a machine that was deployed WITHOUT the
+template change, policy says restic while every box is plain, so it fires on
+every box at once. Verified both ways in `test_rollout_pin.py`.
+
+A machine that is silent here is pinned. A machine that lights up is the failure
+this check exists to catch. `UNREACHABLE` is a stop, not a pass.
+
+**Step 2 — confirm the code is deployed and that nothing changed.** Two
+different questions, both worth asking.
+
+*Check the code is really there,* by importing it rather than trusting the
+version string — `boxyard --version` reports what the package claims:
+
+```bash
+ssh-target "$m" 'python3 -c "import boxyard._restic_sync"'   # silence is a pass
+```
+
+*Check nothing moved,* which is a different question from step 1's. Step 1
+asked whether the machine is pinned; this asks whether anything slipped through
+before it was. `boxyard doctor` should report neither `storage-format-mismatch`
+NOR `unknown-boxmeta-keys`: the first would mean a box was created or converted
+while the machine was unpinned, the second that some box on the remote carries a
+key this build does not know. Both should be empty on every machine, and both
+stay empty for the whole window.
+
+**What makes this window safe, and it is stronger than "nothing new is
+created".** A plain box does not write `storage_format = "plain"` into its
+boxmeta — it omits the key, because `_models.py` deliberately keeps a plain box
+byte-identical to the file every earlier version wrote. So a pinned 0.7.0
+machine produces boxmetas that pocket4 on 0.6.0 cannot tell from its own. It
+sees nothing new at all: not a format it cannot read, and not even the
+`unknown-boxmeta-keys` a restic box would give it. Pocket4 being offline stops
+being a hazard and becomes merely a thing to wait for.
+
+**And the pinned config itself is safe to hand to a machine still on 0.6.x**,
+which matters because myrig may write config before the package upgrade lands —
+on pocket4 especially. The fear is reasonable: `SyncPolicyConfig` is a
+StrictModel with `extra="forbid"`, so a `storage_format` key it has never heard
+of looks like it should make every boxyard command on that machine fail.
+
+It does not, and not by luck. `_split_known_keys` diverts undeclared keys into
+`Config.unknown_keys`, and it covers nested `dict[str, StrictModel]` tables —
+`sync_policies` among them — derived from the annotations rather than a
+hardcoded list. Measured, by running the pre-restic build (`ef04aa3`) against
+the pinned config:
+
+- the config **loads**;
+- the key arrives as `unknown_keys={'sync_policies.default.storage_format':
+  'plain'}`;
+- `boxyard doctor` on that build reports **`unknown-config-keys`** naming it.
+
+A signal, not a break — so config and package may be deployed in either order.
+`test_an_unknown_policy_key_is_tolerated_not_fatal` pins the property in the
+current build, because what would silently undo it is someone making config
+parsing strict again.
+
+**Step 3 — pocket4 comes back; upgrade it, with the pin.** Same two checks as
+steps 1 and 2, on that machine. Until this passes, do not go to step 4.
+
+**Step 4 — unpin. This is the flip, and it is the only irreversible-feeling
+step.** Delete the stanza from myrig's template and redeploy config to all five.
+
+*Check:* the key is gone everywhere, and one new box actually comes out restic:
+
+```bash
+boxyard new -n flip-check && boxyard show flip-check   # expect storage_format restic
+```
+
+*Expect doctor to get loud, and do not read it as breakage.* The moment the pin
+is gone, `storage-format-mismatch` fires on **every unconverted box** — policy
+asks for restic, ~596 boxes are plain. That is the check doing its job: after
+the flip it is the migration backlog, and every one of those boxes goes on
+syncing normally in the format it actually has. Converting them is a separate,
+box-at-a-time decision that starts with one box picked by hand and
+`boxyard convert -r <box> --dry-run --estimate-size`.
+
+**Two things the pin does NOT do**, and both matter for the window:
+
+- It does not stop an explicit `boxyard convert`. The pin is a default for
+  CREATION; conversion is always explicit and would still produce a box pocket4
+  cannot read. So the rule "convert nothing until the whole fleet is upgraded"
+  survives the decoupling unchanged — the pin does not enforce it.
+- It does not override a box's own `conf/sync.toml`. Per-dimension resolution
+  puts a box override above the default policy, so a box that asks for restic
+  gets restic even while the fleet is pinned. Nothing does that today, and
+  nothing should until step 4.
+
+### An absent `[sync_policies]` table means the CONSTANT, not the pin
+
+This is the sharp edge of the whole scheme and it is worth stating on its own,
+because the safe-sounding reading is the wrong one. Two config states that look
+like "no opinion" resolve to `restic`, not `plain`:
+
+| config state | a new box on a remote location |
+|---|---|
+| `[sync_policies.default]` with `storage_format = "plain"` | **plain** — pinned |
+| that stanza deleted | **restic** — the flip |
+| **no `[sync_policies.*]` at all** | **restic** — the constant answers |
+| **`[sync_policies.default]` present but without `storage_format`** | **restic** — the constant answers |
+
+`None` at a policy level means "not stated here", per dimension — that is what
+makes cadence resolution work — so a `[sync_policies.default]` that sets only
+`data_interval` pins nothing. Every machine in the fleet today is in one of the
+two bottom rows.
+
+Two consequences, both already stated above but they follow from this table:
+the pin must be **added**, not assumed; and the step-1 check must look for the
+**key**, because "does this machine have a `[sync_policies]` table?" would pass
+on a machine that is about to create restic boxes.
 
 ---
 

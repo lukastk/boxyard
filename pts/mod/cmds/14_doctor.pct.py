@@ -691,8 +691,18 @@ for _bm in sorted(box_metas, key=lambda b: b.index_name):
 # form. The gap between the two is therefore a normal, expected state during a
 # migration, and doctor's job is to make it visible rather than to close it.
 #
-# Fires on nothing today: the default is `plain`, every box is `plain`, and no
-# policy sets the key.
+# What it fires on depends on where the rollout has got to. During the pinned
+# window (`[sync_policies.default] storage_format = "plain"` in config, which is
+# what the fleet is deployed with) it fires on NOTHING: policy and every box
+# both say plain. The moment that pin is deleted -- which is the flip -- it
+# fires on EVERY box that has not been converted, because policy then asks for
+# restic and ~596 boxes are plain.
+#
+# That is intended, and is the reason the finding reads as a to-do rather than
+# an alarm: after the flip this check IS the migration backlog. Anyone reading
+# doctor output in that window should expect it to be long, and should not
+# mistake its length for breakage -- every one of those boxes syncs normally in
+# the format it actually has.
 #
 # The hint names `boxyard convert`, which `test_doctor_hints_are_runnable`
 # checks actually parses -- a rule with a scar behind it, since `diverged-box`
