@@ -44,6 +44,63 @@ def test_delete_removes_sync_records(temp_boxyard):
     assert not local_sync_dir.exists(), "delete must not leave orphaned sync records"
 
 
+# %% [markdown]
+# ## A remote purge that fails must abort the delete
+#
+# `delete_box` already carried the comment "Keep registration + placement until
+# all remote work succeeds. If remote deletion fails after DATA removal, doctor
+# sees an included-but-missing checkout and the command can be retried without
+# losing the box identity." — and then discarded the purge's return value, so
+# there was nothing for it to abort on. An unreachable remote silently left the
+# box's data sitting there forever while the delete reported success and removed
+# the registration, which was the only record of where that data was.
+
+# %%
+#|export
+@pytest.mark.integration
+def test_delete_aborts_when_the_remote_purge_fails(temp_boxyard):
+    from unittest.mock import AsyncMock, patch
+
+    from boxyard._utils.rclone import RcloneFailed
+
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    idx = new_box(config_path=config_path, box_name="doomed-box", storage_location=remote_name)
+    asyncio.run(sync_box(config_path=config_path, box_index_name=idx))
+    registration = config.local_store_path / remote_name / idx
+    assert registration.exists()
+
+    with patch(
+        "boxyard._utils.rclone_purge_absent_ok",
+        new=AsyncMock(side_effect=RcloneFailed(["rclone", "purge"], 1, "", "connection refused")),
+    ):
+        with pytest.raises(RcloneFailed):
+            asyncio.run(delete_box(config_path=config_path, box_index_name=idx))
+
+    # The identity survives, so the delete can simply be retried.
+    assert registration.exists(), (
+        "a failed remote purge must not take the registration with it -- without "
+        "it there is no way left to find the data the purge did not delete"
+    )
+
+
+@pytest.mark.integration
+def test_delete_succeeds_when_the_remote_paths_were_never_there(temp_boxyard):
+    """
+    The other half of the same change: absence is NOT failure. A box that was
+    never pushed has no remote directory, and `sync_backups/<index_name>` never
+    exists at all under the current layout (backups are keyed by sync ULID), so
+    a delete that raised on a missing path would raise on every ordinary delete.
+    """
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    idx = new_box(config_path=config_path, box_name="never-pushed", storage_location=remote_name)
+    asyncio.run(delete_box(config_path=config_path, box_index_name=idx))
+
+    assert not (config.local_store_path / remote_name / idx).exists()
+    assert idx not in get_boxyard_meta(config).by_index_name
+
+
 # %%
 #|export
 @pytest.mark.integration

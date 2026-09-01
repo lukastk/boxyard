@@ -1,3 +1,73 @@
+## [Unreleased]
+
+### 🐛 A silently swallowed purge leaked 116.4 GiB onto the remote
+
+`sync_helper` writes every file a sync is about to overwrite or delete into
+`sync_backups/<ulid>/`, then purges that directory when the sync completes —
+and **discarded the purge's return value**. A failed purge therefore left the
+directory behind, said nothing, and the next successful sync made another one.
+
+By 2026-08 one remote held **1,186 orphaned directories, 50,802 objects and
+116.4 GiB**, the oldest from 2025-11. Nothing reported it, and nothing could:
+no command reads a `sync_backups` directory, and no check counted them. It was
+found by a hand survey across every machine in the fleet.
+
+- **`rclone_purge` and `rclone_delete` now raise `RcloneFailed` instead of
+  returning a status.** A returned bool is only as good as the caller that
+  reads it, and here neither caller did. `rclone_purge_absent_ok` is the new
+  form for callers where "there was nothing there" is a legitimate outcome —
+  it has to ask, because `rclone purge` exits 1 for a missing directory, the
+  same code as an unreachable remote, so the absent exit codes 3/4 the rest of
+  the module relies on never appear.
+
+- **A failed backup purge is now reported, and still does not fail the sync.**
+  `sync_helper` and `force-push` catch it and print a warning naming the exact
+  directory and what rclone said. Raising was considered and rejected: the
+  transfer is complete and both sync records already say so, so a raise would
+  report a healthy box as failed *and* make `multi-sync` retry it every pass,
+  minting a fresh backup directory each time — accelerating the leak. What was
+  wrong was never that the failure was tolerated; it was that it was silent.
+  `force-push` also no longer prints "Backup cleaned up." when it did not.
+
+- **`boxyard doctor` gained `orphaned-sync-backups` and
+  `orphaned-remote-sync-backups`** — backup directories, local and remote, that
+  no incomplete sync record claims. This is the ongoing signal: the warning
+  above covers the run that leaked, doctor counts the residue however it got
+  there, including from a process killed before it reached the purge at all.
+  Had this check existed, the 116.4 GiB would have been a finding in 2025-11.
+  Local and remote are separate check names because only the remote half needs
+  the network, and one hybrid check could only either hide real local findings
+  under `--no-remote` or hand out a clean bill of health for a remote nobody
+  contacted.
+
+  The 24h grace is load-bearing, not cosmetic: a completed sync writes its
+  completion record under a NEW ULID and only then purges, so for the length of
+  the purge every healthy in-flight backup matches no record at all. Remote
+  records are not read — that would be ~1,800 fetches per run, the cost
+  `diverged-box` already refuses — and a ULID carries its own timestamp, so the
+  grace comes free out of the listing.
+
+  **What the finding does not prove, and the hint says so.** A `discard-local`
+  keepsake matches this predicate exactly — the command keeps the work it
+  discarded in this same directory, ULID-named, and claimed by no record, since
+  the pull replaces its own incomplete record with the remote's completed one
+  under a different ULID. Nothing on disk tells a keepsake from residue. So the
+  hint states that "no incomplete record names this ULID" proves only that no
+  sync is waiting to resume, not that the contents exist anywhere else: the
+  reclamation of those 1,186 directories found 791 MiB of only-copy content
+  inside them, saved only by a second, independent check.
+
+- **`delete` now aborts instead of pretending.** Its two remote purges dropped
+  their results too, so an unreachable remote left the box's data there forever
+  while the delete reported success and removed the registration — the only
+  record of where that data was. The code's own comment already promised this
+  ("Keep registration + placement until all remote work succeeds"); now it is
+  true. A remote path that was never there is still not a failure.
+
+- **`remove_tombstone` no longer reports a revival it did not perform.** Same
+  discarded return value: a failed delete left the box tombstoned on every
+  machine while the call returned normally.
+
 ## [0.6.0] - 2026-08-29
 
 ### ✨ Multiple machine-local checkout roots

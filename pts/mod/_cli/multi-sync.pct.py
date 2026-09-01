@@ -285,9 +285,33 @@ if skip_unchanged_meta or skip_unchanged:
                 source_path=_sl_conf.store_path / const.REMOTE_BOXES_REL_PATH,
                 files_only=True,
                 recursive=True,
+                # See `sync_missing_boxmetas` for the anchoring trap:
+                # `+ /boxmeta.toml` with `- **` matches NOTHING, because
+                # boxmetas live at `<box>/boxmeta.toml`.
+                #
+                # `- **` is a COST guard here, not a correctness one -- unlike
+                # in `sync_missing_boxmetas`, where removing it makes two tests
+                # fail. This listing keys by (box, FILENAME) and `_project`
+                # picks the two names it wants, so a stray at depth 2 is
+                # ignored rather than overwriting anything. Keep it anyway:
+                # without it rclone returns every depth-2 file in the yard.
+                #
+                # BOTH files, because a restic-backed box keeps `data.snapshot`
+                # beside its boxmeta and the listing below keys by (box, file).
+                #
+                # The anchored `/*/` form is kept over the bare `boxmeta.toml`
+                # one. Re-measured with `data.snapshot` present, the two are
+                # IDENTICAL at `--max-depth 2` -- but the bare form's
+                # correctness comes from `max_depth`, not from the filter: it
+                # matches the name at ANY depth, so raising `max_depth` would
+                # silently admit `<box>/data/boxmeta.toml`, a file inside a
+                # box's own DATA, and key it as that box's metadata. Measured
+                # at `--max-depth 3`: the bare form returns
+                # `b2/data/boxmeta.toml` and `b2/data/data.snapshot`; the
+                # anchored form returns neither.
                 filter=[
-                    f"+ {const.BOX_METAFILE_REL_PATH}",
-                    f"+ {const.BOX_SNAPSHOT_POINTER_REL_PATH}",
+                    f"+ /*/{const.BOX_METAFILE_REL_PATH}",
+                    f"+ /*/{const.BOX_SNAPSHOT_POINTER_REL_PATH}",
                     "- **",
                 ],
                 max_depth=2,
@@ -329,16 +353,21 @@ if skip_unchanged_meta or skip_unchanged:
         # unchanged. Anything not provable makes the box needed, so the
         # intersection starts as "everything" and each part narrows it.
         #
-        # This CORRECTS `--skip-unchanged-meta`. It used to drop a box from the
-        # pass on META evidence alone, so a full pass with the flag on would
-        # skip a box whose DATA had changed locally -- its boxmeta was settled,
-        # which says nothing about its files. Latent only because the flag has
-        # never been switched on. Now `--skip-unchanged-meta` on a pass that
-        # includes DATA skips nothing, which is what it should always have done:
-        # a plain box's DATA has no cheap remote signal.
+        # This GENERALISES the META-only guard rather than overruling its
+        # judgement. That guard allowed a skip only when the pass asked for
+        # META alone, because META evidence says nothing about DATA. The
+        # intersection reaches the same answer everywhere that guard applied --
+        # a part with no evidence contributes the empty set, which empties the
+        # intersection -- and additionally lets a `-c data,meta` pass skip a box
+        # provably unchanged in BOTH, which is what `--skip-unchanged` is for.
+        #
+        # Each part is gated on its OWN flag. Without that, `--skip-unchanged`
+        # (the DATA flag) would silently enable META skipping, because this
+        # block is entered when EITHER flag is set.
         _skippable = {bm.index_name for bm in box_metas}
+        _unprovable = []
         for _part in sync_choices:
-            if _part is BoxPart.META:
+            if _part is BoxPart.META and skip_unchanged_meta:
                 _, _provable = meta_boxes_needing_sync(
                     config, box_metas,
                     _project(_listing, _const.BOX_METAFILE_REL_PATH),
@@ -349,13 +378,28 @@ if skip_unchanged_meta or skip_unchanged:
                     _project(_listing, _const.BOX_SNAPSHOT_POINTER_REL_PATH),
                 )
             else:
-                # CONF rides the DATA sync and has no independent signal; DATA
-                # without --skip-unchanged has none either.
+                # No cheap remote signal for this part in this pass. CONF has
+                # none at all -- it lives below the depth-2 listing -- so a FULL
+                # pass never skips, with either flag. And a part whose flag was
+                # not given must not be filtered on.
                 _provable = []
+                _unprovable.append(_part)
             _skippable &= set(_provable)
 
         _skipped_unchanged = sorted(_skippable)
         box_metas = [bm for bm in box_metas if bm.index_name not in _skippable]
+
+        # An unprovable part empties the intersection, so this is exactly the
+        # case where nothing could be skipped -- say so, and name the parts. A
+        # pass that silently skipped nothing looks like a broken flag.
+        if _unprovable:
+            typer.echo(
+                "--skip-unchanged/--skip-unchanged-meta proves nothing about "
+                f"{sorted(p.value for p in _unprovable)}, "
+                "so no box was skipped. Use `-c meta` for the fast META loop, "
+                "or `-c data` with --skip-unchanged.",
+                err=True,
+            )
 
 # A box whose policies disagree is synced anyway -- the ambiguity is about how
 # OFTEN, never about whether -- but it is never synced SILENTLY. Printed once

@@ -143,6 +143,21 @@ result;
   files are executable, so `+x` survives sync over backends that drop Unix mode
   (e.g. SFTP). Generated before push / applied after pull by `_utils/perms.py`.
   v1 is additive-only (restores `+x`, never clears it).
+- **Sync backups**: every sync writes the files it is about to overwrite or
+  delete into `sync_backups/<sync ULID>/` (local `~/.boxyard/sync_backups/` for a
+  pull, `<store>/sync_backups/` on the remote for a push) and purges that
+  directory when it finishes. The directories are keyed by ULID, never by index
+  name, and **nothing in boxyard ever reads one back** — they exist so a human
+  can recover by hand. A purge whose failure was silently discarded leaked 1,186
+  directories / 116.4 GiB onto one remote between 2025-11 and 2026-08;
+  `rclone_purge` now raises, and `doctor`'s `orphaned-sync-backups` /
+  `orphaned-remote-sync-backups` count whatever is left behind.
+  **`discard-local` keeps the work it discarded in this same directory**
+  (`delete_backup=False`), ULID-named and claimed by no sync record, so doctor
+  cannot tell a deliberate keepsake from failed-purge residue and its hint says
+  so. Never make that check auto-delete, and never assume a finding there is
+  disposable: "no record names this ULID" proves no sync is waiting, not that
+  the contents exist anywhere else.
 
 ### Configuration Paths
 

@@ -210,3 +210,42 @@ class TestGenerateUniqueBoxId:
 
             with pytest.raises(RuntimeError, match="Failed to generate unique box ID"):
                 generate_unique_box_id(mock_config, existing_ids, max_attempts=10)
+
+
+# %% [markdown]
+# ## `remove_tombstone` must not report success it did not achieve
+#
+# It promises the box id is reusable. The delete's return value used to be
+# discarded, so an unreachable remote left the tombstone in place while the
+# function returned normally -- and `is_tombstoned` then blocked the box on
+# every machine, for a revival that never happened.
+
+# %%
+#|export
+class TestRemoveTombstoneSurfacesFailure:
+    def test_a_failed_delete_propagates(self):
+        import asyncio
+
+        from boxyard._tombstones import remove_tombstone
+        from boxyard._utils.rclone import RcloneFailed
+
+        config = MagicMock()
+        config.rclone_config_path = "/tmp/rclone.conf"
+        config.storage_locations = {"my_remote": MagicMock(store_path=Path("boxyard"))}
+
+        with (
+            patch(
+                "boxyard._utils.rclone.rclone_path_exists",
+                new=AsyncMock(return_value=(True, False)),
+            ),
+            patch(
+                "boxyard._utils.rclone.rclone_delete",
+                new=AsyncMock(
+                    side_effect=RcloneFailed(
+                        ["rclone", "deletefile"], 1, "", "connection refused"
+                    )
+                ),
+            ),
+        ):
+            with pytest.raises(RcloneFailed):
+                asyncio.run(remove_tombstone(config, "my_remote", "20260101_aaaaaa"))

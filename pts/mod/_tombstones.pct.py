@@ -268,6 +268,7 @@ async def remove_tombstone(
 
     Raises:
         ValueError: If no tombstone exists for the box ID
+        RcloneFailed: If the tombstone exists but could not be deleted
     """
     from boxyard._utils.rclone import rclone_delete, rclone_path_exists
 
@@ -283,6 +284,10 @@ async def remove_tombstone(
     if not exists:
         raise ValueError(f"No tombstone found for box ID '{box_id}'")
 
+    # Raises `RcloneFailed` if the delete does not land. This return value used
+    # to be discarded, so a failed delete left the box tombstoned while this
+    # function returned as though it had been revived -- and `is_tombstoned`
+    # would keep every machine from ever re-creating it.
     await rclone_delete(
         rclone_config_path=config.rclone_config_path,
         dest=storage_location,

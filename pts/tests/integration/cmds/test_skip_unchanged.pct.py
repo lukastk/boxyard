@@ -407,3 +407,100 @@ def test_meta_evidence_alone_does_not_skip_a_data_sync(yard):
 
     both_parts = set(meta_skippable) & set(data_skippable)
     assert both_parts == set(), "a plain box's DATA is never provable"
+
+
+# %% [markdown]
+# ## Each flag gates only its own part
+#
+# The block that computes skippability is entered when EITHER
+# `--skip-unchanged` or `--skip-unchanged-meta` is given, and it then walks
+# every requested part. So each part must check its OWN flag: without that,
+# `--skip-unchanged` — the DATA flag — silently switches META skipping on for a
+# `-c meta` pass the user never asked to filter.
+#
+# Found while merging this branch with the META-only guard that landed on main.
+# The intersection is the correct generalisation of that guard, but only once
+# each arm is gated; the version written before the merge gated DATA and not
+# META.
+
+# %%
+#|export
+def test_the_data_flag_does_not_switch_on_meta_skipping(yard):
+    """
+    `-c meta --skip-unchanged` must skip NOTHING: the pass asks for META, and
+    the flag given is the DATA one. The message names META as unprovable here,
+    which is the honest answer -- no META evidence was requested.
+    """
+    from typer.testing import CliRunner
+
+    from boxyard._cli.app import app
+
+    def _multi_sync(*args):
+        result = CliRunner().invoke(
+            app, ["--config", str(yard["config_path"]), "multi-sync", *args]
+        )
+        assert result.exit_code == 0, f"exited {result.exit_code}\n{result.output}"
+        return result
+
+    # Settle the box so it WOULD be skippable if META skipping were on.
+    _multi_sync("-c", "meta")
+    settled = _multi_sync("-c", "meta", "--skip-unchanged-meta")
+    assert "no box was skipped" not in settled.output, (
+        "precondition: with its own flag, a settled META pass does skip"
+    )
+
+    result = _multi_sync("-c", "meta", "--skip-unchanged")
+    assert "no box was skipped" in result.output, (
+        "the DATA flag switched on META skipping"
+    )
+
+
+# %% [markdown]
+# ## The filter itself, observed end to end
+#
+# The tests above that touch rclone build the filter strings themselves, so they
+# describe what rclone does rather than what multi-sync ASKS it. Mutation
+# testing during the merge showed the cost: dropping
+# `+ /*/data.snapshot` from multi-sync's real filter left every one of them
+# green, because none of them read the code's filter.
+#
+# This one drives `multi-sync` and observes whether the box was dropped from the
+# pass, which is the only thing the filter ultimately decides.
+
+# %%
+#|export
+@needs_restic
+def test_the_real_filter_admits_the_pointer(yard):
+    """
+    A converted, settled box must be DROPPED from a `-c data --skip-unchanged`
+    pass. It can only be dropped if the bulk listing actually returned its
+    `data.snapshot`, so this fails if the filter stops asking for it.
+
+    `--print-skipped` is on so that a box which was merely synced-with-no-change
+    still appears: absence then means dropped from the pass, not quietly
+    unchanged.
+    """
+    from typer.testing import CliRunner
+
+    from boxyard._cli.app import app
+
+    def _multi_sync(*args):
+        result = CliRunner().invoke(
+            app, ["--config", str(yard["config_path"]), "multi-sync", *args]
+        )
+        assert result.exit_code == 0, f"exited {result.exit_code}\n{result.output}"
+        return result
+
+    run(convert_box(config_path=yard["config_path"],
+                    box_index_name=yard["idx"], verbose=False))
+
+    first = _multi_sync("-c", "data", "--skip-unchanged", "--print-skipped")
+    assert yard["idx"] in first.output, (
+        "precondition: the first pass must actually sync the box and stamp it"
+    )
+
+    second = _multi_sync("-c", "data", "--skip-unchanged", "--print-skipped")
+    assert yard["idx"] not in second.output, (
+        "the settled box was not dropped from the pass -- the bulk listing "
+        "did not return its data.snapshot"
+    )

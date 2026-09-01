@@ -1638,6 +1638,78 @@ what you thought.
 
 ---
 
+## Appendix: merging with 0.6.1 and 0.6.2
+
+Three conflicts, all of them places where the same bug was fixed twice on two
+branches. Recorded because two of the resolutions changed what a comment in the
+code can honestly claim.
+
+**1. multi-sync's depth-2 listing filter.** This branch needed both
+`boxmeta.toml` and `data.snapshot`; main had the anchored `+ /*/boxmeta.toml`
+form chosen after measuring that `+ /boxmeta.toml` with `- **` returns nothing.
+Kept main's anchoring, extended to both files. Re-measured with
+`data.snapshot` present, rclone v1.75.0:
+
+| filter | returns |
+|---|---|
+| `+ boxmeta.toml`, `+ data.snapshot` | both boxmetas, both pointers **and the stray** — the bug |
+| `+ /boxmeta.toml`, `+ /data.snapshot`, `- **` | **NOTHING AT ALL** — the trap |
+| `+ boxmeta.toml`, `+ data.snapshot`, `- **` | the four wanted files |
+| `+ /*/boxmeta.toml`, `+ /*/data.snapshot`, `- **` | the four wanted files — **chosen** |
+| `+ /*/boxmeta.toml`, `- **` | boxmetas only — drops the pointer |
+
+The last two candidates are IDENTICAL at `--max-depth 2`, so no test can
+distinguish them and a mutation swapping one for the other survives. The
+anchored form is kept anyway, on a difference that shows up one notch out: the
+bare form matches the name at ANY depth, so its correctness is supplied by
+`max_depth` rather than by the filter. Measured at `--max-depth 3`, the bare
+form additionally returns `<box>/data/boxmeta.toml` and
+`<box>/data/data.snapshot` — files inside a box's own DATA, keyed as if they
+were that box's metadata. The anchored form returns neither.
+
+**`- **` no longer means the same thing in the two callers, and the comment now
+says so.** In `sync_missing_boxmetas` it is load-bearing: removing it fails two
+tests. In multi-sync it is now only a cost guard, because this branch re-keyed
+that listing by (box, FILENAME) and the projection picks the two names it wants,
+so a stray at depth 2 is ignored rather than overwriting the boxmeta's entry.
+Keeping it still matters — without it rclone returns every depth-2 file in the
+yard — but a comment calling it load-bearing there would be false.
+
+**2. The `--skip-unchanged-meta` guard.** Main allowed a skip only when the pass
+asked for META alone; this branch had a general intersection over every
+requested part. The intersection is the correct superset — an unprovable part
+contributes the empty set and empties the intersection, which reaches main's
+answer everywhere main's guard applied — and all 16 of main's tests pass against
+it, including the two that assert the literal "no box was skipped" message,
+which had to be preserved.
+
+But the pre-merge intersection was **wrong in a way main's version was not**:
+the block is entered when EITHER flag is given, and only the DATA arm checked
+its flag. So `-c meta --skip-unchanged` — the DATA flag, on a META pass — would
+have skipped boxes the user never asked to filter. Each arm is now gated on its
+own flag, with a test.
+
+**3. `boxyard doctor`.** A purely additive list conflict: 0.6.2's
+`orphaned-sync-backups` / `orphaned-remote-sync-backups` alongside this branch's
+`storage-format-mismatch` / `orphaned-snapshot`. All four kept; all 33 declared
+checks have implementations.
+
+**One interaction the merge surfaced, which no conflict marked.** 0.6.2 made
+`rclone_delete` raise instead of returning an ignored exit code — correct, and
+the same fix as `rclone_purge`. But `convert_box` resumes by re-running from the
+top, so interruption-table rows 3, 4 and 5 reach the delete and purge steps with
+that work already done. Before 0.6.2 the failure was swallowed and the resume
+worked by accident; afterwards three tests failed. Absence on a resume is a
+legitimate expected state, so those two calls now use absent-ok variants:
+`rclone_purge_absent_ok` already existed, and `rclone_delete_absent_ok` was
+added in the same idiom. It reads the exit code rather than probing, because
+unlike purge, `deletefile` follows the convention — measured on rclone v1.75.0:
+file present `0`, absent `4`, remote unreachable `1`, where purge exits `1` for
+both absence and unreachability. Mutating the tolerance away fails all three
+rows, so it is load-bearing rather than defensive.
+
+---
+
 ## Appendix: measuring the remote cheaply
 
 Worth keeping independently of this design. The Hetzner Storage Box exposes a

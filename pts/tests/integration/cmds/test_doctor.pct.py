@@ -458,6 +458,236 @@ def test_doctor_orphaned_sync_records(temp_boxyard):
     # The synced box's records are not flagged
     assert len(paths) == 1
 
+# %% [markdown]
+# ## `orphaned-sync-backups` / `orphaned-remote-sync-backups`
+#
+# The check that would have caught the leak this fix is about. A sync writes
+# `sync_backups/<ulid>/`, holding whatever it was about to overwrite, and
+# purges it when it finishes; a purge whose failure was never reported grew one
+# remote to 1,186 orphaned directories and 116.4 GiB between 2025-11 and
+# 2026-08, and it took a hand survey of the whole fleet to see it.
+#
+# The grace period is the subtle part and gets its own test: a completed sync
+# writes a completion record with a NEW ULID and only then purges, so for the
+# duration of the purge every healthy in-flight backup matches no record at
+# all. A check without the grace would flag a perfectly healthy yard mid-sync.
+
+# %%
+#|export
+def _backup_ulid(age_hours):
+    """A ULID whose embedded timestamp is `age_hours` in the past."""
+    from datetime import datetime, timedelta, timezone
+    from ulid import ULID
+
+    return str(ULID.from_datetime(datetime.now(timezone.utc) - timedelta(hours=age_hours)))
+
+
+@pytest.mark.integration
+def test_doctor_orphaned_local_sync_backups(temp_boxyard):
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    old = _backup_ulid(48)
+    fresh = _backup_ulid(1)
+    for name in (old, fresh):
+        (config.local_sync_backups_path / name).mkdir(parents=True)
+
+    report = _doctor(config_path, check_remote=False)
+    findings = _findings(report, "orphaned-sync-backups")
+    assert len(findings) == 1
+    assert findings[0]["backup_dirs"] == [old]
+    # The young one is a sync that may still be running, not residue.
+    assert fresh not in findings[0]["backup_dirs"]
+
+
+@pytest.mark.integration
+def test_doctor_leaves_a_backup_an_incomplete_sync_still_names(temp_boxyard):
+    """
+    A backup directory whose ULID an incomplete record still names belongs to a
+    sync this machine may resume, so age is irrelevant and it is not residue.
+    """
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    box = new_box(config_path=config_path, box_name="wip-box", storage_location=remote_name)
+    asyncio.run(sync_box(config_path=config_path, box_index_name=box))
+
+    claimed = _backup_ulid(72)
+    (config.local_sync_backups_path / claimed).mkdir(parents=True)
+
+    from ulid import ULID
+
+    from boxyard._models import SyncRecord
+
+    rec_path = config.boxyard_data_path / const.SYNC_RECORDS_REL_PATH / box / "data.rec"
+    rec_path.write_text(
+        SyncRecord(
+            ulid=ULID.from_str(claimed),
+            sync_complete=False,
+            syncer_hostname="test-machine",
+        ).model_dump_json()
+    )
+
+    report = _doctor(config_path, check_remote=False)
+    assert _findings(report, "orphaned-sync-backups") == []
+
+
+@pytest.mark.integration
+def test_doctor_reports_non_ulid_entries_as_debris(temp_boxyard):
+    """Nothing in boxyard writes these, so they need neither record nor grace."""
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    (config.local_sync_backups_path / "20260101_aaaaaa__some-box").mkdir(parents=True)
+
+    report = _doctor(config_path, check_remote=False)
+    findings = _findings(report, "orphaned-sync-backups")
+    assert len(findings) == 1
+    assert findings[0]["backup_dirs"] == ["20260101_aaaaaa__some-box"]
+    assert "not sync backups" in findings[0]["message"]
+
+
+@pytest.mark.integration
+def test_doctor_orphaned_remote_sync_backups(temp_boxyard):
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    box = new_box(config_path=config_path, box_name="synced-box", storage_location=remote_name)
+    asyncio.run(sync_box(config_path=config_path, box_index_name=box))
+
+    remote_backups = (
+        remote_rclone_path
+        / config.storage_locations[remote_name].store_path
+        / const.REMOTE_BACKUP_REL_PATH
+    )
+    old = _backup_ulid(48)
+    fresh = _backup_ulid(2)
+    for name in (old, fresh):
+        (remote_backups / name).mkdir(parents=True)
+        (remote_backups / name / "overwritten.txt").write_text("what the sync replaced")
+
+    report = _doctor(config_path)
+    findings = _findings(report, "orphaned-remote-sync-backups")
+    assert len(findings) == 1
+    assert findings[0]["backup_dirs"] == [old]
+    assert findings[0]["storage_location"] == remote_name
+    # The local half is a separate check and has nothing to say here.
+    assert _findings(report, "orphaned-sync-backups") == []
+
+
+@pytest.mark.integration
+def test_doctor_remote_backups_check_is_skipped_offline(temp_boxyard):
+    """
+    Local and remote are separate check names precisely so `--no-remote` can
+    say "not looked at" for the remote without hiding local findings or
+    claiming a clean bill of health for a remote nobody contacted.
+    """
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    (config.local_sync_backups_path / _backup_ulid(48)).mkdir(parents=True)
+
+    report = _doctor(config_path, check_remote=False)
+    assert report["checks"]["orphaned-remote-sync-backups"]["skipped"]
+    assert not report["checks"]["orphaned-sync-backups"]["skipped"]
+    assert len(_findings(report, "orphaned-sync-backups")) == 1
+
+
+@pytest.mark.integration
+def test_a_discard_local_keepsake_matches_the_orphan_predicate(temp_boxyard):
+    """
+    `discard-local` keeps the work it threw away, and keeps it in the very
+    directory this check scans -- ULID-named, and claimed by no sync record,
+    because the pull replaces its own incomplete record (ULID X) with the
+    REMOTE's completed one, which carries a different ULID. So once it is a day
+    old it satisfies the orphan predicate exactly, and NOTHING on disk tells it
+    apart from failed-purge residue.
+
+    That is not a bug to be silenced -- there is no signal to distinguish them
+    by -- but it is the difference between a useful finding and one that gets a
+    person to delete their own discarded work. This test pins both the fact and
+    the hint that admits it. Ticket ee2986e4 deleted 1,186 remote directories on
+    this same predicate; 791 MiB of only-copy content survived only because a
+    second, independent test ran first.
+    """
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    from boxyard.cmds._discard_local import discard_local
+
+    box = new_box(config_path=config_path, box_name="dl-box", storage_location=remote_name)
+    (config.user_boxes_path / box / "work.txt").write_text("the remote's version")
+    asyncio.run(sync_box(config_path=config_path, box_index_name=box))
+
+    (config.user_boxes_path / box / "work.txt").write_text("MY LOCAL WORK")
+    (config.user_boxes_path / box / "only-here.txt").write_text("exists nowhere else")
+    asyncio.run(discard_local(config_path=config_path, box_index_name=box, verbose=False))
+
+    kept = [p for p in config.local_sync_backups_path.iterdir() if p.is_dir()]
+    assert len(kept) == 1, kept
+    keepsake = kept[0]
+    # The work really is in there, including a file that exists nowhere else.
+    assert (keepsake / "only-here.txt").read_text() == "exists nowhere else"
+
+    # It parses as a ULID and lives exactly where the check looks...
+    from ulid import ULID
+
+    ULID.from_str(keepsake.name)
+    assert keepsake.parent == config.local_sync_backups_path
+
+    # ...and no sync record claims it, so only the grace holds the check off.
+    from boxyard._models import SyncRecord
+
+    live = set()
+    for rec_path in (config.boxyard_data_path / const.SYNC_RECORDS_REL_PATH).glob("*/*.rec"):
+        rec = SyncRecord.model_validate_json(rec_path.read_text())
+        if not rec.sync_complete:
+            live.add(str(rec.ulid))
+    assert keepsake.name not in live, (
+        "if a record ever did claim the keepsake, this check could tell it "
+        "apart from residue and the hint below could stop hedging"
+    )
+
+
+@pytest.mark.integration
+def test_the_orphan_hint_says_what_the_finding_does_not_prove(temp_boxyard):
+    """
+    The hint is read at the moment someone decides whether to delete, so it has
+    to carry the two things the predicate cannot establish on its own.
+    """
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    (config.local_sync_backups_path / _backup_ulid(48)).mkdir(parents=True)
+
+    report = _doctor(config_path, check_remote=False)
+    hint = _findings(report, "orphaned-sync-backups")[0]["hint"]
+
+    # It does not prove the contents exist anywhere else.
+    assert "does not" in hint and "exist anywhere else" in hint, hint
+    # A deliberate discard-local keepsake is indistinguishable from residue.
+    assert "discard-local" in hint and "indistinguishable" in hint, hint
+    # And therefore: look before deleting.
+    assert "before deleting" in hint, hint
+
+
+@pytest.mark.integration
+def test_doctor_healthy_yard_has_no_backup_findings(temp_boxyard):
+    """
+    A yard that has just synced normally must be silent, or the check is
+    unreadable noise. `sync_box` purges its own backup directory, so a clean
+    sync leaves nothing behind for either half of the check.
+    """
+    remote_name, remote_rclone_path, config, config_path, data_path = temp_boxyard
+
+    box = new_box(config_path=config_path, box_name="clean-box", storage_location=remote_name)
+    asyncio.run(sync_box(config_path=config_path, box_index_name=box))
+
+    # A second sync that actually overwrites something, so the backup directory
+    # is not merely created but used -- and still purged.
+    (config.user_boxes_path / box / "f.txt").write_text("v1")
+    asyncio.run(sync_box(config_path=config_path, box_index_name=box))
+    (config.user_boxes_path / box / "f.txt").write_text("v2")
+    asyncio.run(sync_box(config_path=config_path, box_index_name=box))
+
+    report = _doctor(config_path)
+    assert _findings(report, "orphaned-sync-backups") == []
+    assert _findings(report, "orphaned-remote-sync-backups") == []
+
+
 # %%
 #|export
 @pytest.mark.integration

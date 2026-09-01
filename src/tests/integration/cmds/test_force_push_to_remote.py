@@ -168,6 +168,54 @@ async def _test_force_push_to_remote():
     local_data_path = box_meta.get_local_part_path(config, BoxPart.DATA)
     assert (local_data_path / "restored_file.txt").exists()
     assert (local_data_path / "restored_file.txt").read_text() == "Restored content"
+    import contextlib
+    import io
+    from unittest.mock import AsyncMock, patch
+    
+    from boxyard._utils.rclone import RcloneFailed
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        source_path = Path(temp_dir) / "purge_fail_source"
+        source_path.mkdir(parents=True)
+        (source_path / "pushed_anyway.txt").write_text("content")
+    
+        _captured = io.StringIO()
+        with (
+            patch(
+                "boxyard.cmds._force_push_to_remote.rclone_purge",
+                new=AsyncMock(
+                    side_effect=RcloneFailed(
+                        ["rclone", "purge"], 1, "", "Failed to purge: connection reset"
+                    )
+                ),
+            ),
+            contextlib.redirect_stdout(_captured),
+        ):
+            await force_push_to_remote(
+                config_path=config_path,
+                box_index_name=box_index_name,
+                source_path=source_path,
+                force=True,
+                verbose=True,
+            )
+    
+        _out = _captured.getvalue()
+        assert "WARNING" in _out, _out
+        assert "orphaned-sync-backups" in _out, _out
+        assert "connection reset" in _out, _out
+        # The message that would be a lie is not printed.
+        assert "Backup cleaned up." not in _out, _out
+    
+    # The push itself went through despite the failed cleanup.
+    config = get_config(config_path)
+    boxyard_meta = get_boxyard_meta(config, force_create=True)
+    box_meta = boxyard_meta.by_index_name[box_index_name]
+    remote_files = await rclone_lsjson(
+        config.rclone_config_path,
+        source=remote_name,
+        source_path=str(box_meta.get_remote_part_path(config, BoxPart.DATA)),
+    )
+    assert any(f["Name"] == "pushed_anyway.txt" for f in remote_files)
     from boxyard.cmds import delete_box
     
     await delete_box(config_path=config_path, box_index_name=box_index_name)

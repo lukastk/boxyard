@@ -207,9 +207,11 @@ def convert_upto(two, stop_after):
     """Run the conversion but stop after a named step, as a crash would."""
     import boxyard.cmds._convert_box as mod
 
-    from boxyard._utils import rclone_delete, rclone_purge
+    # The absent-ok variants, which is what `convert_box` calls: a resume
+    # re-runs from the top and legitimately finds these already done.
+    from boxyard._utils import rclone_delete_absent_ok, rclone_purge_absent_ok
 
-    real_delete, real_purge = rclone_delete, rclone_purge
+    real_delete, real_purge = rclone_delete_absent_ok, rclone_purge_absent_ok
     state = {"deleted": False, "purged": False}
 
     async def fake_delete(**kw):
@@ -232,8 +234,8 @@ def convert_upto(two, stop_after):
         if stop_after == "pointer":
             raise KeyboardInterrupt("simulated crash after the pointer")
 
-    mod.rclone_delete = fake_delete
-    mod.rclone_purge = fake_purge
+    mod.rclone_delete_absent_ok = fake_delete
+    mod.rclone_purge_absent_ok = fake_purge
     if stop_after == "pointer":
         mod.write_pointer = fake_pointer
     try:
@@ -241,8 +243,8 @@ def convert_upto(two, stop_after):
             run(convert_box(config_path=two["cpA"], box_index_name=two["idx"],
                             verbose=False))
     finally:
-        mod.rclone_delete = real_delete
-        mod.rclone_purge = real_purge
+        mod.rclone_delete_absent_ok = real_delete
+        mod.rclone_purge_absent_ok = real_purge
         from boxyard._restic import write_pointer as real_pointer
         mod.write_pointer = real_pointer
     return state

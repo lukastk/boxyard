@@ -971,6 +971,135 @@ class TestSyncHelperErrorHandling:
 
 
 # ============================================================================
+# Tests for the backup purge that follows a completed sync
+# ============================================================================
+
+# %% [markdown]
+# The bug this covers: `sync_helper` purges the backup directory it made once
+# the sync completes, and for most of boxyard's life it discarded the purge's
+# result. A failed purge therefore left the directory behind and said nothing,
+# and the next successful sync made another one. That is how one remote reached
+# **1,186 orphaned directories, 50,802 objects and 116.4 GiB** between 2025-11
+# and 2026-08 — found only by a hand survey of every machine in the fleet.
+#
+# The behaviour these tests pin is the deliberate middle: a failed purge does
+# NOT fail the sync (the transfer is done, both records say so, and raising
+# would make `multi-sync` retry a healthy box and mint a fresh backup directory
+# every pass — accelerating the very leak), but it is never silent.
+
+# %%
+#|export
+class TestSyncHelperBackupPurge:
+    """What happens to the backup directory when the sync itself succeeded."""
+
+    @staticmethod
+    def _run(purge_mock, **kwargs):
+        """Drive one successful PUSH with a given `rclone_purge` behaviour."""
+        async def _test():
+            mock_status = SyncStatus(
+                sync_condition=SyncCondition.NEEDS_PUSH,
+                local_path_exists=True,
+                remote_path_exists=False,
+                local_sync_record=None,
+                remote_sync_record=None,
+                is_dir=True,
+                error_message=None,
+            )
+
+            with (
+                patch(
+                    "boxyard._models.get_sync_status",
+                    new=AsyncMock(return_value=mock_status),
+                ),
+                patch(
+                    "boxyard._utils.sync_helper.check_interrupted",
+                    return_value=False,
+                ),
+                patch(
+                    "boxyard._utils.rclone_sync",
+                    new=AsyncMock(return_value=(True, "", "")),
+                ),
+                patch("boxyard._utils.rclone_mkdir", new=AsyncMock()),
+                patch("boxyard._utils.rclone_purge", new=purge_mock),
+                patch.object(
+                    SyncRecord,
+                    "create",
+                    return_value=MagicMock(
+                        ulid=MagicMock(__str__=lambda x: "test-ulid"),
+                        rclone_save=AsyncMock(),
+                    ),
+                ),
+            ):
+                return await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=SyncDirection.PUSH,
+                    sync_setting=SyncSetting.CAREFUL,
+                    local_path="/local",
+                    local_sync_record_path="/local/.sync",
+                    remote="myremote",
+                    remote_path="/remote",
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                    **kwargs,
+                )
+
+        return asyncio.run(_test())
+
+    @staticmethod
+    def _failing_purge():
+        from boxyard._utils.rclone import RcloneFailed
+
+        return AsyncMock(
+            side_effect=RcloneFailed(
+                ["rclone", "purge"], 1, "", "Failed to purge: connection reset"
+            )
+        )
+
+    def test_a_failed_purge_is_reported(self, capsys):
+        """
+        TESTREF: test_sync_helper_backup_purge
+
+        The regression test. Silence here is the whole bug: this assertion
+        fails if the purge's failure is dropped, whether by ignoring a return
+        value or by an `except` that does nothing.
+        """
+        self._run(self._failing_purge())
+
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        # Name the directory, or the warning is not actionable.
+        assert "myremote:remote/backups/test-ulid" in out
+        # Point at the thing that keeps counting after this run ends.
+        assert "orphaned-sync-backups" in out
+        # Say what rclone actually complained about.
+        assert "connection reset" in out
+
+    def test_a_failed_purge_does_not_fail_the_sync(self):
+        """
+        The transfer is complete and recorded on both sides. Reporting it as a
+        failure would make `multi-sync` retry the box forever, and each retry
+        leaves ANOTHER backup directory -- the fix would then feed the leak.
+        """
+        status, synced = self._run(self._failing_purge())
+        assert synced is True
+
+    def test_a_successful_purge_says_nothing(self, capsys):
+        """The warning has to be rare enough to be worth reading."""
+        self._run(AsyncMock())
+        assert "WARNING" not in capsys.readouterr().out
+
+    def test_delete_backup_false_skips_the_purge_entirely(self):
+        """
+        `discard-local` passes `delete_backup=False` precisely so the overwritten
+        copy survives; it must not be purged, and must not warn about not being.
+        """
+        purge = AsyncMock()
+        self._run(purge, delete_backup=False)
+        purge.assert_not_called()
+
+
+# ============================================================================
 # Tests for sync_helper soft interruption
 # ============================================================================
 

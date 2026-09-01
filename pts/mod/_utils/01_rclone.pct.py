@@ -759,20 +759,89 @@ async def rclone_purge(
     rclone_config_path: str,
     source: str,
     source_path: str,
-) -> bool:
+) -> None:
+    """
+    Delete a directory and everything inside it.
+
+    Raises `RcloneFailed` if the purge does not succeed -- INCLUDING when the
+    directory was never there. Callers for whom absence is a legitimate outcome
+    want `rclone_purge_absent_ok` instead.
+
+    It deliberately returns nothing to check. It used to return `ret_code == 0`,
+    and the single most important caller did not look: `sync_helper` purges the
+    backup directory after a successful sync and dropped the result on the
+    floor, so every failed purge leaked in silence. By 2026-08 the remote held
+    1,186 orphaned backup directories, 116.4 GiB, reaching back to 2025-11 --
+    all of them invisible. An exception cannot be dropped by accident, and a
+    caller that really does want to carry on now has to write down that it is
+    doing so. See the `orphaned-sync-backups` check in `boxyard doctor`.
+    """
     source_str = f"{source}:{source_path}" if source else source_path
     cmd = [get_rclone_binary(), "purge", "--config", rclone_config_path, source_str]
     ret_code, stdout, stderr = await run_cmd_async(cmd)
-    return ret_code == 0
+    if ret_code != 0:
+        raise RcloneFailed(cmd, ret_code, stdout, stderr)
+
+
+async def rclone_purge_absent_ok(
+    rclone_config_path: str,
+    source: str,
+    source_path: str,
+) -> bool:
+    """
+    Purge a directory that may legitimately not be there.
+
+    Returns True if a directory was purged, False if there was nothing to
+    purge. Every other failure raises `RcloneFailed`.
+
+    `rclone purge` does NOT follow the exit-code convention that
+    `RCLONE_ABSENT_EXIT_CODES` encodes: purging a missing directory exits 1 --
+    the very same code as an unreachable remote (measured against rclone
+    v1.75.0 on 2026-09-01). Absence therefore cannot be read off the exit code
+    at all, so this asks the remote directly rather than pattern-matching
+    rclone's error text, which would silently start conflating the two the day
+    rclone rewords it. The probe runs only after a purge has already failed, so
+    the ordinary path pays nothing for it.
+    """
+    try:
+        await rclone_purge(rclone_config_path, source, source_path)
+    except RcloneFailed:
+        exists, _is_dir = await rclone_path_exists(
+            rclone_config_path, source, source_path
+        )
+        if exists:
+            raise
+        return False
+    return True
 
 # %%
 _path = setup_test_folder("purge")
 
-assert await rclone_purge(
+await rclone_purge(
     _path / "rclone.conf",
     source="my_remote",
     source_path="",
 )
+
+# %%
+# Purging what is not there is not an error for `rclone_purge_absent_ok`...
+assert not await rclone_purge_absent_ok(
+    _path / "rclone.conf",
+    source="my_remote",
+    source_path="never-existed",
+)
+
+# %%
+# ...but it IS one for `rclone_purge`, which never guesses.
+try:
+    await rclone_purge(
+        _path / "rclone.conf",
+        source="my_remote",
+        source_path="never-existed",
+    )
+    raise AssertionError("rclone_purge swallowed a failure")
+except RcloneFailed:
+    pass
 
 # %%
 #|hide
@@ -964,14 +1033,56 @@ async def rclone_delete(
     rclone_config_path: str,
     dest: str,
     dest_path: str,
-) -> bool:
+) -> None:
     """
     Delete a single remote file.
+
+    Raises `RcloneFailed` if the delete does not succeed. Like `rclone_purge`,
+    it returns nothing to check: it used to return `ret_code == 0` and its only
+    caller -- `remove_tombstone`, which promises the tombstone is gone -- did
+    not look, so a failed delete left the box tombstoned while every caller
+    believed it had been revived.
     """
     dest_str = f"{dest}:{dest_path}" if dest else dest_path
     cmd = [get_rclone_binary(), "deletefile", "--config", rclone_config_path, dest_str]
     ret_code, stdout, stderr = await run_cmd_async(cmd)
-    return ret_code == 0
+    if ret_code != 0:
+        raise RcloneFailed(cmd, ret_code, stdout, stderr)
+
+
+async def rclone_delete_absent_ok(
+    rclone_config_path: str,
+    dest: str,
+    dest_path: str,
+) -> bool:
+    """
+    Delete a single remote file that may legitimately not be there.
+
+    Returns True if a file was deleted, False if there was nothing to delete.
+    Every other failure raises `RcloneFailed`.
+
+    Unlike `rclone purge`, `rclone deletefile` DOES follow the exit-code
+    convention `RCLONE_ABSENT_EXIT_CODES` encodes, so absence can be read
+    straight off the code and no probe is needed. Measured against rclone
+    v1.75.0 on 2026-09-01:
+
+        file exists        -> 0
+        file absent        -> 4   (RCLONE_EXIT_FILE_NOT_FOUND)
+        remote unreachable -> 1
+
+    That is why this does not mirror `rclone_purge_absent_ok`'s extra
+    `rclone_path_exists` probe: purge exits 1 for BOTH a missing directory and
+    an unreachable remote, which is what forces it to ask. Do not "harmonise"
+    the two -- the difference is measured, not accidental.
+    """
+    dest_str = f"{dest}:{dest_path}" if dest else dest_path
+    cmd = [get_rclone_binary(), "deletefile", "--config", rclone_config_path, dest_str]
+    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    if ret_code in RCLONE_ABSENT_EXIT_CODES:
+        return False
+    if ret_code != 0:
+        raise RcloneFailed(cmd, ret_code, stdout, stderr)
+    return True
 
 # %%
 _path = setup_test_folder("delete")
@@ -979,10 +1090,9 @@ _path = setup_test_folder("delete")
 
 assert (_path / "my_remote" / "to_delete.txt").exists()
 
-res = await rclone_delete(
+await rclone_delete(
     _path / "rclone.conf",
     dest="my_remote",
     dest_path="to_delete.txt",
 )
-assert res
 assert not (_path / "my_remote" / "to_delete.txt").exists()

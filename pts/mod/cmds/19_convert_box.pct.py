@@ -94,7 +94,7 @@ from boxyard._restic import (
     write_pointer,
     write_state,
 )
-from boxyard._utils import rclone_delete, rclone_purge
+from boxyard._utils import rclone_delete_absent_ok, rclone_purge_absent_ok
 from boxyard._utils.locking import BoxyardLockManager
 from boxyard.config import StorageType, get_config
 
@@ -460,7 +460,18 @@ try:
     _did(f"verified {_file_count:,} files restore byte-identically (content, mode, symlinks)")
 
     # ---- Step 3 -- the sync record FIRST ----------------------------------
-    await rclone_delete(
+    # ABSENT-OK, and that is the interruption table talking, not laziness. A
+    # conversion resumes by re-running from the top, so rows 3, 4 and 5 arrive
+    # here with the record ALREADY deleted by the attempt that crashed. Absence
+    # is the legitimate expected state on a resume -- the goal is that the
+    # record is gone, not that this call is what removed it.
+    #
+    # Before 0.6.2 this went unnoticed: `rclone_delete` returned an exit code
+    # nobody read, so deleting a file that was not there passed silently. Now it
+    # raises, which is right, and the resume path has to say out loud that it
+    # tolerates absence. Any OTHER failure -- an unreachable remote -- still
+    # raises and still stops the conversion.
+    await rclone_delete_absent_ok(
         rclone_config_path=config.rclone_config_path,
         dest=box_meta.storage_location,
         dest_path=_remote_rec_path.as_posix(),
@@ -468,7 +479,9 @@ try:
     _did("deleted the remote DATA sync record (the box now refuses on every machine)")
 
     # ---- Step 4 -- the plain tree ----------------------------------------
-    await rclone_purge(
+    # Absent-ok for the same reason as step 3: rows 4 and 5 resume with the
+    # plain tree already purged.
+    await rclone_purge_absent_ok(
         rclone_config_path=config.rclone_config_path,
         source=box_meta.storage_location,
         source_path=_remote_data.as_posix(),
