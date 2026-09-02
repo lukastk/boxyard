@@ -104,6 +104,18 @@ box_meta = boxyard_meta.by_index_name[box_index_name]
 if box_meta.check_included(config):
     raise ValueError(f"Box '{box_index_name}' is already included.")
 
+# A restic box cannot be materialised without the binary and the repository
+# password, and BOTH must be settled before anything is written or printed.
+# `include` used to write a placement record and print "Included box ..." on a
+# machine with no restic binary, leaving a state that `sync`, `exclude` and
+# `discard-local` all refused in turn.
+from boxyard._enums import StorageFormat
+
+if box_meta.storage_format is StorageFormat.RESTIC:
+    from boxyard._restic import require_restic_available
+
+    require_restic_available(config, f"include '{box_index_name}'")
+
 from boxyard._checkout import (
     load_placement,
     require_checkout_root,

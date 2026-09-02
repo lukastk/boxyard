@@ -38,6 +38,16 @@ class ConversionRefused(Exception):
     half-converted box.
     """
 
+class ConversionIncomplete(Exception):
+    """
+    The data is converted but the fleet cannot yet read it correctly.
+
+    The opposite of `ConversionRefused`: this is raised AFTER the work, and the
+    box on this machine is fine. It means the boxmeta did not reach the remote,
+    so every other machine still reads the box as plain. Re-running `convert`
+    finishes it.
+    """
+
 def compare_trees(source: Path, restored: Path) -> list[str]:
     """
     Differences between a box's DATA and a restore of it. Empty means identical.
@@ -404,10 +414,38 @@ async def convert_box(
         refresh_boxyard_meta(config)
         _did("refreshed the registry cache")
     
-        _say(
-            f"Converted '{box_index_name}'. Its boxmeta still needs to reach the "
-            f"other machines: `boxyard sync -r '{box_index_name}' -c meta`."
-        )
+        # ---- Step 6 -- PUBLISH the boxmeta -----------------------------------
+        #
+        # Not optional, and not a follow-up command. Until the remote's boxmeta
+        # says `restic`, the remote CONTRADICTS ITSELF -- restic data, plain
+        # metadata -- and every other machine reads the box as plain, takes the
+        # plain path, and looks for a `data/` this conversion has just purged.
+        #
+        # `_skip_lock` because this command already holds the box's sync lock; the
+        # same reason `include_box` passes it.
+        from boxyard.cmds import sync_box as _sync_box
+    
+        try:
+            await _sync_box(
+                config_path=config_path,
+                box_index_name=box_index_name,
+                sync_choices=[BoxPart.META],
+                verbose=False,
+                _skip_lock=True,
+            )
+        except Exception as _publish_error:
+            raise ConversionIncomplete(
+                f"'{box_index_name}' is converted on this machine and on the "
+                f"remote, but its boxmeta could not be published, so the rest of "
+                f"the fleet still reads it as plain and will fail on it: "
+                f"{_publish_error}\n"
+                f"Re-run `boxyard convert -r '{box_index_name}'` when the remote is "
+                f"reachable, or push it directly with "
+                f"`boxyard sync -r '{box_index_name}' -c meta`."
+            ) from None
+        _did("published the boxmeta, so the fleet reads the box as restic")
+    
+        _say(f"Converted '{box_index_name}'.")
     finally:
         _convert_lock.release()
     return result

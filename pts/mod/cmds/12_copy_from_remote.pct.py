@@ -25,6 +25,8 @@ import asyncio
 from boxyard.config import get_config
 from boxyard._models import get_boxyard_meta, BoxPart
 from boxyard._remote_index import find_remote_box_by_id
+from boxyard._enums import StorageFormat
+from boxyard._models import BoxMeta
 from boxyard._utils.rclone import rclone_copy, rclone_copyto
 
 # %%
@@ -201,17 +203,52 @@ if verbose:
 # Create dest directory
 dest_path.mkdir(parents=True, exist_ok=True)
 
-success, stdout, stderr = await rclone_copy(
-    rclone_config_path=config.rclone_config_path.as_posix(),
-    source=storage_location,
-    source_path=remote_data_path.as_posix(),
-    dest="",
-    dest_path=dest_path.as_posix(),
-    progress=show_rclone_progress,
-)
+# A converted box has NO `boxes/<box>/data/` -- conversion purges it -- so the
+# plain copy below would fail with "directory not found". Its DATA lives in the
+# repository, and the pointer says which snapshot is current.
+#
+# This restores into an ARBITRARY destination rather than a checkout, so it
+# deliberately writes no restic state record: that record means "this machine's
+# CHECKOUT is at snapshot X", and a copy taken somewhere else is not a checkout.
+_box_meta_for_format = BoxMeta.load(config, storage_location, box_index_name)
+if _box_meta_for_format.storage_format is StorageFormat.RESTIC:
+    from boxyard._restic_sync import repo_for_box
+    from boxyard._restic import (
+        read_pointer,
+        require_restic_available,
+        pull as _restic_pull,
+    )
 
-if not success:
-    raise RuntimeError(f"Failed to copy DATA from remote: {stderr}")
+    require_restic_available(config, f"copy '{box_index_name}' from the remote")
+
+    _pointer = await read_pointer(
+        config.rclone_config_path, storage_location,
+        sl_config.store_path, remote_index_name,
+    )
+    if _pointer is None:
+        raise RuntimeError(
+            f"Box '{box_index_name}' is a restic box with no data.snapshot "
+            f"pointer, so there is no snapshot to copy. Finish the conversion "
+            f"with `boxyard convert -r '{box_index_name}'` first."
+        )
+    await _restic_pull(
+        repo_for_box(config, _box_meta_for_format, remote_index_name),
+        dest_path,
+        target_snapshot=_pointer["snapshot"],
+        base_snapshot=None,
+    )
+else:
+    success, stdout, stderr = await rclone_copy(
+        rclone_config_path=config.rclone_config_path.as_posix(),
+        source=storage_location,
+        source_path=remote_data_path.as_posix(),
+        dest="",
+        dest_path=dest_path.as_posix(),
+        progress=show_rclone_progress,
+    )
+
+    if not success:
+        raise RuntimeError(f"Failed to copy DATA from remote: {stderr}")
 
 # Restore executable bits dropped by the transport (additive; no-op if no manifest).
 from boxyard._utils.perms import apply_exec_manifest

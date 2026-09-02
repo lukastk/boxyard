@@ -116,7 +116,20 @@ async def exclude_box(
                     time.sleep(0.1)
                 else:
                     raise
-        box_meta.get_local_sync_record_path(config, BoxPart.DATA).unlink()
+        # `missing_ok`, because a restic box need not have a plain `data.rec` at
+        # all: a machine that ADOPTED a converted box never wrote one. This used to
+        # raise `FileNotFoundError` AFTER the tree had already been deleted and
+        # BEFORE the placement was marked excluded, leaving the box in a state where
+        # `sync` refused, `exclude` refused again, and nothing could move it.
+        #
+        # Absence here is a legitimate expected state, not a swallowed error: the
+        # record's whole purpose is to describe a local tree, and there is none.
+        box_meta.get_local_sync_record_path(config, BoxPart.DATA).unlink(missing_ok=True)
+        # Same reasoning for the restic side: this machine's state record claims a
+        # local tree at some snapshot, and that claim is now false.
+        from boxyard._restic import clear_state
+    
+        clear_state(config.boxyard_data_path, box_index_name)
         from boxyard._checkout import mark_excluded
         mark_excluded(config, box_meta)
     finally:

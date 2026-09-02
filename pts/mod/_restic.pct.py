@@ -218,6 +218,35 @@ class ResticRepo:
         return env
 
 
+def require_restic_available(config, what: str) -> None:
+    """
+    Refuse NOW if this machine cannot work a restic repository.
+
+    `what` names the operation, so the message says what will not happen rather
+    than only what is wrong.
+
+    Both prerequisites are checked together because both are fatal in the same
+    way and a person fixing one wants to know about the other in the same
+    breath: the binary, and the repository password.
+
+    THE SCAR: `boxyard include` on a converted box printed "Included box ..."
+    on a machine with no `restic` binary at all, created nothing, and the
+    failure surfaced several commands later -- by which time `sync` refused,
+    `exclude` refused, and the machine was in a state no command could exit.
+    A command that reports success and does nothing is worse than one that
+    refuses, so anything that will need restic asks this BEFORE it acts or
+    prints.
+    """
+    try:
+        get_restic_binary()
+    except ResticError as e:
+        raise ResticError(f"Cannot {what}: {e}") from None
+    try:
+        resolve_restic_password(config)
+    except ResticError as e:
+        raise ResticError(f"Cannot {what}: {e}") from None
+
+
 def rclone_program_for(rclone_config_path: "str | Path") -> str:
     """
     The `-o rclone.program` string that routes restic through boxyard's own
@@ -709,6 +738,25 @@ def mark_pull_started(
         now_unix=(previous or {}).get("synced_at_unix"),
         pulling_from=target_snapshot,
     )
+
+
+def clear_state(boxyard_data_path: Path, box_index_name: str) -> bool:
+    """
+    Forget this machine's restic state for a box. True if there was one.
+
+    The state record says "my local tree is at snapshot X". Once the tree is
+    gone -- `exclude`, `discard-local` -- that claim is false, and leaving it
+    behind means the next thing to read it is told about a tree that is not
+    there.
+
+    Absence is a legitimate outcome, not a masked bug: a plain box never has
+    one, and neither does a box excluded twice.
+    """
+    path = state_path(boxyard_data_path, box_index_name)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
 
 
 def read_state(boxyard_data_path: Path, box_index_name: str) -> dict | None:

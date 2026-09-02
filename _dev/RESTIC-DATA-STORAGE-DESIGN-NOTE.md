@@ -1638,6 +1638,150 @@ what you thought.
 
 ---
 
+## Appendix: what the canary found — adoption never worked
+
+The canary converted cleanly on mymain and verified byte-for-byte. Then it could
+not be adopted on a second machine, and the machine that tried ended up in a
+state no command could leave. Two independent defects, and the second was
+invisible until the first was fixed.
+
+### Defect 1: conversion never published the format
+
+`convert_box` set `storage_format = restic` in the LOCAL boxmeta, refreshed the
+local registry cache, and printed a message asking the person to run
+`boxyard sync -c meta` afterwards. It never pushed it.
+
+So the remote **contradicted itself**: restic data, plain metadata. Every other
+machine read the box as plain, took the plain path, and looked for a `data/`
+that conversion had just purged. The interruption table's last row called that
+state "complete" because the boxmeta was saved *on this machine* — which is the
+narrowest possible reading of complete, and the one that cost a canary.
+
+Publishing is now step 6 of the conversion, and its failure raises
+`ConversionIncomplete` — a new exception that is the opposite of
+`ConversionRefused`: raised AFTER the work, meaning the data is fine but the
+fleet cannot read it yet. The table gained a row, and row 6 now says what it
+actually is: converted locally, mis-typed for everyone else.
+
+**The general lesson: a migration step that ends with "now remember to run X"
+is not a step, it is a defect with a docstring.**
+
+### Defect 2: no first-pull case
+
+Even with the format published, `include` reported success and created nothing.
+
+"No local tree, a snapshot on the remote" describes TWO states that are
+identical on the filesystem: a box deliberately EXCLUDED here, and a box being
+INCLUDED right now. The restic DATA path read every instance as the first,
+returned `EXCLUDED`, and did no work — while `sync` refused with "its recorded
+checkout is missing. Run `boxyard include`". A loop with no exit.
+
+The plain path needs no case for this because rclone creates the destination on
+the way past. Restic has to be told.
+
+The placement record already distinguishes them, and `include` writes it FIRST
+precisely so an interrupted adoption is recoverable: `LocalCheckoutState.MISSING`
+means "a placement says this box IS included here, and the tree is not there".
+`sync_box` now passes that in, and the restic path materialises with a full
+restore. `mark_pull_started` runs before the restore, so an adoption interrupted
+half-way resumes through the interrupted-restore branch instead of looking like
+a torn local edit.
+
+### The neighbours had it too
+
+Anything that reads a box's DATA from the remote assumed `boxes/<box>/data/`
+exists. All three now branch on the format:
+
+- **`discard-local`** — the worst of the three, because it is what a person
+  reaches for when a box is ALREADY in a bad state. It force-pulled the purged
+  plain tree. It now copies the local tree aside (same
+  `<local_sync_backups_path>/<ulid>/` layout `sync_helper` uses, so one place
+  holds everything ever overwritten) and restores from the snapshot.
+- **`copy-from-remote`** — restores into an arbitrary destination, and
+  deliberately writes no restic state record: that record means "this machine's
+  CHECKOUT is at snapshot X", and a copy taken elsewhere is not a checkout.
+- **`exclude`** — unrelated to the plain tree, and still broken: it called
+  `.unlink()` on the plain `data.rec`, which a machine that ADOPTED a converted
+  box never had. It raised `FileNotFoundError` AFTER deleting the tree and
+  BEFORE marking the placement excluded, which is precisely how a box ends up in
+  a state where sync refuses and exclude refuses again. Now `missing_ok=True`,
+  and it clears the restic state record too — that record claims a local tree
+  that no longer exists.
+
+### Refusing before reporting success
+
+The canary machine had no `restic` binary at all, and `include` still printed
+"Included box ...". `require_restic_available(config, what)` now checks the
+binary AND the password together — both are fatal the same way, and someone
+fixing one wants to know about the other in the same breath — and `include`,
+`discard-local` and `copy-from-remote` call it before writing or printing
+anything.
+
+**A command that reports success and does nothing is worse than one that
+refuses.** The binary is resolved once per process and cached, so a machine that
+installs restic mid-run needs a fresh process; that is the right trade against
+re-resolving it for each of 590 boxes.
+
+### One thing found on the way: `rclone purge` had no `--links`
+
+Every sync and copy this codebase builds passes `--links`, so boxyard PUTS
+symlinks on the remote — but `rclone_purge` did not, and purging a directory
+containing one fails with "directory not empty" (rclone v1.75.0). It surfaced as
+conversion failing on any box with a symlink.
+
+It bites a remote whose backend stores symlinks AS symlinks: a local path, or an
+alias to one, which is what the test harness uses. The real yard is sftp, where
+`--links` stores them as ordinary `.rclonelink` files that purge already
+removed. So this closes an asymmetry and fixes the harness; it does **not**
+explain the 116.4 GiB of orphaned backups, and should not be reported as if it
+did.
+
+### A test that passed for the wrong reason, and hid defect 1
+
+`test_an_un_upgraded_peer_refuses_a_converted_box` asserted that a peer refuses
+a converted box, and passed. But `peer_sync` calls the real `sync_box` — nothing
+in that file ever simulated an un-upgraded build. What it actually tested was an
+UPGRADED peer, and the refusal it asserted was defect 1: the peer read the box
+as plain, because conversion had not published the format, and went looking for
+a `data/` that had just been purged.
+
+So the test named the wrong actor and then asserted the bug as the design. It is
+now `test_an_upgraded_peer_adopts_a_converted_box` and asserts convergence.
+Genuine un-upgraded behaviour lives in `test_stale_machine_meets_restic.py`,
+which really does disable the restic branch.
+
+**Two lessons, and the second is the uncomfortable one.** A test whose name
+describes a machine the test never builds will keep passing while it means
+something else entirely. And this is the second time in this work that a green
+test proved nothing — the first was `"unknown-boxmeta-keys" in report["checks"]`,
+vacuous because the report is keyed by every check name. Both were found by
+changing the code underneath them, not by reading them.
+
+### One asymmetry left on purpose
+
+`restore --delete` removes the exec-bit manifest from any machine that pulls,
+because the manifest is excluded from every snapshot. The machine that CONVERTED
+keeps its own copy, since it never restores. So a converted box has a stale
+`.boxyard-perms.json` on exactly one machine. It is harmless — nothing reads it
+for a restic box, and it is excluded from snapshots — and removing it would mean
+deleting a file inside a person's box to tidy up. Named here so it is not
+mistaken for a bug later.
+
+### Why this reached a real machine
+
+The interruption table proved CONVERSION, thoroughly — row by row, with
+mutation testing. Nothing proved ADOPTION. Conversion is half a migration: the
+point is not to convert a box, it is to convert it on one machine and then work
+on it from another.
+
+`test_restic_adoption.py` is that missing half: convert in one throwaway yard,
+adopt in a second, and compare **by hash and mode**, with a symlink and an
+executable in the box so a restore that flattened either would fail. Plus the
+excluded box staying excluded, the adopting machine being able to push back, and
+the missing-binary refusal.
+
+---
+
 ## Appendix: merging with 0.6.1 and 0.6.2
 
 Three conflicts, all of them places where the same bug was fixed twice on two

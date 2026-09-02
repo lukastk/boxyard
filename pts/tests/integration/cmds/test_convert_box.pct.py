@@ -234,12 +234,49 @@ def test_an_upgraded_machine_can_restore_the_converted_box(two, tmp_path):
     assert not (dest / const.BOX_PERMS_MANIFEST_REL_PATH).exists()
 
 
-def test_an_un_upgraded_peer_refuses_a_converted_box(two):
+def test_an_upgraded_peer_adopts_a_converted_box(two):
+    """
+    The peer here runs THIS build -- `peer_sync` calls the real `sync_box` --
+    so what it proves is that an UPGRADED machine holding a plain checkout
+    converges onto the converted box without anyone intervening.
+
+    This test used to assert the opposite, and passed for a bad reason. Before
+    conversion published the boxmeta, the remote said `plain` while its data was
+    restic, so this peer read the box as plain, went looking for a `data/` that
+    had just been purged, and raised. The refusal was the DEFECT, not the
+    design, and calling it "an un-upgraded peer refuses" hid it: nothing in this
+    file ever simulated an un-upgraded build. That is
+    `test_stale_machine_meets_restic.py`, which really does.
+    """
     run(convert_box(config_path=two["cpA"], box_index_name=two["idx"], verbose=False))
     before = tree(two["dataB"])
+
     status, detail = peer_sync(two)
-    assert status == "refused", f"expected a refusal, got {detail}"
-    assert tree(two["dataB"]) == before, "the peer's local copy must survive"
+    assert status == "ok", detail
+    assert detail["data"] == "needs_pull", (
+        f"the peer should have adopted the converted box, got {detail}"
+    )
+
+    assert fmt(two, "cfgB") is StorageFormat.RESTIC, (
+        "conversion must publish the format, or every other machine reads the "
+        "box as plain and looks for a data/ that is gone"
+    )
+    # The exec-bit manifest is the one thing that legitimately goes: it is
+    # excluded from every snapshot on purpose (restic carries mode natively),
+    # and `restore --delete` therefore removes the peer's stale copy. The
+    # machine that CONVERTED keeps its own, because it never restores -- a
+    # harmless asymmetry, and the reason it is named here rather than folded
+    # into the comparison silently.
+    _manifest = const.BOX_PERMS_MANIFEST_REL_PATH
+    assert not (two["dataB"] / _manifest).exists(), (
+        "the peer kept a manifest that is not in the snapshot"
+    )
+    assert (two["dataB"] / "run.sh").stat().st_mode & 0o777 == 0o755, (
+        "the exec bit survived WITHOUT the manifest, which is the point"
+    )
+    assert {k: v for k, v in tree(two["dataB"]).items() if k != _manifest} == {
+        k: v for k, v in before.items() if k != _manifest
+    }, "the peer's content changed while adopting an unmodified copy"
     assert not (two["box_root"] / const.BOX_DATA_REL_PATH).exists(), (
         "the peer resurrected the plain tree"
     )

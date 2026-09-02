@@ -30,9 +30,13 @@ from nblite import nbl_export, show_doc; nbl_export();
 
 # %%
 #|top_export
+import shutil
 from pathlib import Path
 
+from ulid import ULID
+
 from boxyard import const
+from boxyard._enums import StorageFormat
 from boxyard._models import BoxMeta, BoxPart, get_boxyard_meta
 from boxyard._remote_index import find_remote_box_by_id
 from boxyard._utils.locking import (
@@ -147,31 +151,88 @@ await acquire_lock_async(
     _sync_lock, f"box sync ({box_index_name})", _lock_path, BOX_SYNC_LOCK_TIMEOUT
 )
 try:
-    await sync_helper(
-        rclone_config_path=config.rclone_config_path,
-        sync_direction=SyncDirection.PULL,
-        sync_setting=SyncSetting.FORCE,
-        local_path=box_meta.get_local_part_path(config, BoxPart.DATA),
-        local_sync_record_path=box_meta.get_local_sync_record_path(config, BoxPart.DATA),
-        remote=box_meta.storage_location,
-        remote_path=_remote_base / const.BOX_DATA_REL_PATH,
-        remote_sync_record_path=(
-            _sl_config.store_path
-            / const.SYNC_RECORDS_REL_PATH
-            / _remote_index_name
-            / f"{BoxPart.DATA.value}.rec"
-        ),
-        local_sync_backups_path=config.local_sync_backups_path,
-        remote_sync_backups_path=_sl_config.store_path / const.REMOTE_BACKUP_REL_PATH,
-        include_path=_include_path,
-        exclude_path=_exclude_path,
-        filters_path=_filters_path,
-        # The point of the command: what is thrown away must be recoverable.
-        delete_backup=False,
-        verbose=False,
-        show_rclone_progress=show_rclone_progress,
-        preserve_exec_perms=True,
-    )
+    # ---- restic-backed boxes take the repository, not the plain tree -------
+    #
+    # The plain path below force-pulls `boxes/<box>/data/`, which a converted
+    # box does not have: conversion purges it. `discard-local` is the command a
+    # person reaches for when a box is already in a bad state, so it failing
+    # with "directory not found" is the worst possible time -- it was one of the
+    # commands that left a machine with no way out.
+    #
+    # The promise is the same in both paths: what is thrown away must remain
+    # recoverable, so the local tree is COPIED ASIDE before the restore, exactly
+    # as `sync_helper` does with `delete_backup=False`.
+    if box_meta.storage_format is StorageFormat.RESTIC:
+        from boxyard._restic_sync import repo_for_box
+        from boxyard._restic import (
+            read_pointer,
+            require_restic_available,
+            pull as _restic_pull,
+            write_state as _restic_write_state,
+            count_tracked_files as _restic_count,
+            restic_excludes_from_rclone_file,
+        )
+
+        require_restic_available(config, f"discard local changes to '{box_index_name}'")
+
+        _repo = repo_for_box(config, box_meta, _remote_index_name)
+        _pointer = await read_pointer(
+            config.rclone_config_path, box_meta.storage_location,
+            _sl_config.store_path, _remote_index_name,
+        )
+        if _pointer is None:
+            raise ValueError(
+                f"Box '{box_index_name}' is a restic box with no data.snapshot "
+                f"pointer, so there is no remote version to take. Finish the "
+                f"conversion with `boxyard convert -r '{box_index_name}'` first."
+            )
+
+        _data_path = box_meta.get_local_part_path(config, BoxPart.DATA)
+        # The same layout `sync_helper` uses for `delete_backup=False`:
+        # `<local_sync_backups_path>/<ulid>/`, so one place holds everything
+        # this machine has ever had overwritten, however it was overwritten.
+        _backup_dir = config.local_sync_backups_path / str(ULID())
+        _backup_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(_data_path, _backup_dir, symlinks=True)
+
+        await _restic_pull(
+            _repo, _data_path,
+            target_snapshot=_pointer["snapshot"], base_snapshot=None,
+        )
+        _restic_write_state(
+            config.boxyard_data_path, box_index_name, _pointer["snapshot"],
+            files=await _restic_count(
+                _repo, _data_path,
+                excludes=restic_excludes_from_rclone_file(_exclude_path),
+                box_index_name=box_index_name,
+            ),
+        )
+    else:
+        await sync_helper(
+            rclone_config_path=config.rclone_config_path,
+            sync_direction=SyncDirection.PULL,
+            sync_setting=SyncSetting.FORCE,
+            local_path=box_meta.get_local_part_path(config, BoxPart.DATA),
+            local_sync_record_path=box_meta.get_local_sync_record_path(config, BoxPart.DATA),
+            remote=box_meta.storage_location,
+            remote_path=_remote_base / const.BOX_DATA_REL_PATH,
+            remote_sync_record_path=(
+                _sl_config.store_path
+                / const.SYNC_RECORDS_REL_PATH
+                / _remote_index_name
+                / f"{BoxPart.DATA.value}.rec"
+            ),
+            local_sync_backups_path=config.local_sync_backups_path,
+            remote_sync_backups_path=_sl_config.store_path / const.REMOTE_BACKUP_REL_PATH,
+            include_path=_include_path,
+            exclude_path=_exclude_path,
+            filters_path=_filters_path,
+            # The point of the command: what is thrown away must be recoverable.
+            delete_backup=False,
+            verbose=False,
+            show_rclone_progress=show_rclone_progress,
+            preserve_exec_perms=True,
+        )
 finally:
     _sync_lock.release()
 

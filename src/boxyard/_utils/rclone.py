@@ -574,7 +574,21 @@ async def rclone_purge(
     doing so. See the `orphaned-sync-backups` check in `boxyard doctor`.
     """
     source_str = f"{source}:{source_path}" if source else source_path
-    cmd = [get_rclone_binary(), "purge", "--config", rclone_config_path, source_str]
+    # `--links` for the same reason every sync/copy this module builds passes
+    # it: boxyard PUTS symlinks on the remote, so purge has to be able to see
+    # them to remove them. Without it, purging a directory that contains a
+    # symlink fails with "directory not empty" (measured, rclone v1.75.0), and
+    # the caller reads that as a genuine failure.
+    #
+    # It bites a remote whose backend stores symlinks AS symlinks -- a local
+    # path or an alias to one. On sftp, which is what the real yard uses,
+    # `--links` stores them as ordinary `.rclonelink` files that purge already
+    # removed, so this fixes the test harness and closes an asymmetry rather
+    # than explaining any leak seen in the field.
+    cmd = [
+        get_rclone_binary(), "purge", "--config", rclone_config_path,
+        "--links", source_str,
+    ]
     ret_code, stdout, stderr = await run_cmd_async(cmd)
     if ret_code != 0:
         raise RcloneFailed(cmd, ret_code, stdout, stderr)
