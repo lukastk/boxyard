@@ -1078,6 +1078,16 @@ is deliberately **additive-only** — it restores `+x` and never clears it. rest
 restores the literal mode, including clearing. So this is a capability upgrade,
 not just a removal.
 
+**Corrected after the fact, and the correction is the point.** The argument
+above is about STORAGE, and it was taken as sufficient. It was not: change
+DETECTION was blind to modes, so a `chmod +x` with no other edit reported the
+box SYNCED and the bit never reached the remote at all. For a while this section
+therefore described a replacement that stored modes better than the manifest and
+could not see one change — strictly worse than the manifest for the exact case
+the manifest existed for. It is true as written only because of the
+change-detection fix; see the change-detection audit appendix. A capability
+argued on one half of a property is not argued.
+
 **Decision:**
 
 - `preserve_exec_perms` is **skipped entirely** for restic-backed DATA. No
@@ -1684,8 +1694,14 @@ machine. Retargeting one, deleting one, deleting an empty directory, and every
 `.boxyard-perms.json` manifest for restic-backed boxes because restic carries
 Unix mode natively. That is true of STORAGE and was **not** true of DETECTION: a
 `chmod +x` with no other edit moved nothing, so the box reported SYNCED and the
-bit would never have reached the remote at all. The manifest was replaced by
-something that stored modes correctly and could not notice when one changed.
+bit would never have reached the remote at all.
+
+Put plainly: **the manifest was replaced by something that stored modes
+correctly and could not see one change — strictly worse than the manifest for
+the exact case the manifest existed for.** The replacement was justified on the
+storage property alone, and nobody checked the other half. §9.1 is now correct
+only because of this fix; before it, retiring the manifest was a regression
+dressed as a simplification.
 
 ### The common cause, and why it was the same bug three times
 
@@ -1783,11 +1799,77 @@ The source path is taken from the snapshot header `ls` already emits rather than
 from a separate `snapshot_source_path` call — process startup is what this
 costs, not tree size.
 
-**The cost, stated plainly.** A clean box goes from ~0.8 s to **~2.0 s at 600
-nodes and ~2.5 s at 7,300** — two restic invocations instead of one, and nearly
-flat in tree size because startup dominates. On a 15-minute loop over 590 boxes
-at concurrency 10 that is minutes, not hours, but it is a real regression in
-cost and worth knowing before the flip.
+### What a clean box costs, per pass
+
+An earlier draft of this section said "~0.8 s to ~2.0 s". That was wrong in the
+useful direction — it compared a bare `backup --dry-run` subprocess against the
+whole of `local_is_modified`, which already ran a second invocation before this
+change. Measured properly, for a box that is DUE, unchanged locally, and whose
+pointer has not moved:
+
+| invocation | why | 600 nodes | 7,320 nodes |
+|---|---|---|---|
+| `restic snapshots` | `parent_is_usable` — **pre-existing** | 0.70 s | 0.72 s |
+| `restic backup --dry-run` | the counters — **pre-existing** | 0.52 s | 0.75 s |
+| `restic ls` | the node comparison — **new** | 0.77 s | 0.85 s |
+| **total** | | **1.99 s** | **2.37 s** |
+
+So the honest before/after is **1.22 s → 1.99 s** and **1.47 s → 2.37 s**: one
+extra invocation, about +60%, not the 2.5× the earlier figure implied. Nearly
+flat in tree size, because process startup dominates.
+
+**It is paid per DUE box per pass, not by a subset.** The `data.snapshot` pointer
+answers the REMOTE side in bulk, but says nothing about local changes, and
+`get_status` calls `local_is_modified` before it can tell NEEDS_PULL from
+CONFLICT. There is no cheaper gate in front of it today.
+
+**All three invocations reach the repository.** Measured by removing the repo
+with a warm cache: `snapshots` and `ls` both fail (exit 10), so neither is served
+from restic's local metadata cache. These figures are from a LOCAL repository —
+against the real sftp remote every one of them additionally pays network
+latency, which is unmeasured here and may well dominate.
+
+Projected over a full pass at this machine's `max_concurrent_rclone_ops = 2`,
+DATA detection only, counting only boxes that are actually restic-backed:
+
+| restic boxes | before | after | added |
+|---|---|---|---|
+| 1 (today: the canary) | 1.2 s | 2.0 s | +0.8 s |
+| 100 | 1.0 min | 1.7 min | +0.6 min |
+| 596 (fully migrated) | 6.1 min | 9.9 min | **+3.8 min** |
+
+The cost therefore arrives gradually, with the migration, rather than at the
+flip.
+
+### A cheap local pre-gate is possible, and it is a decision rather than an oversight
+
+The expensive check only has to run when something might have changed locally. A
+walk of the tree taking `max(mtime, ctime)` of every node and comparing it with
+the `synced_at_unix` already recorded in the state file is a SOUND sufficient
+condition: measured, it sees all eleven shapes in the table, including both
+directions of `chmod` and a symlink retargeted in place.
+
+It costs **2.3 ms at 540 nodes, 22.7 ms at 7,260, and 154 ms at 50,040** —
+three orders of magnitude below the ~2 s of restic invocations.
+
+**`ctime` is what makes it sound, and the existing helper does not use it.**
+`check_last_time_modified` — the plain backend's walk, which
+`tree_modified_since` already wraps — is mtime-only, and a `chmod` moves ctime
+while leaving mtime alone (measured). Reusing it as the gate would reintroduce
+exactly the defect this change removes, one level up. Any gate must be a new
+ctime-aware walk.
+
+**What it does not buy.** The gate only helps a box nothing has touched. Any
+write anywhere in the tree — INCLUDING an excluded one, since creating
+`.DS_Store` or writing into `.venv/` bumps a directory's mtime — makes it say
+"maybe", and the full check runs and correctly reports clean. So it is fastest
+on the archival boxes and does least on the ones being actively worked in, which
+are the ones most likely to be due. Its polarity is safe either way: it may only
+ever skip the expensive check when nothing at all has been touched.
+
+It is NOT implemented. It changes the hot path of every sync, and the figures
+above are small enough that it should be a deliberate choice rather than
+something slipped in beside a correctness fix.
 
 Two failure paths resolve towards "changed", both exercised by tests: a parent
 snapshot that cannot be listed (forgotten by retention, or an unreachable
