@@ -1814,20 +1814,51 @@ pointer has not moved:
 | `restic ls` | the node comparison — **new** | 0.77 s | 0.85 s |
 | **total** | | **1.99 s** | **2.37 s** |
 
-So the honest before/after is **1.22 s → 1.99 s** and **1.47 s → 2.37 s**: one
-extra invocation, about +60%, not the 2.5× the earlier figure implied. Nearly
-flat in tree size, because process startup dominates.
+So the honest before/after ON A LOCAL REPOSITORY is **1.22 s → 1.99 s** and
+**1.47 s → 2.37 s**: one extra invocation, about +60%, not the 2.5× the earlier
+figure implied. Nearly flat in tree size, because process startup dominates.
+
+Against the real remote it is far smaller than that — see the sftp measurements
+below, where the new call is 21 ms against a pre-existing 2.2 s. The projection
+table further down is built from the LOCAL figures and therefore overstates this
+change's contribution; it is kept because it still bounds the per-box work, not
+because its delta column is the right number.
 
 **It is paid per DUE box per pass, not by a subset.** The `data.snapshot` pointer
 answers the REMOTE side in bulk, but says nothing about local changes, and
 `get_status` calls `local_is_modified` before it can tell NEEDS_PULL from
 CONFLICT. There is no cheaper gate in front of it today.
 
-**All three invocations reach the repository.** Measured by removing the repo
-with a warm cache: `snapshots` and `ls` both fail (exit 10), so neither is served
-from restic's local metadata cache. These figures are from a LOCAL repository —
-against the real sftp remote every one of them additionally pays network
-latency, which is unmeasured here and may well dominate.
+**All three invocations reach the repository** — measured by removing the repo
+with a warm cache, when `snapshots` and `ls` both fail (exit 10). But "reaches
+the repository" turned out not to predict what it COSTS there.
+
+**Measured against the real sftp remote, and it inverts the local result.**
+Warm cache, the canary's repository:
+
+| invocation | local repo | real sftp remote |
+|---|---|---|
+| `restic snapshots` (pre-existing) | 0.70 s | **2192 ms** (3041 ms cold) |
+| `restic ls` (new) | 0.77 s | **21 ms** |
+
+The NEW call costs 21 ms over the network — restic's on-disk cache absorbs the
+tree metadata even though the command still contacts the repository. **The local
+benchmark overstated this change's own regression by roughly 35×**, and the real
+cost of a clean box is the PRE-EXISTING `snapshots` call at 2.2 s, which
+`parent_is_usable` has always made.
+
+The lesson is not subtle: a local-filesystem repository makes every invocation
+look like process startup and hides which ones are latency-bound. Every figure
+in the table above is a lower bound of the wrong kind — it flatters the calls
+that hit the network hardest and penalises the one that does not.
+
+**A cold-cache ordering note.** `restic ls latest` on a cold cache exits 1 in
+22 ms — fast because it is FAILING, not because it is cheap; it works once
+`snapshots` has warmed the cache. This code passes an explicit snapshot id
+rather than `latest` (`["ls", "--json", "--long", snapshot]`), which locally
+succeeds on a cold cache in 664 ms, and a non-zero exit is read as "assume
+changed" either way. So the dependency does not bite here — but anyone
+reordering these calls, or switching to `latest`, should know it exists.
 
 Projected over a full pass at this machine's `max_concurrent_rclone_ops = 2`,
 DATA detection only, counting only boxes that are actually restic-backed:
