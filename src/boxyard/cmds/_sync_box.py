@@ -652,6 +652,13 @@ async def sync_box(
                 # converted box must not silently start storing `.venv/` and
                 # `node_modules/`.
                 excludes=restic_excludes_from_rclone_file(_rclone_exclude_path),
+                # Tells ADOPTION apart from EXCLUSION, which look identical from
+                # the filesystem: both are "no local tree, a snapshot on the
+                # remote". MISSING means a placement record says this box IS
+                # included here, so the tree has to be materialised.
+                checkout_missing=(
+                    _checkout_status.state == LocalCheckoutState.MISSING
+                ),
                 verbose=verbose,
             )
         elif sync_part in sync_choices:

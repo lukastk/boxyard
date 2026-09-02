@@ -175,6 +175,7 @@ async def sync_data_restic(
     sync_direction: SyncDirection | None = None,
     sync_setting: SyncSetting = SyncSetting.CAREFUL,
     excludes: list[str] | None = None,
+    checkout_missing: bool = False,
     verbose: bool = False,
 ) -> tuple[SyncStatus, bool]:
     """
@@ -278,12 +279,59 @@ async def sync_data_restic(
 
     remote_snapshot = pointer["snapshot"]
 
-    # Absent locally, present remotely, for DATA, means the box is not INCLUDED
-    # here. That is a deliberate choice a person made, and pulling it would undo
-    # `boxyard exclude` -- the same reading the plain path takes.
+    # Absent locally, present remotely. TWO states share that shape and only the
+    # placement record tells them apart -- getting this wrong is what made
+    # `boxyard include` report success and create nothing.
     if not data_path.is_dir():
-        _say(f"Box '{index_name}' is not included on this machine. Skipping DATA.")
-        return _status(SyncCondition.EXCLUDED, local_exists=False, remote_exists=True), False
+        if not checkout_missing:
+            # No placement, or placement EXCLUDED: the box is deliberately not
+            # here, and pulling it would undo `boxyard exclude`. The same
+            # reading the plain path takes.
+            _say(f"Box '{index_name}' is not included on this machine. Skipping DATA.")
+            return (
+                _status(SyncCondition.EXCLUDED, local_exists=False, remote_exists=True),
+                False,
+            )
+
+        # ADOPTION -- placement says INCLUDED here and the tree is not there
+        # yet (`LocalCheckoutState.MISSING`). `include` writes the placement
+        # FIRST, precisely so an interrupted adoption is recoverable, and then
+        # asks for this pull.
+        #
+        # The plain path needs no case for this because rclone creates the
+        # destination on the way past; restic has to be told. Without it,
+        # `include` fell into the EXCLUDED branch above, reported success,
+        # materialised nothing, and left `sync` telling the person to run
+        # `include` -- a loop with no exit. It is the whole migration story:
+        # convert on one machine, adopt on the next.
+        #
+        # `mark_pull_started` before the restore, so an adoption interrupted
+        # half-way resumes through the interrupted-restore branch above rather
+        # than looking like a torn local edit.
+        if sync_direction == SyncDirection.PUSH:
+            raise SyncUnsafe(
+                f"Box '{index_name}' has no local checkout to push -- it is "
+                f"being included on this machine. Pull it first."
+            )
+        _say(
+            f"Materialising '{index_name}' from snapshot "
+            f"{remote_snapshot[:8]}."
+        )
+        mark_pull_started(config.boxyard_data_path, index_name, remote_snapshot)
+        await pull(
+            repo, data_path, target_snapshot=remote_snapshot, base_snapshot=None
+        )
+        write_state(
+            config.boxyard_data_path, index_name, remote_snapshot,
+            files=await count_tracked_files(
+                repo, data_path, excludes=excludes, box_index_name=index_name
+            ),
+        )
+        _say(f"Materialised '{index_name}' at {remote_snapshot[:8]}.")
+        return (
+            _status(SyncCondition.NEEDS_PULL, local_exists=True, remote_exists=True),
+            True,
+        )
 
     state = read_state(config.boxyard_data_path, index_name)
     local_snapshot = (state or {}).get("snapshot")
