@@ -197,9 +197,6 @@ remote_conf_path = remote_box_path / const.BOX_CONF_REL_PATH
 
 # %%
 #|export
-if verbose:
-    print(f"Copying DATA from {storage_location}:{remote_data_path} to {dest_path}")
-
 # Create dest directory
 dest_path.mkdir(parents=True, exist_ok=True)
 
@@ -231,13 +228,24 @@ if _box_meta_for_format.storage_format is StorageFormat.RESTIC:
             f"pointer, so there is no snapshot to copy. Finish the conversion "
             f"with `boxyard convert -r '{box_index_name}'` first."
         )
+    _repo = repo_for_box(config, _box_meta_for_format, remote_index_name)
+    if verbose:
+        # Name the REPOSITORY and the snapshot, not `boxes/<box>/data`. That
+        # directory was purged at conversion, so printing it sent anyone
+        # debugging a failure to a path that cannot exist.
+        print(
+            f"Restoring DATA from {_repo.url} snapshot "
+            f"{_pointer['snapshot'][:8]} to {dest_path}"
+        )
     await _restic_pull(
-        repo_for_box(config, _box_meta_for_format, remote_index_name),
+        _repo,
         dest_path,
         target_snapshot=_pointer["snapshot"],
         base_snapshot=None,
     )
 else:
+    if verbose:
+        print(f"Copying DATA from {storage_location}:{remote_data_path} to {dest_path}")
     success, stdout, stderr = await rclone_copy(
         rclone_config_path=config.rclone_config_path.as_posix(),
         source=storage_location,
