@@ -333,5 +333,9 @@ def test_every_full_restore_reason_is_distinguishable():
         "full-base-forgotten",
         "full-path-mismatch",
         "full-diff-failed",
+        # `restic diff` named no file, so the difference is a mode or a symlink
+        # target -- neither of which it reports. Restoring the named files would
+        # restore nothing and leave the replica on the old metadata for ever.
+        "full-metadata-only",
         "diff",
     } == set(values)

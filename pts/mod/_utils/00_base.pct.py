@@ -27,7 +27,7 @@ import time
 from boxyard import const
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Coroutine
+from typing import Any, Callable, Coroutine
 
 import boxyard.config
 
@@ -424,10 +424,29 @@ def _ensure_suspend_watchdog() -> None:
     _suspend_watchdog = (loop, loop.create_task(_suspend_watchdog_loop()))
 
 
+async def _stream_stdout(proc, callback) -> tuple[bytes, bytes]:
+    """
+    Feed each stdout line to `callback` and keep none of it.
+
+    stderr is drained CONCURRENTLY. Reading stdout to completion first would
+    deadlock the moment a child filled its stderr pipe -- and restic writes
+    warnings there while it works.
+    """
+    stderr_task = asyncio.create_task(proc.stderr.read())
+    try:
+        async for raw in proc.stdout:
+            callback(raw.decode("utf-8", "replace").rstrip("\n"))
+    finally:
+        stderr = await stderr_task
+    await proc.wait()
+    return b"", stderr
+
+
 async def run_cmd_async(
     cmd: list[str],
     timeout: float | None = None,
     env: dict[str, str] | None = None,
+    stdout_line_callback: "Callable[[str], None] | None" = None,
 ) -> tuple[int, str, str]:
     """
     Run `cmd`, returning `(returncode, stdout, stderr)`.
@@ -443,6 +462,17 @@ async def run_cmd_async(
     the alternatives are worse: `--password-command` reruns a 1Password fetch on
     every invocation, and mutating `os.environ` would race with the other
     coroutines this function deliberately runs concurrently.
+
+    `stdout_line_callback` STREAMS stdout: each line is handed to the callback
+    as it arrives and nothing is accumulated, so the returned stdout is empty.
+    `None` (the default) buffers as before, which is what every caller but one
+    wants.
+
+    It exists because restic's change detection lists a whole snapshot's nodes
+    (`restic ls --json --long`) to compare them against the tree, and one real
+    box holds 688,000 files. That output is read once, node by node, to build a
+    map -- so buffering the raw text as well would double the peak for nothing.
+    Measured on the same shape: a 7,260-node tree emits 1.6 MB.
 
     Raises `CommandTimeout` if `timeout` is exceeded, or `SuspendInterruption`
     if the machine resumed from sleep mid-run. Both kill the whole process
@@ -462,7 +492,14 @@ async def run_cmd_async(
         _live_procs.add(proc)
         try:
             try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
+                if stdout_line_callback is None:
+                    stdout, stderr = await asyncio.wait_for(
+                        proc.communicate(), timeout
+                    )
+                else:
+                    stdout, stderr = await asyncio.wait_for(
+                        _stream_stdout(proc, stdout_line_callback), timeout
+                    )
             except (asyncio.TimeoutError, TimeoutError):
                 _kill_process_group(proc)
                 await proc.wait()

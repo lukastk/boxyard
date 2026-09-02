@@ -21,6 +21,7 @@ from ..config import get_config, StorageType
 from .._utils import (
     check_interrupted,
     enable_soft_interruption,
+    literal_exclude_names,
     SoftInterruption,
 )
 from .._utils.locking import BoxyardLockManager, LockAcquisitionError, BOX_SYNC_LOCK_TIMEOUT, acquire_lock_async
@@ -652,6 +653,10 @@ async def sync_box(
                 # converted box must not silently start storing `.venv/` and
                 # `node_modules/`.
                 excludes=restic_excludes_from_rclone_file(_rclone_exclude_path),
+                # The SAME literal names the plain backend's own mtime walk uses,
+                # from the box's effective exclude file -- so the two backends gate
+                # on the same set rather than two subtly different ones.
+                exclude_names=literal_exclude_names(_rclone_exclude_path),
                 # Tells ADOPTION apart from EXCLUSION, which look identical from
                 # the filesystem: both are "no local tree, a snapshot on the
                 # remote". MISSING means a placement record says this box IS

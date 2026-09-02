@@ -65,6 +65,8 @@ from nblite import nbl_export, show_doc; nbl_export();
 import contextlib
 import json
 import os
+import stat
+from datetime import datetime
 import shutil
 from dataclasses import dataclass, field
 from enum import Enum
@@ -352,6 +354,7 @@ async def run_restic(
     *,
     timeout: float | None = None,
     check: bool = True,
+    stdout_line_callback=None,
 ) -> tuple[int, str, str]:
     """
     Run one restic subcommand. Returns `(returncode, stdout, stderr)`.
@@ -365,7 +368,10 @@ async def run_restic(
     """
     cmd = repo.base_args() + args
     returncode, stdout, stderr = await run_cmd_async(
-        cmd, timeout=timeout, env=repo.env()
+        cmd,
+        timeout=timeout,
+        env=repo.env(),
+        stdout_line_callback=stdout_line_callback,
     )
     if returncode == const.RESTIC_EXIT_LOCK_FAILED:
         raise ResticLocked(
@@ -965,6 +971,79 @@ async def parent_is_usable(
     return source == os.path.abspath(str(data_path))
 
 
+# How far before `synced_at_unix` a timestamp still counts as "after it".
+#
+# Filesystem timestamp granularity is not always nanoseconds -- HFS+ records
+# whole seconds -- so a write that genuinely happened AFTER the recorded moment
+# can be stamped slightly before it. Without slack that edit would be gated out
+# and lost silently, which is the one outcome this whole area exists to prevent.
+# Two seconds costs an occasional unnecessary full check and nothing else.
+GATE_SLACK_SECONDS = 2.0
+
+
+def tree_touched_since(
+    data_path: Path,
+    since_unix: float,
+    exclude_names: "set[str] | None" = None,
+) -> bool:
+    """
+    Has anything under `data_path` been touched since `since_unix`?
+
+    The cheap gate in front of change detection, and a SUFFICIENT CONDITION
+    only: False means nothing was touched and the tree therefore still matches
+    the snapshot; True means "maybe", and the caller must do the real work.
+    Being wrong towards True costs one slow check. Being wrong towards False
+    loses an edit, silently, for ever -- so every uncertainty here resolves to
+    True.
+
+    `max(mtime, ctime)`, and the ctime is the entire point. `chmod` moves ctime
+    and leaves mtime alone (measured), so the plain backend's
+    `check_last_time_modified` -- which is mtime-only -- would reintroduce
+    exactly the defect the change-detection audit removed, one level up. It sees
+    all eleven shapes in that table, including both directions of `chmod` and a
+    symlink retargeted in place.
+
+    DIRECTORIES are stat-ed too, not just their entries: deleting a file leaves
+    nothing new to look at, and only its parent's mtime moves.
+
+    An unreadable directory RAISES rather than being skipped, for the same
+    reason `check_last_time_modified` does: swallowing the error would lower the
+    answer and gate out real changes underneath it. A directory that vanishes
+    mid-walk is a legitimate race and is tolerated.
+    """
+    exclude_names = exclude_names or set()
+    threshold = since_unix - GATE_SLACK_SECONDS
+    root = Path(data_path)
+    stack = [str(root)]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+            st = os.lstat(current)
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            raise OSError(
+                f"Cannot tell whether '{root}' has changed: '{current}' could "
+                f"not be read ({e}). Fix the permissions, or exclude it from "
+                f"the box."
+            ) from e
+        if max(st.st_mtime, st.st_ctime) > threshold:
+            return True
+        for entry in entries:
+            if entry.name in exclude_names:
+                continue
+            try:
+                est = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if max(est.st_mtime, est.st_ctime) > threshold:
+                return True
+            if entry.is_dir(follow_symlinks=False):
+                stack.append(entry.path)
+    return False
+
+
 def tree_modified_since(data_path: Path, since_unix: float) -> bool:
     """
     Repo-independent change detection, for when the recorded snapshot is gone.
@@ -1021,6 +1100,153 @@ def _backup_args(effective_path: Path, excludes: list[str] | None) -> list[str]:
     return args
 
 
+async def snapshot_nodes(
+    repo: ResticRepo, snapshot: str
+) -> dict[str, tuple] | None:
+    """
+    `{relative path: (type, mode, mtime)}` for the nodes a snapshot recorded.
+
+    Restic's OWN view, so the box's excludes are already applied -- which is the
+    reason this asks the repository rather than walking the tree and re-deciding
+    what `.venv/` means. A second implementation of the exclude rules would
+    drift, and a drifted exclude shows up as a box that is permanently
+    "modified" and pushes for ever.
+
+    A DIRECTORY's mtime is deliberately recorded as None. It changes whenever
+    anything is created or deleted inside it -- INCLUDING an excluded file, so a
+    `.DS_Store` appearing would otherwise mark the box modified on every pass on
+    both Macs. It also differs on any machine whose copy came from a restore,
+    which would leave every replica permanently dirty. Neither is a change to
+    the box.
+
+    Returns None if the snapshot cannot be listed -- forgotten by retention, or
+    the repository is unreachable -- which the caller must read as "cannot
+    tell", never as "unchanged".
+    """
+    nodes: dict[str, tuple] = {}
+    # `ls --json` opens with the snapshot itself, which carries the source path.
+    # Taking it from here rather than asking `snapshot_source_path` separately
+    # saves a whole restic invocation, and process startup is what this costs:
+    # measured, the check takes the same ~3 s on a 600-node box as on a 7,300
+    # node one.
+    prefix = ""
+
+    def _line(line: str) -> None:
+        nonlocal prefix
+        if not line.startswith("{"):
+            return
+        try:
+            node = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if node.get("struct_type") == "snapshot":
+            paths = node.get("paths") or []
+            if paths:
+                prefix = str(paths[0]).rstrip("/")
+            return
+        if node.get("struct_type") != "node" or not prefix:
+            return
+        path = node.get("path") or ""
+        if path == prefix:
+            rel = ""
+        elif path.startswith(prefix + "/"):
+            rel = path[len(prefix) + 1:]
+        else:
+            return  # an ancestor of the backup root; not part of the box
+        kind = node.get("type")
+        nodes[rel] = (
+            kind,
+            node.get("mode"),
+            None if kind == "dir" else node.get("mtime"),
+        )
+
+    returncode, _, _ = await run_restic(
+        repo,
+        ["ls", "--json", "--long", snapshot],
+        timeout=const.RESTIC_METADATA_TIMEOUT,
+        check=False,
+        stdout_line_callback=_line,
+    )
+    if returncode != 0:
+        return None
+    return nodes
+
+
+def local_nodes_differ(data_path: Path, expected: dict[str, tuple]) -> bool:
+    """
+    Does the tree at `data_path` still match what the snapshot recorded?
+
+    Compares TYPE, MODE and -- for everything except directories -- MTIME. That
+    combination is what restic's own counters cannot express: a symlink is
+    neither a file nor a directory, so nothing about one moves `files_new`,
+    `files_changed` or `dirs_new`, and a mode lives in metadata rather than in
+    content so changing one rewrites no file.
+
+    Retargeting a symlink in place is caught by its MTIME: measured, `ln -sfn`
+    moves it, and nothing else about the node changes.
+
+    New nodes are found by listing each directory the snapshot recorded, and
+    only SYMLINKS count as an addition here -- new files and new directories
+    already move `files_new` and `dirs_new`, and counting every unrecorded entry
+    would report excluded ones (a `.DS_Store`, a `.pyc`) as changes.
+    """
+    root = Path(data_path)
+    for rel, (kind, mode, mtime) in expected.items():
+        path = root / rel if rel else root
+        try:
+            st = path.lstat()
+        except FileNotFoundError:
+            return True  # recorded, and gone: a deleted symlink, file or dir
+        except OSError:
+            return True
+        actual_kind = (
+            "symlink" if stat.S_ISLNK(st.st_mode)
+            else "dir" if stat.S_ISDIR(st.st_mode)
+            else "file"
+        )
+        if actual_kind != kind:
+            return True
+        if mode is not None and stat.S_IMODE(st.st_mode) != stat.S_IMODE(mode):
+            return True
+        if mtime is not None and not _mtime_matches(st.st_mtime, mtime):
+            return True
+
+    recorded = set(expected)
+    for rel, (kind, _mode, _mtime) in expected.items():
+        if kind != "dir":
+            continue
+        directory = root / rel if rel else root
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            return True
+        for entry in entries:
+            if not entry.is_symlink():
+                continue
+            child = f"{rel}/{entry.name}" if rel else entry.name
+            if child not in recorded:
+                return True
+    return False
+
+
+def _mtime_matches(local_epoch: float, recorded: str | None) -> bool:
+    """Compare a filesystem mtime with restic's RFC3339 string, to the second.
+
+    To the SECOND on purpose: restic records nanoseconds, and several
+    filesystems and every `rsync`-like copy round the fraction differently. A
+    sub-second difference is never a change a person made, and treating one as a
+    change would push on every pass.
+    """
+    if not recorded:
+        return True
+    try:
+        text = recorded.replace("Z", "+00:00")
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        return True  # unparseable: do not manufacture a change from it
+    return int(when.timestamp()) == int(local_epoch)
+
+
 async def local_is_modified(
     repo: ResticRepo,
     data_path: Path,
@@ -1030,10 +1256,33 @@ async def local_is_modified(
     excludes: list[str] | None = None,
     box_index_name: str | None = None,
     expected_files: int | None = None,
+    exclude_names: "set[str] | None" = None,
 ) -> bool:
     """
     Does this machine hold DATA changes the remote has not seen?
     """
+    # THE CHEAP GATE, and it is parity rather than an optimisation.
+    #
+    # The plain backend has always short-circuited on a local mtime walk and
+    # NEVER contacted the remote when nothing was touched. Measured on mymain
+    # against the live remote: a no-op DATA sync of jackfruit-hq -- 1,419,522
+    # files -- takes 8 SECONDS, on a box whose real passes take 7-10 hours.
+    #
+    # Without this, restic loses the unchanged case AT EVERY SIZE, because it
+    # pays ~2.2 s for `restic snapshots` regardless: measured, a 42-file restic
+    # box took 11 s against that 1.4-million-file plain box's 8 s. Unchanged is
+    # the overwhelming majority of passes on almost every box, so the comparison
+    # that matters is the one restic was losing.
+    #
+    # SUFFICIENT CONDITION ONLY. Nothing touched => the tree still matches the
+    # snapshot => skip the three remote calls. Anything touched -- INCLUDING an
+    # excluded write, which bumps a directory's mtime -- falls through to the
+    # full check, which then answers correctly. The gate may only ever skip work
+    # when nothing at all has been touched.
+    if parent_snapshot is not None and synced_at_unix is not None:
+        if not tree_touched_since(data_path, synced_at_unix, exclude_names):
+            return False
+
     with _backup_path(box_index_name, data_path) as (effective_path, _):
         if parent_snapshot and not await parent_is_usable(
             repo, parent_snapshot, effective_path
@@ -1054,36 +1303,57 @@ async def local_is_modified(
 
         returncode, stdout, _ = await run_restic(repo, args, check=False)
 
-    if returncode != 0:
-        return True  # cannot tell -> assume changed
+        if returncode != 0:
+            return True  # cannot tell -> assume changed
 
-    for line in stdout.splitlines():
-        try:
-            message = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if message.get("message_type") == "summary":
-            if (
-                message.get("files_new")
-                or message.get("files_changed")
-                or message.get("dirs_new")
-            ):
-                return True
-            # DELETIONS. `backup --dry-run` walks the tree, so a file that has
-            # been removed is simply not seen: measured, deleting one of three
-            # files gives `files_new=0, files_changed=0, files_unmodified=2` --
-            # indistinguishable from a no-op by those fields alone, so a box
-            # whose only change is a deletion would never push.
-            #
-            # `total_files_processed` does move (3 -> 2), and the count the
-            # parent snapshot held was recorded when it was pushed, so the
-            # comparison costs nothing. A record without it -- written before
-            # this existed -- returns "changed", which costs one sync rather
-            # than losing a deletion.
-            if expected_files is None:
-                return True
-            return message.get("total_files_processed") != expected_files
-    return True
+        summary: dict = {}
+        for line in stdout.splitlines():
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if message.get("message_type") == "summary":
+                summary = message
+                break
+
+        if not summary:
+            return True
+
+        # Restic's counters, which are ANCESTOR-IMMUNE -- measured: writing an
+        # unrelated file in the box's parent directory moves none of them. That
+        # rules out every "did anything change" field restic reports, because
+        # `tree_blobs`, `dirs_changed` and `data_added` all move for activity
+        # ABOVE the box, and the canonical root lives under `/tmp`.
+        if (
+            summary.get("files_new")
+            or summary.get("files_changed")
+            or summary.get("dirs_new")
+        ):
+            return True
+        if (
+            expected_files is not None
+            and summary.get("total_files_processed") != expected_files
+        ):
+            return True
+
+        # ...and what those counters CANNOT express. They count node KINDS, so
+        # a symlink -- neither a file nor a directory -- moves none of them, and
+        # neither does a mode, which lives in metadata rather than content.
+        # Measured misses: adding a symlink, retargeting one, deleting one,
+        # deleting an empty directory, and every `chmod` including the exec bit.
+        # Six shapes, of which only the first was ever reported.
+        #
+        # So the remaining question is asked against the snapshot's own node
+        # list. It runs only when the cheap counters have already said "clean",
+        # which is the common case for a box nobody has touched.
+        if parent_snapshot is None:
+            return False
+        expected = await snapshot_nodes(repo, parent_snapshot)
+        if not expected:
+            # Unlistable, or listed nothing: either way nothing is known, and
+            # "assume changed" costs a sync rather than losing work.
+            return True
+        return local_nodes_differ(data_path, expected)
 
 # %% [markdown]
 # ## Status
@@ -1161,6 +1431,7 @@ async def get_status(
     excludes: list[str] | None = None,
     box_index_name: str | None = None,
     expected_files: int | None = None,
+    exclude_names: "set[str] | None" = None,
 ) -> ResticStatus:
     """
     Map (remote pointer, local record, local tree) onto a condition.
@@ -1180,6 +1451,7 @@ async def get_status(
         excludes=excludes,
         box_index_name=box_index_name,
         expected_files=expected_files,
+        exclude_names=exclude_names,
     )
 
     if local_snapshot == remote_snapshot:
@@ -1340,6 +1612,13 @@ class PullMode(Enum):
     FULL_PATH_MISMATCH = "full-path-mismatch"
     # `restic diff` itself failed.
     FULL_DIFF_FAILED = "full-diff-failed"
+    # The snapshots differ but `restic diff` named no file: the change is
+    # METADATA only -- a mode, or a symlink's target. Measured (restic 0.18.0):
+    # after a `chmod` or an `ln -sfn` retarget, diff reports "0 new, 0 removed,
+    # 0 changed" and moves only tree blobs. Restoring the named files would
+    # therefore restore nothing and the replica would silently keep the old mode
+    # for ever, so this falls back to a full restore.
+    FULL_METADATA_ONLY = "full-metadata-only"
     DIFF = "diff"
 
 
@@ -1480,6 +1759,18 @@ async def pull(
         return await _full(PullMode.FULL_DIFF_FAILED)
 
     changed, removed = parse_diff(stdout, target_source)
+
+    if not changed and not removed:
+        # The two snapshots are not the same, or this function would not have
+        # been called with different ids -- so a diff that names nothing means
+        # the difference is metadata `restic diff` does not report. Restoring
+        # the named files would restore NOTHING and leave the replica holding
+        # the old mode or the old symlink target, permanently and silently.
+        #
+        # This is the same blindness as the detection side: `restic diff`
+        # reports FILES, and a mode is not a file. Found by an end-to-end test
+        # where a `chmod +x` pushed correctly and never arrived.
+        return await _full(PullMode.FULL_METADATA_ONLY)
 
     if changed:
         await run_restic(

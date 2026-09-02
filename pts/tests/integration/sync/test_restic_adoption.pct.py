@@ -377,3 +377,89 @@ def test_include_refuses_when_restic_is_missing(converted_on_A, monkeypatch):
     cfgB = get_config_(cpB)
     dataB = data_of(cfgB, converted_on_A["idx"])
     assert not dataB.exists(), "a refused include left a directory behind"
+
+
+# %% [markdown]
+# ## A symlink-only change, end to end
+#
+# The unit audit in `test_change_detection.py` proves the predicate sees each
+# kind of change. This proves the whole command does — reported from a real
+# machine as `boxyard sync -c data` answering "DATA is up to date" with two
+# unpushed symlinks sitting in the box, and not self-correcting.
+
+# %%
+#|export
+def test_a_symlink_only_change_pushes_and_reaches_the_other_machine(converted_on_A):
+    """
+    Add symlinks and change NOTHING else, then sync. The box must push, and the
+    second machine must receive them AS symlinks.
+    """
+    cpA, cpB = converted_on_A["cpA"], converted_on_A["cpB"]
+    idx = converted_on_A["idx"]
+    run(sync_missing_boxmetas(config_path=cpB, verbose=False))
+    run(include_box(config_path=cpB, box_index_name=idx))
+
+    dataA = converted_on_A["dataA"]
+    (dataA / "link-to-keep").symlink_to("nested/deep/buried.txt")
+    (dataA / "alias-nested").symlink_to("nested")
+
+    results = run(sync_box(config_path=cpA, box_index_name=idx, verbose=False))
+    assert results[BoxPart.DATA][0].sync_condition is not SyncCondition.SYNCED, (
+        "a box with two unpushed symlinks reported itself up to date"
+    )
+
+    run(sync_box(config_path=cpB, box_index_name=idx, verbose=False))
+    dataB = data_of(get_config_(cpB), idx)
+
+    assert (dataB / "link-to-keep").is_symlink(), "arrived as a copy, not a link"
+    assert os.readlink(dataB / "link-to-keep") == "nested/deep/buried.txt"
+    assert (dataB / "alias-nested").is_symlink()
+    assert (dataB / "alias-nested" / "deep" / "buried.txt").read_text() == "buried\n", (
+        "the symlink does not resolve on the machine that received it"
+    )
+
+
+def test_retargeting_a_symlink_and_nothing_else_pushes(converted_on_A):
+    """
+    Same name, different target: nothing added, nothing removed, no file
+    content touched. This one was never reported -- it came out of the audit.
+    """
+    cpA, cpB = converted_on_A["cpA"], converted_on_A["cpB"]
+    idx = converted_on_A["idx"]
+    run(sync_missing_boxmetas(config_path=cpB, verbose=False))
+    run(include_box(config_path=cpB, box_index_name=idx))
+
+    dataA = converted_on_A["dataA"]
+    link = dataA / "nested" / "link-to-notes"
+    assert link.is_symlink(), "precondition: the box ships with a symlink"
+    link.unlink()
+    link.symlink_to("deep/buried.txt")
+
+    results = run(sync_box(config_path=cpA, box_index_name=idx, verbose=False))
+    assert results[BoxPart.DATA][0].sync_condition is not SyncCondition.SYNCED
+
+    run(sync_box(config_path=cpB, box_index_name=idx, verbose=False))
+    dataB = data_of(get_config_(cpB), idx)
+    assert os.readlink(dataB / "nested" / "link-to-notes") == "deep/buried.txt"
+
+
+def test_a_chmod_only_change_pushes(converted_on_A):
+    """
+    The exec bit and nothing else. Worth its own end-to-end case: the design
+    retires the perms manifest for restic boxes because restic carries mode
+    natively, which was true of STORAGE and was not true of DETECTION -- so a
+    `chmod +x` alone would never have reached the remote at all.
+    """
+    cpA, cpB = converted_on_A["cpA"], converted_on_A["cpB"]
+    idx = converted_on_A["idx"]
+    run(sync_missing_boxmetas(config_path=cpB, verbose=False))
+    run(include_box(config_path=cpB, box_index_name=idx))
+
+    (converted_on_A["dataA"] / "notes.md").chmod(0o755)
+
+    results = run(sync_box(config_path=cpA, box_index_name=idx, verbose=False))
+    assert results[BoxPart.DATA][0].sync_condition is not SyncCondition.SYNCED
+
+    run(sync_box(config_path=cpB, box_index_name=idx, verbose=False))
+    dataB = data_of(get_config_(cpB), idx)
+    assert stat.S_IMODE((dataB / "notes.md").lstat().st_mode) == 0o755

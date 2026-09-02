@@ -175,6 +175,7 @@ async def sync_data_restic(
     sync_direction: SyncDirection | None = None,
     sync_setting: SyncSetting = SyncSetting.CAREFUL,
     excludes: list[str] | None = None,
+    exclude_names: "set[str] | None" = None,
     checkout_missing: bool = False,
     verbose: bool = False,
 ) -> tuple[SyncStatus, bool]:
@@ -455,6 +456,10 @@ async def sync_data_restic(
         excludes=excludes,
         box_index_name=index_name,
         expected_files=expected_files,
+        # Literal exclude names for the cheap gate. Without them a `.DS_Store`
+        # or a write inside `.venv/` makes the gate say "maybe" and the box pays
+        # the full check every pass -- correct, but it gates nothing.
+        exclude_names=exclude_names,
     )
     condition = restic_status.condition
 

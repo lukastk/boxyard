@@ -415,16 +415,27 @@ def test_an_unchanged_box_is_not_reported_as_modified(repo, data):
     )
 
 
-def test_a_missing_file_count_assumes_changed(repo, data):
+def test_a_missing_file_count_no_longer_forces_a_push(repo, data):
     """
-    `backup --dry-run` cannot see a DELETION, so the file count recorded at push
-    time is what catches one. A state record without it -- written before the
-    field existed -- must therefore read as CHANGED: that costs one redundant
-    snapshot, once, and then the count is recorded. Reading it as unchanged
-    would lose deletions silently and forever.
+    This used to assert the opposite, and the change is an improvement rather
+    than a relaxation.
+
+    The file count recorded at push time was once the ONLY way to notice a
+    deletion, so a state record without it -- written before that field existed
+    -- had to be read as CHANGED. The predicate now also compares the snapshot's
+    own node list against the tree, which sees a deletion directly, so a missing
+    count no longer costs a redundant snapshot on an untouched box.
+
+    A deletion is still caught with no count at all, which is the part that
+    matters and is asserted here rather than assumed.
     """
     result = run(push(repo, data))
-    assert run(local_is_modified(repo, data, result.snapshot_id)) is True
+    assert run(local_is_modified(repo, data, result.snapshot_id)) is False
+
+    (data / "sub" / "doomed.txt").unlink()
+    assert run(local_is_modified(repo, data, result.snapshot_id)) is True, (
+        "a deletion must be seen even when no file count was recorded"
+    )
 
 
 def test_a_deletion_is_detected_by_the_file_count(repo, data):

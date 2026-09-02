@@ -1078,6 +1078,16 @@ is deliberately **additive-only** — it restores `+x` and never clears it. rest
 restores the literal mode, including clearing. So this is a capability upgrade,
 not just a removal.
 
+**Corrected after the fact, and the correction is the point.** The argument
+above is about STORAGE, and it was taken as sufficient. It was not: change
+DETECTION was blind to modes, so a `chmod +x` with no other edit reported the
+box SYNCED and the bit never reached the remote at all. For a while this section
+therefore described a replacement that stored modes better than the manifest and
+could not see one change — strictly worse than the manifest for the exact case
+the manifest existed for. It is true as written only because of the
+change-detection fix; see the change-detection audit appendix. A capability
+argued on one half of a property is not argued.
+
 **Decision:**
 
 - `preserve_exec_perms` is **skipped entirely** for restic-backed DATA. No
@@ -1635,6 +1645,390 @@ method: *a mutation that does not express what its name claims is a false
 negative the "did the mutation land" check cannot catch.* Verifying that the
 mutated line reached `src/` proves the edit happened, not that the edit meant
 what you thought.
+
+---
+
+## Appendix: the change-detection audit
+
+Three defects in this predicate were found by RUNNING boxyard and none by the
+suite — deletions, adoption, then symlinks. Rather than patch the third, here is
+what a box can contain, what can change about it, and whether the predicate sees
+it. Measured against restic 0.18.0 with boxyard's own flags
+(`--no-scan --ignore-inode`), a real parent snapshot of the same tree in place,
+and the mutation applied to that tree rather than a rebuild — a rebuild changes
+every mtime and makes everything look changed, which is how the first version of
+this table came out wrong.
+
+### The table
+
+`OLD` is the predicate as shipped in 0.7.1: `files_new or files_changed or
+dirs_new`, then `total_files_processed` against the count recorded at push.
+
+| what changed | files_new | files_changed | dirs_new | OLD | NEW |
+|---|---|---|---|---|---|
+| nothing | 0 | 0 | 0 | clean ✓ | clean ✓ |
+| add a regular file | 1 | 0 | 0 | sees ✓ | sees ✓ |
+| add an empty file | 1 | 0 | 0 | sees ✓ | sees ✓ |
+| edit file content | 0 | 1 | 0 | sees ✓ | sees ✓ |
+| touch only (same bytes) | 0 | 1 | 0 | sees ✓ | sees ✓ |
+| delete a regular file | 0 | 0 | 0 | sees ✓ (count) | sees ✓ |
+| rename a file | 1 | 0 | 0 | sees ✓ | sees ✓ |
+| add a nested file | 1 | 0 | 0 | sees ✓ | sees ✓ |
+| **add a symlink → file** | 0 | 0 | 0 | **MISSES** | sees ✓ |
+| **add a symlink → dir** | 0 | 0 | 0 | **MISSES** | sees ✓ |
+| **retarget a symlink in place** | 0 | 0 | 0 | **MISSES** | sees ✓ |
+| **delete a symlink** | 0 | 0 | 0 | **MISSES** | sees ✓ |
+| replace a file with a symlink | 0 | 0 | 0 | sees ✓ (count) | sees ✓ |
+| add an empty directory | 0 | 0 | 1 | sees ✓ | sees ✓ |
+| **delete an empty directory** | 0 | 0 | 0 | **MISSES** | sees ✓ |
+| rename a directory | 1 | 0 | 1 | sees ✓ | sees ✓ |
+| **chmod 644 → 600** | 0 | 0 | 0 | **MISSES** | sees ✓ |
+| **chmod 644 → 755 (exec bit)** | 0 | 0 | 0 | **MISSES** | sees ✓ |
+| **chmod 755 → 644** | 0 | 0 | 0 | **MISSES** | sees ✓ |
+
+**Six missed shapes, not one.** Only adding a symlink was reported from a real
+machine. Retargeting one, deleting one, deleting an empty directory, and every
+`chmod` came out of building the table.
+
+**The exec-bit row deserves saying out loud.** §9.1 retires the
+`.boxyard-perms.json` manifest for restic-backed boxes because restic carries
+Unix mode natively. That is true of STORAGE and was **not** true of DETECTION: a
+`chmod +x` with no other edit moved nothing, so the box reported SYNCED and the
+bit would never have reached the remote at all.
+
+Put plainly: **the manifest was replaced by something that stored modes
+correctly and could not see one change — strictly worse than the manifest for
+the exact case the manifest existed for.** The replacement was justified on the
+storage property alone, and nobody checked the other half. §9.1 is now correct
+only because of this fix; before it, retiring the manifest was a regression
+dressed as a simplification.
+
+### The common cause, and why it was the same bug three times
+
+`files_new`, `files_changed` and `dirs_new` count **node kinds**. A symlink is
+neither a file nor a directory, so nothing that happens to one moves them. An
+empty directory contains no files, so losing one moves no file count. A mode
+lives in a node's metadata, not in its content, so changing one rewrites no
+file. Every miss is the same mistake: counting the kinds of thing restic
+reports instead of asking whether the box changed.
+
+### Two designs were written and thrown away, both for FALSE POSITIVES
+
+A predicate that answers "changed" to everything sees all six missed shapes and
+is useless: every box pushes on every pass, and a replica that cannot push sits
+permanently dirty with nothing able to clear it. Both rejected designs failed
+there, and both were caught by tests rather than by reasoning.
+
+**Rejected 1: `tree_blobs > 1`.** A directory's tree object is a Merkle node
+over every child's name, type, mode, size, content hash and symlink target, so
+restic writes a new one exactly when any of those changes plus one per ancestor.
+Measured: exactly 1 for a no-op at depths 0 to 5 and trees from 1 to 200 files,
+4 or more for every row in the table. A perfect discriminator — and wrong,
+because a snapshot records the **whole path chain**:
+
+```
+after push, nothing changed                     tree_blobs = 1
+after writing an UNRELATED file in the PARENT   tree_blobs = 3
+after touching a GRANDPARENT directory          tree_blobs = 3
+after a real change inside the box              tree_blobs = 5
+```
+
+The canonical root lives under `/tmp`, which changes constantly, so this would
+have reported **every box as modified on every pass, for ever**. Caught by the
+adoption integration tests going red — a freshly adopted box reported
+NEEDS_PUSH.
+
+Every summary field was then measured against both questions at once, and none
+answers both:
+
+| | fields |
+|---|---|
+| ancestor-immune but BLIND | `files_new`, `files_changed`, `dirs_new`, `files_unmodified`, `total_files_processed`, `total_bytes_processed`, `data_blobs` |
+| sensitive but POLLUTED | `tree_blobs`, `dirs_changed`, `dirs_unmodified`, `data_added`, `data_added_packed` |
+
+**Rejected 2: the per-item stream.** `backup --dry-run --json -v` reports each
+item with an action of `unchanged`/`new`/`modified`/`deleted`, and the path says
+whether it was inside the box — ancestor-immune, and restic applies the
+excludes. It was implemented, and `run_cmd_async` grew a streaming
+`stdout_line_callback` for it, because `-v` emits one line per item: 1.6 MB of
+stdout for 7,260 nodes, and one real box holds 688,000 files.
+
+Then measurement killed it. **Restic never reports a symlink as an item at all**,
+and a file's `chmod` marks only its containing directory, so the ONLY signal for
+either is the DIRECTORY being `modified` — and an excluded file's touch bumps
+that same directory's mtime and is reported identically. `-vv` adds nothing.
+
+```
+after ADDING a symlink            modified  <box>/
+after chmod on a file             modified  <box>/
+after touching an EXCLUDED file   modified  <box>/     <- indistinguishable
+```
+
+`.DS_Store` is excluded and Finder writes one into every directory it displays,
+so on both Macs this would have pushed on every pass. The streaming callback
+outlived the design it was built for: `restic ls` on a 688,000-file box has the
+same problem, and that is what shipped, so it is still load-bearing.
+
+### What ships: the snapshot's own node list, compared against the tree
+
+Restic's counters answer the cheap half and are ancestor-immune, so they run
+first: `files_new`, `files_changed`, `dirs_new`, and the recorded file count for
+deletions. When they say "clean", the remaining question — the six shapes they
+cannot express — is asked against `restic ls --json --long <parent>`:
+
+- **type, mode and mtime per node**, compared with `lstat`. Mode catches every
+  `chmod`; a missing node catches a deleted symlink or empty directory; and
+  mtime catches a symlink **retargeted in place**, which changes nothing else
+  about the node (measured: `ln -sfn` moves its mtime).
+- **A directory's own mtime is deliberately ignored.** It moves whenever
+  anything is created or deleted inside it, including an excluded file, and it
+  differs on every machine whose copy came from a restore. Counting it is what
+  makes replicas permanently dirty.
+- **New symlinks** are found by listing each directory the snapshot recorded.
+  Only symlinks count as an addition — new files and directories already move
+  `files_new`/`dirs_new`, and treating every unrecorded entry as a change would
+  report excluded ones.
+
+Excludes are never re-implemented: the expected set is restic's own view of what
+it stored, so `.venv/` and `node_modules/` are already absent, and an excluded
+directory is never descended into because it was never recorded. A second
+implementation of the exclude rules would drift, and a drifted exclude shows up
+as a box that pushes for ever.
+
+The source path is taken from the snapshot header `ls` already emits rather than
+from a separate `snapshot_source_path` call — process startup is what this
+costs, not tree size.
+
+### What a clean box costs, per pass
+
+An earlier draft of this section said "~0.8 s to ~2.0 s". That was wrong in the
+useful direction — it compared a bare `backup --dry-run` subprocess against the
+whole of `local_is_modified`, which already ran a second invocation before this
+change. Measured properly, for a box that is DUE, unchanged locally, and whose
+pointer has not moved:
+
+| invocation | why | 600 nodes | 7,320 nodes |
+|---|---|---|---|
+| `restic snapshots` | `parent_is_usable` — **pre-existing** | 0.70 s | 0.72 s |
+| `restic backup --dry-run` | the counters — **pre-existing** | 0.52 s | 0.75 s |
+| `restic ls` | the node comparison — **new** | 0.77 s | 0.85 s |
+| **total** | | **1.99 s** | **2.37 s** |
+
+So the honest before/after ON A LOCAL REPOSITORY is **1.22 s → 1.99 s** and
+**1.47 s → 2.37 s**: one extra invocation, about +60%, not the 2.5× the earlier
+figure implied. Nearly flat in tree size, because process startup dominates.
+
+Against the real remote it is far smaller than that — see the sftp measurements
+below, where the new call is 21 ms against a pre-existing 2.2 s. The projection
+table further down is built from the LOCAL figures and therefore overstates this
+change's contribution; it is kept because it still bounds the per-box work, not
+because its delta column is the right number.
+
+**It is paid per DUE box per pass, not by a subset.** The `data.snapshot` pointer
+answers the REMOTE side in bulk, but says nothing about local changes, and
+`get_status` calls `local_is_modified` before it can tell NEEDS_PULL from
+CONFLICT. There is no cheaper gate in front of it today.
+
+**All three invocations reach the repository** — measured by removing the repo
+with a warm cache, when `snapshots` and `ls` both fail (exit 10). But "reaches
+the repository" turned out not to predict what it COSTS there.
+
+**Measured against the real sftp remote, and it inverts the local result.**
+Warm cache, the canary's repository:
+
+| invocation | local repo | real sftp remote |
+|---|---|---|
+| `restic snapshots` (pre-existing) | 0.70 s | **2192 ms** (3041 ms cold) |
+| `restic ls` (new) | 0.77 s | **21 ms** |
+
+The NEW call costs 21 ms over the network — restic's on-disk cache absorbs the
+tree metadata even though the command still contacts the repository. **The local
+benchmark overstated this change's own regression by roughly 35×**, and the real
+cost of a clean box is the PRE-EXISTING `snapshots` call at 2.2 s, which
+`parent_is_usable` has always made.
+
+The lesson is not subtle: a local-filesystem repository makes every invocation
+look like process startup and hides which ones are latency-bound. Every figure
+in the table above is a lower bound of the wrong kind — it flatters the calls
+that hit the network hardest and penalises the one that does not.
+
+**A cold-cache ordering note.** `restic ls latest` on a cold cache exits 1 in
+22 ms — fast because it is FAILING, not because it is cheap; it works once
+`snapshots` has warmed the cache. This code passes an explicit snapshot id
+rather than `latest` (`["ls", "--json", "--long", snapshot]`), which locally
+succeeds on a cold cache in 664 ms, and a non-zero exit is read as "assume
+changed" either way. So the dependency does not bite here — but anyone
+reordering these calls, or switching to `latest`, should know it exists.
+
+Projected over a full pass at this machine's `max_concurrent_rclone_ops = 2`,
+DATA detection only, counting only boxes that are actually restic-backed:
+
+| restic boxes | before | after | added |
+|---|---|---|---|
+| 1 (today: the canary) | 1.2 s | 2.0 s | +0.8 s |
+| 100 | 1.0 min | 1.7 min | +0.6 min |
+| 596 (fully migrated) | 6.1 min | 9.9 min | **+3.8 min** |
+
+The cost therefore arrives gradually, with the migration, rather than at the
+flip.
+
+### The cheap gate — parity with the plain backend, not an optimisation
+
+An earlier draft of this section described the gate as an optional speed-up and
+declined to build it. That was wrong, and the measurement that settles it was
+taken on mymain against the live remote:
+
+```
+boxyard sync -r <jackfruit-hq> -c data     1,419,522 files
+  -> "Sync not needed."                    8 SECONDS
+```
+
+Eight seconds, on a box whose real passes take 7-10 hours. **The plain backend
+short-circuits on a local walk and never contacts the remote when nothing was
+touched.** The hours only happen when something HAS changed and 1.4 million
+remote objects must be reconciled.
+
+Against that, restic without a gate loses the unchanged case **at every size**,
+because it pays for `restic snapshots` regardless:
+
+| same machine, same remote | result |
+|---|---|
+| plain, 1,419,522 files, nothing changed | **8 s** (no remote contact) |
+| restic, 42 files, nothing changed | **11 s** (3 remote calls) |
+
+A box 34,000× smaller, and slower. Unchanged is the overwhelming majority of
+passes on almost every box, so this was the comparison that mattered and restic
+was losing it. The gate is therefore parity with what plain has always had.
+
+**What it is.** A walk taking `max(mtime, ctime)` of every node, compared with
+the `synced_at_unix` already in the state record. Nothing touched ⇒ the tree
+still matches the snapshot ⇒ skip all three remote calls.
+
+**`ctime` is the whole difference, and reusing the plain walk would have been
+the same bug one level up.** `check_last_time_modified` is mtime-only, and a
+`chmod` moves ctime while leaving mtime alone. The gate sees all eleven shapes
+in the audit table, including both directions of `chmod` and a symlink
+retargeted in place.
+
+**The polarity is the contract**, and it is stated in tests rather than in
+comments: the gate may only ever skip the check when NOTHING has been touched. A
+false "maybe" costs a slow check; a false "no" loses an edit, silently, for
+ever. Every uncertainty resolves to "maybe" — an unreadable directory raises
+rather than lowering the answer, and a missing `synced_at_unix` disables the
+gate entirely.
+
+**`GATE_SLACK_SECONDS = 2.0`**, because filesystem timestamp granularity is not
+always nanoseconds — HFS+ records whole seconds — so a write that genuinely
+happened after the recorded moment can be stamped just before it. Without slack
+that edit is gated away and lost.
+
+**What the exclude names do and do not buy**, measured:
+
+| | gated out? |
+|---|---|
+| a write deep inside an excluded DIRECTORY (`.venv/`, `node_modules/`) | **yes** — never descended into |
+| a rewrite of a named excluded FILE | **yes** — only its own mtime moved |
+| CREATING or deleting an excluded file (`.DS_Store` appearing) | **no** — the holding directory's mtime moved, and that mtime is exactly what a DELETION relies on |
+
+So on the Macs the first `.DS_Store` in a directory costs a full check, which
+then correctly reports the box unchanged. Slower, never wrong.
+
+### Where restic now beats plain
+
+Measured through the real `sync_box`, one yard, two boxes with identical
+content, one converted:
+
+| files | plain unchanged | restic unchanged | plain 1 edit | restic 1 edit |
+|---|---|---|---|---|
+| 200 | 1.06 s | **0.87 s** | 1.62 s | 3.89 s |
+| 2,000 | 1.08 s | **0.83 s** | 1.65 s | 4.11 s |
+| 20,000 | 0.89 s | **0.68 s** | 1.96 s | 5.16 s |
+
+**Unchanged: restic wins at every size measured**, which is the answer to the
+crossover question for the case that dominates.
+
+**The "1 edit" column is NOT representative and must not be read as one.** This
+remote is a local directory, which makes the exact thing plain is slow at —
+listing and reconciling remote objects — free. It removes plain's whole cost and
+leaves restic's. The real-remote data point for that column is Lukas's:
+
+| something changed, 1,419,522 files | plain **HOURS** | restic **seconds** |
+|---|---|---|
+
+The shapes are what matter: restic's changed-case cost is roughly CONSTANT (a
+few remote calls plus a chunked upload of what actually changed), while plain's
+grows with the number of remote objects. So there is a crossover in the changed
+case, below which plain is quicker, and these local numbers cannot locate it —
+they only bound restic's side at a few seconds. **Locating it needs a one-edit
+sync on the real remote at two or three box sizes**, which is a measurement only
+Lukas can take.
+
+With the gate, "convert everything" is defensible in a way the earlier figures
+did not support: the dominant case is now faster for restic at every size, and
+the changed case is faster by orders of magnitude exactly where it hurts most.
+
+### There is no supported route back, and there should be
+
+`boxyard convert` is one-way. There is no `--to-plain`, and nothing else sets a
+box's format back to `plain`. The nearest route with the commands that exist is
+`boxyard copy -r <box> --dest <somewhere>` followed by creating a new plain box
+— which does not preserve the box's id, its groups, or its vault attachments. So
+in practice a converted box cannot leave the format.
+
+**`doctor` was actively misleading about this**, and it fires in the rollout's
+own pinned window. `storage-format-mismatch` offered `boxyard convert` for a
+mismatch in EITHER direction, so a restic box under a `plain` policy — which is
+every converted box while the pin is in place — was told to run a command that
+only goes the other way. The hint is now direction-aware and says plainly that
+there is no route back.
+
+**It should exist.** The safety argument for this whole design is that every
+intermediate state is a loud refusal and every step is recoverable; the
+interruption table exists to prove it. Conversion is the one act that escapes
+that property — the final state is the only one with no way out. And the reverse
+has exactly the same shape as the forward procedure, so it is not hard: push the
+restored tree as a plain `data/`, verify it byte-for-byte, write `data.rec`,
+delete the pointer, remove the repository, publish the boxmeta. It is not built
+here because it is a new command rather than a fix, and because Lukas should
+decide whether it blocks converting a large box.
+
+### The same blindness was in the PULL, and only an end-to-end test found it
+
+Fixing detection made a `chmod`-only change push correctly — and it still never
+arrived on the other machine. The incremental pull restores the files
+`restic diff` names, and measured (restic 0.18.0):
+
+```
+restic diff after a CHMOD      Files: 0 new, 0 removed, 0 changed
+restic diff after a RETARGET   Files: 0 new, 0 removed, 0 changed
+restic diff after a content edit   M  /path/b.txt   (1 changed)
+```
+
+`restic diff` reports FILES, and a mode is not a file — the same mistake as the
+counters, one layer down. The replica restored nothing and kept the old mode
+permanently and silently.
+
+So a diff that names nothing, between two snapshots that are not the same, now
+falls back to a full restore (`PullMode.FULL_METADATA_ONLY`). A full restore is
+always correct; the diff is only an optimisation, and it cannot express the
+thing that changed.
+
+**This is the argument for end-to-end tests over unit tests, in one example.**
+The detection unit tests were green, the push was correct, and the box was still
+broken — because the bug was in a different function that no unit test connects
+to the first. It was caught by
+`test_a_chmod_only_change_pushes`, which does the whole round trip and asserts
+the mode on the OTHER machine.
+
+### What this table does NOT cover
+
+`tree_modified_since` — the fallback used only when the recorded snapshot has
+been forgotten and the parent is unusable — is a different predicate:
+`check_last_time_modified`, the plain backend's own mtime walk. It shares the
+plain path's blind spots (a `chmod` changes ctime, not mtime) **by design**, so
+that the fallback is never a weaker guarantee than the plain backend gives
+today. Making it stronger would change plain-path semantics for 590 boxes and
+belongs to a different change than this one.
 
 ---
 
