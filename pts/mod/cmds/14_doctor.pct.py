@@ -717,6 +717,8 @@ for _bm in sorted(box_metas, key=lambda b: b.index_name):
 # checks actually parses -- a rule with a scar behind it, since `diverged-box`
 # spent months telling people to run something that exited 2.
 
+from boxyard._enums import StorageFormat as _fmt
+
 for _bm in sorted(box_metas, key=lambda b: b.index_name):
     try:
         _policy = _resolve_policy(config, _bm)
@@ -730,14 +732,33 @@ for _bm in sorted(box_metas, key=lambda b: b.index_name):
             f"Box '{_bm.index_name}' is stored as '{_bm.storage_format.value}' "
             f"but policy asks for '{_policy.storage_format.value}' "
             f"(from {_policy.sources.get('storage_format', 'unset')})",
-            f"Nothing converts a box automatically, in either direction, so "
-            f"the box syncs normally meanwhile in the format it actually has. "
-            f"Close the gap with `boxyard convert -r '{_bm.index_name}'`, which "
-            f"verifies a byte-identical restore before the old copy is removed "
-            f"-- run it with --dry-run first. Or change the policy if the box "
-            f"should stay as it is. Machines still on an older boxyard cannot "
-            f"read a converted box, so convert only once the whole fleet is "
-            f"upgraded.",
+            (
+                f"Nothing converts a box automatically, in either direction, so "
+                f"the box syncs normally meanwhile in the format it actually "
+                f"has. Close the gap with `boxyard convert -r "
+                f"'{_bm.index_name}'`, which verifies a byte-identical restore "
+                f"before the old copy is removed -- run it with --dry-run "
+                f"first. Or change the policy if the box should stay as it is. "
+                f"Machines still on an older boxyard cannot read a converted "
+                f"box, so convert only once the whole fleet is upgraded."
+            )
+            if _bm.storage_format is _fmt.PLAIN
+            else (
+                # The OTHER direction, and `boxyard convert` cannot do it --
+                # it only goes plain -> restic. Saying "run convert" here sends
+                # someone to a command that cannot help, and this fires on every
+                # converted box during the rollout's pinned window, when the
+                # policy deliberately says `plain`.
+                f"This box is already restic and there is NO SUPPORTED ROUTE "
+                f"BACK: `boxyard convert` only goes plain -> restic, and there "
+                f"is no `--to-plain`. If the policy is what is wrong -- which "
+                f"it is during the rollout's pinned window -- change the "
+                f"policy. If the BOX is what is wrong, the only route today is "
+                f"`boxyard copy -r '{_bm.index_name}' --dest <somewhere>` "
+                f"followed by a new plain box, which does not preserve the "
+                f"box's id, groups or attachments. Converting is currently the "
+                f"one irreversible act in boxyard."
+            ),
             box_index_name=_bm.index_name,
         )
 

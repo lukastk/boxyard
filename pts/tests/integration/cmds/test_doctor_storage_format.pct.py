@@ -196,3 +196,44 @@ def test_the_hint_warns_that_old_machines_cannot_read_a_converted_box(yard):
     hint = findings(yard, "storage-format-mismatch")[0]["hint"]
     assert "older boxyard" in hint
     assert "whole fleet is" in hint
+
+
+# %% [markdown]
+# ## The hint has to name a command that can actually help
+#
+# `boxyard convert` only goes plain -> restic. Offering it for a mismatch in the
+# OTHER direction sends someone to a command that cannot do what they need --
+# and that direction is not exotic: it is what every converted box reports
+# during the rollout's pinned window, when the policy deliberately says `plain`.
+
+# %%
+#|export
+def hint_for(yard):
+    found = findings(yard, "storage-format-mismatch")
+    assert len(found) == 1, f"expected one mismatch, got {found}"
+    return found[0]["hint"]
+
+
+def test_the_hint_for_a_plain_box_offers_convert(yard):
+    """plain box, restic policy -- `boxyard convert` is exactly the fix."""
+    set_policies(yard, {"default": {"storage_format": "restic"}})
+    hint = hint_for(yard)
+    assert "boxyard convert" in hint
+    assert "NO SUPPORTED ROUTE BACK" not in hint
+
+
+def test_the_hint_for_a_restic_box_says_there_is_no_route_back(yard):
+    """
+    restic box, plain policy. The honest answer is that there is none: no
+    `--to-plain` exists, and copying out into a new box does not preserve the
+    box's id, groups or attachments.
+    """
+    config, box = load(yard)
+    box.storage_format = StorageFormat.RESTIC
+    box.save(config)
+    set_policies(yard, {"default": {"storage_format": "plain"}})
+
+    hint = hint_for(yard)
+    assert "NO SUPPORTED ROUTE BACK" in hint
+    assert "boxyard copy" in hint, "it must name the only route that exists"
+    assert "--to-plain" in hint, "and say plainly that the flag does not exist"

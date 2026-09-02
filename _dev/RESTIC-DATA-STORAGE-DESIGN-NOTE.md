@@ -1872,39 +1872,125 @@ DATA detection only, counting only boxes that are actually restic-backed:
 The cost therefore arrives gradually, with the migration, rather than at the
 flip.
 
-### A cheap local pre-gate is possible, and it is a decision rather than an oversight
+### The cheap gate — parity with the plain backend, not an optimisation
 
-The expensive check only has to run when something might have changed locally. A
-walk of the tree taking `max(mtime, ctime)` of every node and comparing it with
-the `synced_at_unix` already recorded in the state file is a SOUND sufficient
-condition: measured, it sees all eleven shapes in the table, including both
-directions of `chmod` and a symlink retargeted in place.
+An earlier draft of this section described the gate as an optional speed-up and
+declined to build it. That was wrong, and the measurement that settles it was
+taken on mymain against the live remote:
 
-It costs **2.3 ms at 540 nodes, 22.7 ms at 7,260, and 154 ms at 50,040** —
-three orders of magnitude below the ~2 s of restic invocations.
+```
+boxyard sync -r <jackfruit-hq> -c data     1,419,522 files
+  -> "Sync not needed."                    8 SECONDS
+```
 
-**`ctime` is what makes it sound, and the existing helper does not use it.**
-`check_last_time_modified` — the plain backend's walk, which
-`tree_modified_since` already wraps — is mtime-only, and a `chmod` moves ctime
-while leaving mtime alone (measured). Reusing it as the gate would reintroduce
-exactly the defect this change removes, one level up. Any gate must be a new
-ctime-aware walk.
+Eight seconds, on a box whose real passes take 7-10 hours. **The plain backend
+short-circuits on a local walk and never contacts the remote when nothing was
+touched.** The hours only happen when something HAS changed and 1.4 million
+remote objects must be reconciled.
 
-**What it does not buy.** The gate only helps a box nothing has touched. Any
-write anywhere in the tree — INCLUDING an excluded one, since creating
-`.DS_Store` or writing into `.venv/` bumps a directory's mtime — makes it say
-"maybe", and the full check runs and correctly reports clean. So it is fastest
-on the archival boxes and does least on the ones being actively worked in, which
-are the ones most likely to be due. Its polarity is safe either way: it may only
-ever skip the expensive check when nothing at all has been touched.
+Against that, restic without a gate loses the unchanged case **at every size**,
+because it pays for `restic snapshots` regardless:
 
-It is NOT implemented. It changes the hot path of every sync, and the figures
-above are small enough that it should be a deliberate choice rather than
-something slipped in beside a correctness fix.
+| same machine, same remote | result |
+|---|---|
+| plain, 1,419,522 files, nothing changed | **8 s** (no remote contact) |
+| restic, 42 files, nothing changed | **11 s** (3 remote calls) |
 
-Two failure paths resolve towards "changed", both exercised by tests: a parent
-snapshot that cannot be listed (forgotten by retention, or an unreachable
-repository), and a dry-run that fails or reports no summary.
+A box 34,000× smaller, and slower. Unchanged is the overwhelming majority of
+passes on almost every box, so this was the comparison that mattered and restic
+was losing it. The gate is therefore parity with what plain has always had.
+
+**What it is.** A walk taking `max(mtime, ctime)` of every node, compared with
+the `synced_at_unix` already in the state record. Nothing touched ⇒ the tree
+still matches the snapshot ⇒ skip all three remote calls.
+
+**`ctime` is the whole difference, and reusing the plain walk would have been
+the same bug one level up.** `check_last_time_modified` is mtime-only, and a
+`chmod` moves ctime while leaving mtime alone. The gate sees all eleven shapes
+in the audit table, including both directions of `chmod` and a symlink
+retargeted in place.
+
+**The polarity is the contract**, and it is stated in tests rather than in
+comments: the gate may only ever skip the check when NOTHING has been touched. A
+false "maybe" costs a slow check; a false "no" loses an edit, silently, for
+ever. Every uncertainty resolves to "maybe" — an unreadable directory raises
+rather than lowering the answer, and a missing `synced_at_unix` disables the
+gate entirely.
+
+**`GATE_SLACK_SECONDS = 2.0`**, because filesystem timestamp granularity is not
+always nanoseconds — HFS+ records whole seconds — so a write that genuinely
+happened after the recorded moment can be stamped just before it. Without slack
+that edit is gated away and lost.
+
+**What the exclude names do and do not buy**, measured:
+
+| | gated out? |
+|---|---|
+| a write deep inside an excluded DIRECTORY (`.venv/`, `node_modules/`) | **yes** — never descended into |
+| a rewrite of a named excluded FILE | **yes** — only its own mtime moved |
+| CREATING or deleting an excluded file (`.DS_Store` appearing) | **no** — the holding directory's mtime moved, and that mtime is exactly what a DELETION relies on |
+
+So on the Macs the first `.DS_Store` in a directory costs a full check, which
+then correctly reports the box unchanged. Slower, never wrong.
+
+### Where restic now beats plain
+
+Measured through the real `sync_box`, one yard, two boxes with identical
+content, one converted:
+
+| files | plain unchanged | restic unchanged | plain 1 edit | restic 1 edit |
+|---|---|---|---|---|
+| 200 | 1.06 s | **0.87 s** | 1.62 s | 3.89 s |
+| 2,000 | 1.08 s | **0.83 s** | 1.65 s | 4.11 s |
+| 20,000 | 0.89 s | **0.68 s** | 1.96 s | 5.16 s |
+
+**Unchanged: restic wins at every size measured**, which is the answer to the
+crossover question for the case that dominates.
+
+**The "1 edit" column is NOT representative and must not be read as one.** This
+remote is a local directory, which makes the exact thing plain is slow at —
+listing and reconciling remote objects — free. It removes plain's whole cost and
+leaves restic's. The real-remote data point for that column is Lukas's:
+
+| something changed, 1,419,522 files | plain **HOURS** | restic **seconds** |
+|---|---|---|
+
+The shapes are what matter: restic's changed-case cost is roughly CONSTANT (a
+few remote calls plus a chunked upload of what actually changed), while plain's
+grows with the number of remote objects. So there is a crossover in the changed
+case, below which plain is quicker, and these local numbers cannot locate it —
+they only bound restic's side at a few seconds. **Locating it needs a one-edit
+sync on the real remote at two or three box sizes**, which is a measurement only
+Lukas can take.
+
+With the gate, "convert everything" is defensible in a way the earlier figures
+did not support: the dominant case is now faster for restic at every size, and
+the changed case is faster by orders of magnitude exactly where it hurts most.
+
+### There is no supported route back, and there should be
+
+`boxyard convert` is one-way. There is no `--to-plain`, and nothing else sets a
+box's format back to `plain`. The nearest route with the commands that exist is
+`boxyard copy -r <box> --dest <somewhere>` followed by creating a new plain box
+— which does not preserve the box's id, its groups, or its vault attachments. So
+in practice a converted box cannot leave the format.
+
+**`doctor` was actively misleading about this**, and it fires in the rollout's
+own pinned window. `storage-format-mismatch` offered `boxyard convert` for a
+mismatch in EITHER direction, so a restic box under a `plain` policy — which is
+every converted box while the pin is in place — was told to run a command that
+only goes the other way. The hint is now direction-aware and says plainly that
+there is no route back.
+
+**It should exist.** The safety argument for this whole design is that every
+intermediate state is a loud refusal and every step is recoverable; the
+interruption table exists to prove it. Conversion is the one act that escapes
+that property — the final state is the only one with no way out. And the reverse
+has exactly the same shape as the forward procedure, so it is not hard: push the
+restored tree as a plain `data/`, verify it byte-for-byte, write `data.rec`,
+delete the pointer, remove the repository, publish the boxmeta. It is not built
+here because it is a new command rather than a fix, and because Lukas should
+decide whether it blocks converting a large box.
 
 ### The same blindness was in the PULL, and only an end-to-end test found it
 
