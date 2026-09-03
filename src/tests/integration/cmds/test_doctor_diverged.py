@@ -186,3 +186,10 @@ async def _test_doctor_diverged_box():
         "an edited META with a backdated mtime went unreported: doctor is not "
         "reading the META baseline under the signature META is written with"
     )
+    _cov = report["fingerprint_baseline_coverage"]
+    assert set(_cov) == {"parts_covered", "parts_uncovered", "uncovered"}
+    assert _cov["parts_covered"] >= 1, (
+        "the constructed META baseline is bound to the current record under the "
+        "reader's signature, so it must count as covered"
+    )
+    assert _cov["parts_uncovered"] == len(_cov["uncovered"])

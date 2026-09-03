@@ -3438,6 +3438,25 @@ def cli_doctor(
                             f"        ... and {len(listed) - _max_listed} more (use `-o json` for the full list)"
                         )
                 typer.echo(f"      hint: {finding['hint']}")
+        # The migration gauge, not a check: parts without a usable baseline are
+        # still decided by the mtime test (2 of 10 change shapes). Informational
+        # on purpose — a box gains its baseline on its next real sync, and
+        # nothing a user runs today changes the number, so it must not turn the
+        # report red.
+        _cov = report["fingerprint_baseline_coverage"]
+        _cov_total = _cov["parts_covered"] + _cov["parts_uncovered"]
+        typer.echo("")
+        _cov_line = (
+            f"fingerprint baselines: {_cov['parts_covered']}/{_cov_total} "
+            f"synced parts covered"
+        )
+        if _cov["parts_uncovered"]:
+            _cov_line += (
+                f" ({_cov['parts_uncovered']} still on the mtime fallback; "
+                f"each gains a baseline on its next real sync — full list "
+                f"under `-o json`)"
+            )
+        typer.echo(_cov_line)
         typer.echo("")
         if report["healthy"]:
             typer.echo("All checks passed.")

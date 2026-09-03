@@ -1447,9 +1447,11 @@ async def get_sync_status(
             # every change shape is caught. Nothing is actioned retroactively.
             #
             # TODO(cleanup): drop this fallback and treat UNKNOWN as NEEDS_PUSH
-            # -- once every machine has completed one full sync pass on >= 0.8.0,
-            # so every locally-included box has a baseline, AND the historical
-            # backlog has been reviewed deliberately rather than by upgrade.
+            # -- once `boxyard doctor` reports 0 uncovered fingerprint
+            # baselines on every machine (a sync pass alone does NOT achieve
+            # this: an already-synced box never writes a baseline), AND the
+            # historical backlog has been reviewed deliberately rather than by
+            # upgrade.
             if _locally_modified is None:
                 _modified_a = (
                     local_last_modified is not None
@@ -1491,10 +1493,12 @@ async def get_sync_status(
                         # resolves it writes the baseline.
                         #
                         # TODO(cleanup): drop the `local_last_modified` fallback
-                        # here and treat UNKNOWN as CONFLICT -- once every machine
-                        # has completed one full sync pass on >= 0.8.0, so every
-                        # locally-included box has a baseline. `boxyard doctor`
-                        # reports the boxes that still lack one.
+                        # here and treat UNKNOWN as CONFLICT -- once `boxyard
+                        # doctor` reports 0 uncovered fingerprint baselines on
+                        # every machine (a sync pass alone does NOT achieve
+                        # this: an already-synced box never writes a baseline),
+                        # AND the historical backlog has been reviewed
+                        # deliberately rather than by upgrade.
                         if _locally_modified is None:
                             _modified = (
                                 local_last_modified is not None

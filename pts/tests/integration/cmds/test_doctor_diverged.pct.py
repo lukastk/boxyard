@@ -330,3 +330,22 @@ assert _meta_found, (
 )
 
 # %%
+# %% [markdown]
+# ## The migration gauge rides along in every report, and never turns it red
+#
+# The `TODO(cleanup)` fallbacks can only be retired once this reads 0 uncovered
+# on every machine, so the number has to exist somewhere observable — and it
+# must be a gauge, not a finding: a missing baseline is documented migration
+# state, not a fault, and a doctor that stays red for months is one nobody reads.
+
+# %%
+#|export
+_cov = report["fingerprint_baseline_coverage"]
+assert set(_cov) == {"parts_covered", "parts_uncovered", "uncovered"}
+assert _cov["parts_covered"] >= 1, (
+    "the constructed META baseline is bound to the current record under the "
+    "reader's signature, so it must count as covered"
+)
+assert _cov["parts_uncovered"] == len(_cov["uncovered"])
+
+# %%

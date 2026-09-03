@@ -965,8 +965,11 @@ async def run_doctor(
                         # `get_sync_status`'s remote-newer branch does, so the two
                         # still cannot disagree during the migration.
                         # TODO(cleanup): drop this fallback with the matching one in
-                        # `_models.get_sync_status` -- once every machine has
-                        # completed a full sync pass on >= 0.8.0.
+                        # `_models.get_sync_status` -- once `boxyard doctor` reports
+                        # 0 uncovered fingerprint baselines on every machine (a sync
+                        # pass alone does NOT achieve this: an already-synced box
+                        # never writes a baseline), AND the historical backlog has
+                        # been reviewed deliberately rather than by upgrade.
                         _local_modified = check_last_time_modified(
                             _bm.get_local_part_path(config, _part),
                             exclude_names=literal_exclude_names(_exc),
@@ -1396,8 +1399,11 @@ async def run_doctor(
                 filter_sig=filter_signature(_effective_exclude),
             )
             if _wd_changed is None:
-                # TODO(cleanup): drop this fallback with the others -- once every
-                # machine has completed a full sync pass on >= 0.8.0.
+                # TODO(cleanup): drop this fallback with the others -- once `boxyard
+                # doctor` reports 0 uncovered fingerprint baselines on every machine
+                # (a sync pass alone does NOT achieve this: an already-synced box
+                # never writes a baseline), AND the historical backlog has been
+                # reviewed deliberately rather than by upgrade.
                 _modified = check_last_time_modified(
                     _data_path, exclude_names=literal_exclude_names(_effective_exclude)
                 )
@@ -1481,10 +1487,60 @@ async def run_doctor(
             index_name=bm.index_name,
             storage_location=bm.storage_location,
         )
+    from boxyard._enums import StorageFormat as _FpStorageFormat
+    from boxyard._fingerprint import (
+        filter_signature as _fp_filter_signature,
+        read_base as _fp_read_base,
+    )
+    from boxyard._models import BoxPart as _FpBoxPart, SyncRecord as _FpSyncRecord
+    
+    _fp_covered = 0
+    _fp_uncovered: list[str] = []
+    for bm in box_metas:
+        if not bm.check_included(config):
+            continue
+        for _part in _FpBoxPart:
+            if _part is _FpBoxPart.DATA and bm.storage_format is _FpStorageFormat.RESTIC:
+                continue  # restic DATA carries its own change-detection state
+            _rec_path = bm.get_local_sync_record_path(config, _part)
+            if not _rec_path.exists():
+                continue  # never synced here: nothing for a baseline to describe
+            try:
+                _rec = _FpSyncRecord.model_validate_json(_rec_path.read_text())
+            except Exception:
+                continue  # a malformed record is `interrupted-sync`'s business
+            if not _rec.sync_complete:
+                continue  # so is an interrupted one
+            if _part is _FpBoxPart.DATA:
+                _fp_conf_exclude = (
+                    bm.get_local_part_path(config, _FpBoxPart.CONF)
+                    / const.RCLONE_EXCLUDE_FILENAME
+                )
+                _fp_exc = (
+                    _fp_conf_exclude
+                    if _fp_conf_exclude.exists()
+                    else config.default_rclone_exclude_path
+                )
+            else:
+                _fp_exc = None
+            _base = _fp_read_base(_rec_path)
+            if (
+                _base is not None
+                and _base["sync_record_ulid"] == str(_rec.ulid)
+                and _base.get("filter_signature") == _fp_filter_signature(_fp_exc)
+            ):
+                _fp_covered += 1
+            else:
+                _fp_uncovered.append(f"{bm.index_name}:{_part.value}")
     num_findings = sum(len(check["findings"]) for check in checks.values())
     report = {
         "healthy": num_findings == 0,
         "num_findings": num_findings,
+        "fingerprint_baseline_coverage": {
+            "parts_covered": _fp_covered,
+            "parts_uncovered": len(_fp_uncovered),
+            "uncovered": sorted(_fp_uncovered),
+        },
         "checks": checks,
     }
     return report
