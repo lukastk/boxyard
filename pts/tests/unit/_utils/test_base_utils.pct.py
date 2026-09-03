@@ -938,19 +938,15 @@ def test_run_cmd_async_env_does_not_mutate_the_parent(monkeypatch):
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "KNOWN BUG, pinned deliberately: a pure deletion is invisible to "
-        "`check_last_time_modified`, so the plain backend never pushes it and "
-        "the remote keeps the file for ever. Reproduced against the live "
-        "remote on 2026-09-03: deleting one file from a 16,746-file box and "
-        "syncing took exactly no-op time (8s vs 19s for an add) and left the "
-        "file on the remote. The fix is an ARCHITECTURAL decision, not a "
-        "one-liner -- see the ticket -- because simply also stat-ing "
-        "directories reintroduces the .DS_Store false-positive this function's "
-        "exclude filtering exists to prevent: an EXCLUDED file appearing in a "
-        "directory still moves that directory's mtime, which would flip a box "
-        "to NEEDS_PUSH and, when the remote had also moved on, to CONFLICT. "
-        "strict=True so this test FAILS as XPASS the moment the bug is fixed, "
-        "forcing whoever fixes it to delete this marker."
+        "`check_last_time_modified` is STILL mtime-only and files-only, so it "
+        "cannot see a deletion. That is no longer a live data-loss bug -- sync "
+        "and doctor now decide on the fingerprint in `_fingerprint`, which sees "
+        "every transportable shape -- but this function survives as the "
+        "migration fallback for boxes with no baseline yet, so its blindness is "
+        "still reachable there. strict=True so this fails as XPASS the moment "
+        "someone fixes the function, which is the same moment the fallback and "
+        "its TODO(cleanup) markers in `_models.get_sync_status` and "
+        "`cmds/14_doctor` should go. Ticket 82e1b4c2."
     ),
 )
 def test_a_deletion_is_seen_as_a_modification(tmp_path):
