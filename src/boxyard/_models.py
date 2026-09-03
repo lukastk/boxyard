@@ -1297,11 +1297,6 @@ async def get_sync_status(
         source="",
         source_path=local_path,
     )
-    local_path_is_empty = (
-        True  # Default: treat as empty if doesn't exist or isn't a dir
-    )
-    if local_path_is_dir and local_path_exists:
-        local_path_is_empty = len(list(local_path.iterdir())) == 0
 
     remote_path_exists, remote_path_is_dir = await rclone_path_exists(
         rclone_config_path=rclone_config_path,
@@ -1398,15 +1393,16 @@ async def get_sync_status(
         exclude_names=_exclude_names,
         filter_sig=_filter_sig,
     )
-    if local_last_modified is None and local_path_exists:
-        if (not local_path_is_dir) or (local_path_is_dir and not local_path_is_empty):
-            # Logic here: If the local path is a file, it should be able to be checked for last modification.
-            # If the local path is a non-empty directory, it should also be able to be checked for last modification.
-            sync_status["sync_condition"] = SyncCondition.ERROR
-            sync_status["error_message"] = (
-                f"Something wrong here. Local path exists and is not empty, but cannot be checked for last modification. Local path: '{local_path}', remote path: '{remote_path}."
-            )
-            return SyncStatus(**sync_status)
+    # There used to be a guard here: "local path exists, is not empty, and
+    # cannot be checked for last modification" -> ERROR. Every state that
+    # triggers it is legitimate -- a directory holding only EXCLUDED entries
+    # (a lone `.venv/`), only symlinks (the mtime walk skips them), or only
+    # empty directories -- and each one produced a red Error line on every
+    # supervisor pass, for ever, for a box that is perfectly healthy. The walk
+    # RAISES on an unreadable directory, so "no measurable mtime" never means
+    # the walk failed; it means there is nothing the OLD test can see, which
+    # the fingerprint decides correctly and the mtime fallback reads as
+    # "unmodified" -- the safe direction, exactly as an empty tree always has.
 
     if local_sync_incomplete and remote_sync_incomplete:
         if local_sync_record.ulid == remote_sync_record.ulid:

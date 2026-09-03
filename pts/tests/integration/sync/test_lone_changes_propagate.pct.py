@@ -162,3 +162,60 @@ def test_a_lone_deletion_plus_a_remote_advance_reads_conflict_not_needs_pull():
             assert await _status(b_args) == SyncCondition.CONFLICT
 
     asyncio.run(_test())
+
+# %% [markdown]
+# ## A box whose content the OLD test cannot measure is not an error
+#
+# `get_sync_status` used to raise ERROR for "exists, not empty, but no
+# measurable mtime" — a state that is always legitimate: a directory holding
+# only excluded entries (a lone `.venv/`), only symlinks (the mtime walk skips
+# them), or only empty directories. Every such box produced a red Error line
+# on every supervisor pass for ever. The fingerprint sees all of these shapes,
+# so the guard now has no true positive left.
+
+# %%
+#|export
+@pytest.mark.integration
+def test_a_box_holding_only_unmeasurable_content_is_not_an_error():
+    async def _test():
+        with tempfile.TemporaryDirectory() as td:
+            args, remote_root = _fixture(Path(td))
+            # Replace the fixture's files with content the mtime walk cannot
+            # measure: an excluded directory and a symlink.
+            (args["local_path"] / "keep.txt").unlink()
+            (args["local_path"] / "doomed.txt").unlink()
+            (args["local_path"] / ".venv").mkdir()
+            (args["local_path"] / ".venv" / "pyvenv.cfg").write_text("home = /usr")
+            (args["local_path"] / "link").symlink_to("somewhere/else")
+            exclude_file = Path(td) / "excludes"
+            exclude_file.write_text(".venv/\n")
+
+            async def _status_x() -> SyncCondition:
+                s = await get_sync_status(
+                    rclone_config_path=args["rclone_config_path"],
+                    local_path=args["local_path"],
+                    local_sync_record_path=args["local_sync_record_path"],
+                    remote=args["remote"],
+                    remote_path=args["remote_path"],
+                    remote_sync_record_path=args["remote_sync_record_path"],
+                    exclude_path=exclude_file,
+                )
+                return s.sync_condition
+
+            # Never synced: pending work, not something wrong.
+            assert await _status_x() == SyncCondition.NEEDS_PUSH
+
+            await sync_helper(
+                sync_direction=SyncDirection.PUSH,
+                sync_setting=SyncSetting.CAREFUL,
+                exclude_path=exclude_file,
+                **args,
+            )
+            # The symlink travelled (a local-backend remote round-trips it
+            # back to a real symlink rather than a `.rclonelink` file); the
+            # excluded content did not.
+            assert (remote_root / "data" / "link").is_symlink()
+            assert not (remote_root / "data" / ".venv").exists()
+            assert await _status_x() == SyncCondition.SYNCED
+
+    asyncio.run(_test())
