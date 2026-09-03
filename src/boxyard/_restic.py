@@ -169,10 +169,26 @@ def rclone_program_for(rclone_config_path: "str | Path") -> str:
     """
     The `-o rclone.program` string that routes restic through boxyard's own
     rclone configuration.
+
+    restic takes this as ONE string and re-parses it into argv, so the paths in
+    it must be quoted rather than interpolated raw. Verified against restic
+    directly: with an unquoted path containing a space it splits at the space
+    and dies with `fork/exec /tmp/claude-1000/rp: no such file or directory`,
+    and with the same path shlex-quoted it runs. So restic parses this
+    shell-style, and `shlex.join` is the matching encoder -- not a workaround
+    for it.
+
+    Interpolating a path into a string that something else re-parses is the
+    exact pattern the repo bans everywhere else, and it was live here. Today
+    both paths happen to be boxyard-controlled and space-free, so this was
+    latent rather than broken -- but `rclone_config_path` comes from user
+    config, and a home directory with a space in it is ordinary on macOS.
     """
+    import shlex
+
     from ._utils import get_rclone_binary
 
-    return f"{get_rclone_binary()} --config {rclone_config_path}"
+    return shlex.join([str(get_rclone_binary()), "--config", str(rclone_config_path)])
 
 
 def repo_url_for_box(

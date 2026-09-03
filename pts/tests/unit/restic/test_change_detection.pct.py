@@ -682,3 +682,38 @@ def test_the_slack_covers_a_coarse_filesystem_timestamp(box):
         "an edit was gated away because its timestamp rounded down -- this is "
         "what GATE_SLACK_SECONDS prevents"
     )
+
+# %%
+#|export
+def test_rclone_program_for_quotes_paths_it_cannot_control(tmp_path):
+    """
+    restic re-parses this string into argv, so a path with a space must survive.
+
+    VERIFIED AGAINST RESTIC ITSELF, not assumed: with an unquoted path
+    containing a space, `restic init` fails with
+    `fork/exec /tmp/claude-1000/rp: no such file or directory` -- it split at
+    the space. With the same path shlex-quoted it initialises. So restic parses
+    shell-style and quoting is the correct encoding, not a defensive hack.
+
+    This mattered because interpolating a path into a string another program
+    re-parses is the pattern banned everywhere else in this repo, and it was
+    live here. `rclone_config_path` comes from user config, and a home
+    directory with a space in it is ordinary on macOS.
+    """
+    import shlex
+
+    from boxyard._restic import rclone_program_for
+
+    spaced = tmp_path / "dir with spaces" / "boxyard_rclone.conf"
+    spaced.parent.mkdir()
+    spaced.write_text("")
+
+    program = rclone_program_for(spaced)
+
+    # The claim is about what a shell-style parser recovers, so check THAT
+    # rather than looking for quote characters in the string.
+    parsed = shlex.split(program)
+    assert parsed[-2:] == ["--config", str(spaced)], (
+        f"a shell-style parser did not recover the config path: {parsed!r}"
+    )
+    assert len(parsed) == 3, f"expected binary, --config, path; got {parsed!r}"
