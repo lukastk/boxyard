@@ -171,20 +171,20 @@ async def _reverse_to_plain(
     # The local checkout is what will become the plain tree, so it must be
     # proved to match the snapshot first. Content, mode AND symlink targets --
     # `compare_trees` is the same comparison the forward conversion uses.
-    #
-    # `excludes` is NOT optional here either. The snapshot was written through
-    # the exclude list, so the restore has no `.venv/` or `__pycache__/` in it
-    # while the local checkout does; comparing them raw reports every excluded
-    # path as a difference and refuses a reversal that is in fact correct. This
-    # is the same defect the forward path had -- it failed a real 28,060-file
-    # box with 16,201 false differences -- and it is why `compare_trees` takes
-    # the argument with no default.
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="boxyard-reverse-") as _tmp:
         _restored = Path(_tmp) / "restored"
         _restored.mkdir()
         await pull(repo, _restored, target_snapshot=_snapshot, base_snapshot=None)
+        # `excludes` is NOT optional, and the forward path shipped without it:
+        # the snapshot was written THROUGH the exclude list, so comparing the
+        # whole local checkout against it reports every excluded path as a
+        # difference. Measured on a real box: 28,060 files, 16,201 false
+        # differences, every one a `.venv/` or `__pycache__/` path. Conversion
+        # could not have succeeded on any box with a virtualenv in it.
+        # Hence the argument has NO default: a caller that forgets it is
+        # exactly this bug, and a default would let it return silently.
         _problems = compare_trees(local_data, _restored, excludes)
     if _problems:
         raise ReversalRefused(
