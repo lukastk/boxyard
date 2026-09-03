@@ -197,6 +197,19 @@ def test_a_full_conversion_leaves_the_expected_remote(two):
     assert not (two["box_root"] / const.BOX_DATA_REL_PATH).exists()
     assert not two["rec"].exists()
     assert fmt(two) is StorageFormat.RESTIC
+    # The plain fingerprint baseline described the tree the plain era synced;
+    # it must go with that era (the local data.rec it is bound to is KEPT for
+    # the adoption check, so the sidecar will not be cleaned up by anything
+    # else).
+    from boxyard._fingerprint import base_path_for
+    from boxyard._models import BoxPart as _BP
+    from boxyard.config import get_config as _gc
+
+    _rec_a = get_boxyard_meta(_gc(two["cpA"]), force_create=True).by_index_name[
+        two["idx"]
+    ].get_local_sync_record_path(_gc(two["cpA"]), _BP.DATA)
+    assert _rec_a.exists()  # kept, deliberately
+    assert not base_path_for(_rec_a).exists()  # cleared, deliberately
 
 
 def test_a_file_written_during_the_conversion_is_not_declared_synced(two, monkeypatch):

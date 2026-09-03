@@ -901,6 +901,15 @@ try:
     )
     _did("recorded this machine's restic state")
 
+    # The plain fingerprint baseline described the tree the plain backend was
+    # syncing, and that era just ended. It is ULID-bound so leaving it could
+    # not produce a wrong answer -- but the local `data.rec` it is bound to is
+    # deliberately KEPT (the adoption check reads it), so the pair would look
+    # like live plain state to anyone inspecting the records directory.
+    from boxyard._fingerprint import clear_base
+
+    clear_base(box_meta.get_local_sync_record_path(config, BoxPart.DATA))
+
     _on_disk = BoxMeta.load(config, box_meta.storage_location, box_index_name)
     _on_disk.storage_format = StorageFormat.RESTIC
     _on_disk.save(config)
