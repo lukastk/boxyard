@@ -229,7 +229,7 @@ def test_an_upgraded_machine_can_restore_the_converted_box(two, tmp_path):
     # Compared the way the conversion itself does: the exec-bit manifest is
     # excluded from the snapshot on purpose, because restic carries mode
     # natively, so its absence from the restore is the design working.
-    assert compare_trees(two["dataA"], dest) == []
+    assert compare_trees(two["dataA"], dest, []) == []
     assert (dest / "run.sh").stat().st_mode & 0o777 == 0o755
     assert not (dest / const.BOX_PERMS_MANIFEST_REL_PATH).exists()
 
@@ -428,19 +428,19 @@ def test_compare_trees_notices_content_mode_and_symlinks(tmp_path):
         (root / "f.txt").write_text("same\n")
         (root / "sub" / "g.txt").write_text("same\n")
         (root / "link").symlink_to("f.txt")
-    assert compare_trees(a, b) == []
+    assert compare_trees(a, b, []) == []
 
     (b / "f.txt").write_text("different\n")
-    assert any("content differs" in p or "size differs" in p for p in compare_trees(a, b))
+    assert any("content differs" in p or "size differs" in p for p in compare_trees(a, b, []))
 
     (b / "f.txt").write_text("same\n")
     (b / "sub" / "g.txt").chmod(0o700)
-    assert any("mode differs" in p for p in compare_trees(a, b))
+    assert any("mode differs" in p for p in compare_trees(a, b, []))
 
     (b / "sub" / "g.txt").chmod((a / "sub" / "g.txt").stat().st_mode & 0o777)
     (b / "link").unlink()
     (b / "link").symlink_to("sub/g.txt")
-    assert any("symlink target differs" in p for p in compare_trees(a, b))
+    assert any("symlink target differs" in p for p in compare_trees(a, b, []))
 
 
 def test_compare_trees_notices_a_missing_or_extra_path(tmp_path):
@@ -448,10 +448,10 @@ def test_compare_trees_notices_a_missing_or_extra_path(tmp_path):
     a.mkdir()
     b.mkdir()
     (a / "only-in-a.txt").write_text("x")
-    assert any("missing from the restore" in p for p in compare_trees(a, b))
+    assert any("missing from the restore" in p for p in compare_trees(a, b, []))
     (b / "only-in-a.txt").write_text("x")
     (b / "extra.txt").write_text("y")
-    assert any("present only in the restore" in p for p in compare_trees(a, b))
+    assert any("present only in the restore" in p for p in compare_trees(a, b, []))
 
 
 def test_compare_trees_ignores_the_excluded_perms_manifest(tmp_path):
@@ -462,7 +462,57 @@ def test_compare_trees_ignores_the_excluded_perms_manifest(tmp_path):
     (a / "f.txt").write_text("same\n")
     (b / "f.txt").write_text("same\n")
     (a / const.BOX_PERMS_MANIFEST_REL_PATH).write_text("{}")
-    assert compare_trees(a, b) == []
+    assert compare_trees(a, b, []) == []
+
+
+# %%
+#|export
+def test_compare_trees_honours_the_push_excludes(tmp_path):
+    """
+    An excluded path is NOT a difference -- the push never stored it.
+
+    THE BUG THIS PINS. `compare_trees` used to compare the whole local tree
+    against a snapshot the push had correctly filtered, so every `.venv/` and
+    `__pycache__/` in the box read as "missing from the restore". The first real
+    box converted with it -- 28,060 files -- refused with 16,201 differences, all
+    of them excluded paths, and the conversion was in fact perfect.
+
+    Every other test in this file passed the whole time, because each one builds
+    a tree with no excluded content in it. So this test builds one WITH.
+    """
+    a, b = tmp_path / "a", tmp_path / "b"
+    (a / ".venv" / "lib").mkdir(parents=True)
+    (a / "src").mkdir(parents=True)
+    (b / "src").mkdir(parents=True)
+    (a / ".venv" / "lib" / "big.so").write_text("x" * 100)
+    (a / "src" / "__pycache__").mkdir()
+    (a / "src" / "__pycache__" / "m.pyc").write_text("bytecode")
+    (a / "src" / "m.py").write_text("real\n")
+    (b / "src" / "m.py").write_text("real\n")
+
+    excludes = [".venv", "__pycache__"]
+    assert compare_trees(a, b, excludes) == []
+
+    # ... and without them, the same identical pair is a pile of false failures.
+    assert len(compare_trees(a, b, [])) >= 4
+
+
+# %%
+#|export
+def test_compare_trees_still_reports_an_excluded_path_the_restore_invented(tmp_path):
+    """
+    Pruning is one-sided on purpose.
+
+    If restic ever DOES carry an excluded path, that is a real defect and must
+    stay visible. Filtering both sides would hide it.
+    """
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    (b / ".venv").mkdir(parents=True)
+    (b / ".venv" / "leaked.so").write_text("should not be here")
+
+    problems = compare_trees(a, b, [".venv"])
+    assert any("present only in the restore" in x for x in problems)
 
 
 # %% [markdown]
