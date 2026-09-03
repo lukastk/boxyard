@@ -396,8 +396,10 @@ async def _sync(
 
 # %%
 #|export
+from datetime import datetime, timezone
+
 from boxyard._models import SyncRecord
-from boxyard._utils import literal_exclude_names
+from boxyard._utils import check_last_time_modified, literal_exclude_names
 from boxyard._fingerprint import filter_signature, tree_fingerprint, write_base
 
 if check_interrupted():
@@ -407,20 +409,23 @@ if check_interrupted():
 # only on a COMPLETED sync, and bound to that sync's ULID, so every crash
 # ordering degrades to "no usable baseline" -- which is loud (it forces one
 # reconcile) rather than a digest that wrongly says "unchanged".
-def _record_baseline(ulid) -> None:
-    if not sync_path_is_dir and not Path(local_path).exists():
-        return
-    _sig = filter_signature(exclude_path)
-    _fp = tree_fingerprint(
-        local_path, literal_exclude_names(exclude_path), filter_sig=_sig
-    )
-    if _fp is None:
+#
+# The fingerprint is computed by the CALLER, at a moment where the tree is
+# known to equal what the remote will hold when the records say "complete":
+# BEFORE the transfer on a push (the tree state the push is acting on), and
+# after the transfer on a pull (the tree the pull produced) -- with the pull
+# side refusing to bless a tree that changed while the transfer ran. Computing
+# it here, at completion time, was the 0.8.1 bug class: a file written while
+# the transfer ran was recorded as synced without ever having been transferred,
+# and became invisible to every later check.
+def _record_baseline(ulid, *, sig: str, fp: "str | None") -> None:
+    if fp is None:
         return
     write_base(
         local_sync_record_path,
         sync_record_ulid=str(ulid),
-        fingerprint=_fp,
-        filter_sig=_sig,
+        fingerprint=fp,
+        filter_sig=sig,
     )
 
 
@@ -428,6 +433,13 @@ rec = SyncRecord.create(syncer_hostname=syncer_hostname, sync_complete=False)
 backup_name = str(rec.ulid)
 
 if sync_direction == SyncDirection.PULL:
+    # Taken BEFORE the transfer starts. Files the pull writes carry the
+    # PUSHER's (older) mtimes, so anything under the box newer than this
+    # moment was written locally while the transfer ran -- and is therefore
+    # not known to be on the remote. The baseline write below refuses to
+    # bless such a tree.
+    _pull_started_at = datetime.now(timezone.utc)
+
     # Save the sync record on local to signify an ongoing sync
     await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
 
@@ -473,7 +485,39 @@ if sync_direction == SyncDirection.PULL:
         # baseline rather than one bound to a record that is not there yet.
         # The tree has already been rewritten by the pull and by
         # `apply_exec_manifest`, so this describes what is actually on disk.
-        _record_baseline(rec.ulid)
+        #
+        # -- UNLESS something was written into the box while the pull ran.
+        # Such a write is on disk but NOT on the remote; blessing it into the
+        # baseline reads SYNCED on the next check, and the pull after that
+        # SILENTLY DELETES it (rclone sync removes extraneous local files, and
+        # the sync backup that momentarily holds it is purged on success). The
+        # old mtime test caught exactly this case -- the racing write's mtime
+        # exceeded the adopted record's timestamp -- so blessing it would be a
+        # regression, not just a gap. Refusing to write leaves "no usable
+        # baseline", i.e. the old test, which keeps the box loud until the
+        # write is pushed. A pusher with a fast clock can trip this refusal
+        # spuriously; that costs staying on the old test for this box, never
+        # a wrong answer.
+        _sig = filter_signature(exclude_path)
+        _newest = check_last_time_modified(
+            local_path, exclude_names=literal_exclude_names(exclude_path)
+        )
+        if _newest is not None and _newest > _pull_started_at:
+            if verbose:
+                print(
+                    "Not recording a sync baseline: files under the box "
+                    "changed while the pull ran; the next sync reconciles them."
+                )
+        else:
+            _record_baseline(
+                rec.ulid,
+                sig=_sig,
+                fp=tree_fingerprint(
+                    local_path,
+                    literal_exclude_names(exclude_path),
+                    filter_sig=_sig,
+                ),
+            )
         await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
 
 elif sync_direction == SyncDirection.PUSH:
@@ -482,6 +526,20 @@ elif sync_direction == SyncDirection.PUSH:
     # rewrites when something changed, so it won't churn an otherwise-clean box.
     if preserve_exec_perms and sync_path_is_dir:
         generate_exec_manifest(local_path)
+
+    # Fingerprint BEFORE the transfer (and after the manifest write above,
+    # whose output file is part of the digest): the tree state this push is
+    # acting on. A file written while rclone is mid-transfer may or may not
+    # reach the remote; fingerprinting at completion would bless it as pushed
+    # either way, making it invisible to every later check -- the exact bug
+    # 0.8.1 shipped for on the restic side ("erring late loses data
+    # silently"). Recording the pre-transfer state instead means a mid-push
+    # write mismatches the baseline on the next check and costs at most one
+    # reconcile push -- the loud direction.
+    _push_sig = filter_signature(exclude_path)
+    _push_fp = tree_fingerprint(
+        local_path, literal_exclude_names(exclude_path), filter_sig=_push_sig
+    )
 
     # Save the incomplete sync record on BOTH local and remote to signify an ongoing sync
     # This creates a "sync session" marker - if interrupted, both sides have the same incomplete ULID,
@@ -505,7 +563,7 @@ elif sync_direction == SyncDirection.PUSH:
     if res:
         # Create a new sync record and save it at the remote
         rec = SyncRecord.create(syncer_hostname=syncer_hostname, sync_complete=True)
-        _record_baseline(rec.ulid)
+        _record_baseline(rec.ulid, sig=_push_sig, fp=_push_fp)
         await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
         await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
 
