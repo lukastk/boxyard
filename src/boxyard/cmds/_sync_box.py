@@ -16,7 +16,7 @@ from .._models import (
     record_meta_base,
 )
 from .._enums import StorageFormat
-from .._fingerprint import filter_signature, tree_fingerprint, write_base
+from .._fingerprint import filter_signature, has_usable_base, tree_fingerprint, write_base
 from .._utils import literal_exclude_names
 from .._ownership import may_push, push_would_transfer, write_denied_message
 from ..config import get_config, StorageType
@@ -389,6 +389,10 @@ async def sync_box(
                     remote_sync_backups_path=remote_sync_backups_path,
                     verbose=verbose,
                     show_rclone_progress=show_rclone_progress,
+                    # The D1 convergence decision (2026-09-03): a META that reads
+                    # SYNCED gets its fingerprint baseline written on the spot --
+                    # an idle box otherwise stays on the mtime fallback for ever.
+                    bless_on_synced=True,
                     **_meta_paths,
                 )
             except SyncUnsafe:
@@ -422,6 +426,7 @@ async def sync_box(
                     remote_sync_backups_path=remote_sync_backups_path,
                     verbose=verbose,
                     show_rclone_progress=show_rclone_progress,
+                    bless_on_synced=True,
                     **_meta_paths,
                 )
             if sync_part in sync_choices:
@@ -475,11 +480,81 @@ async def sync_box(
                 False,
             )
     
+        async def _verify_then_bless_data(
+            status: SyncStatus,
+            *,
+            probe_include_path,
+            probe_exclude_path,
+            probe_filters_path,
+            local_path,
+            local_sync_record_path,
+            remote,
+            remote_path,
+        ) -> None:
+            """
+            The DATA half of the D1 convergence decision (2026-09-03): a box that
+            reads SYNCED off the mtime fallback gets a baseline only after a
+            remote probe PROVES local and remote equal under the box's real
+            filters -- and a probe that finds differences surfaces the historical
+            divergence instead of blessing it. This is what retires the fallback
+            deliberately rather than by assumption; META/CONF take the cheaper
+            bless-on-synced path in `sync_helper`, where divergence stakes are
+            lower. A clean box pays one probe ever -- the baseline it writes ends
+            the probing. A DIVERGED box warns and probes again every pass until a
+            person resolves it: sustained pressure on a real divergence is the
+            point, and the historical backlog is measured in single digits.
+            """
+            if status.sync_condition != SyncCondition.SYNCED:
+                return
+            _rec = status.local_sync_record
+            if _rec is None or not _rec.sync_complete:
+                return
+            _sig = filter_signature(probe_exclude_path)
+            if has_usable_base(
+                local_sync_record_path, sync_record_ulid=_rec.ulid, filter_sig=_sig
+            ):
+                return
+            # Fingerprint BEFORE the probe (the usual rule: anything changed after
+            # this walk mismatches next pass, the loud direction).
+            _fp = tree_fingerprint(
+                Path(local_path), literal_exclude_names(probe_exclude_path), filter_sig=_sig
+            )
+            if _fp is None:
+                return
+            _clean = not await push_would_transfer(
+                config,
+                local_path=Path(local_path),
+                remote=remote,
+                remote_path=Path(remote_path),
+                include_path=probe_include_path,
+                exclude_path=probe_exclude_path,
+                filters_path=probe_filters_path,
+            )
+            if _clean:
+                write_base(
+                    local_sync_record_path,
+                    sync_record_ulid=str(_rec.ulid),
+                    fingerprint=_fp,
+                    filter_sig=_sig,
+                )
+                return
+            # Not gated on `verbose`: this is the historical backlog the mtime
+            # test blessed as SYNCED for years, surfacing exactly once per box.
+            print(
+                f"WARNING: '{box_index_name}' reads SYNCED but its local and "
+                f"remote DATA actually differ -- an old divergence the mtime test "
+                f"could not see. No baseline was recorded. Inspect with `boxyard "
+                f"box-status -r '{box_index_name}'` and compare with `boxyard "
+                f"copy -r '{box_index_name}' -d <tmp>`, then resolve with an "
+                f"explicit `--sync-direction` and `--sync-setting force`."
+            )
+    
         async def _sync_part(
             *,
             probe_include_path=None,
             probe_exclude_path=None,
             probe_filters_path=None,
+            verify_bless_data: bool = False,
             **helper_kwargs,
         ) -> tuple[SyncStatus, bool]:
             """
@@ -491,7 +566,19 @@ async def sync_box(
             `SyncCondition.WRITE_DENIED`.
             """
             if _may_push:
-                return await sync_helper(**helper_kwargs)
+                _owner_result = await sync_helper(**helper_kwargs)
+                if verify_bless_data:
+                    await _verify_then_bless_data(
+                        _owner_result[0],
+                        probe_include_path=probe_include_path,
+                        probe_exclude_path=probe_exclude_path,
+                        probe_filters_path=probe_filters_path,
+                        local_path=helper_kwargs["local_path"],
+                        local_sync_record_path=helper_kwargs["local_sync_record_path"],
+                        remote=helper_kwargs["remote"],
+                        remote_path=helper_kwargs["remote_path"],
+                    )
+                return _owner_result
     
             # Only a non-owner pays for this extra status read; an unowned box or
             # one we own takes the path above untouched.
@@ -513,6 +600,40 @@ async def sync_box(
             _condition = _status.sync_condition
     
             if _condition == SyncCondition.SYNCED:
+                # The non-owner side of the two convergence paths: DATA
+                # verify-then-bless (a remote probe must prove equality), or the
+                # cheap bless-on-synced that `sync_helper` would have applied for
+                # META/CONF had this early return not preceded it.
+                if verify_bless_data:
+                    await _verify_then_bless_data(
+                        _status,
+                        probe_include_path=probe_include_path,
+                        probe_exclude_path=probe_exclude_path,
+                        probe_filters_path=probe_filters_path,
+                        local_path=helper_kwargs["local_path"],
+                        local_sync_record_path=helper_kwargs["local_sync_record_path"],
+                        remote=helper_kwargs["remote"],
+                        remote_path=helper_kwargs["remote_path"],
+                    )
+                elif helper_kwargs.get("bless_on_synced") and _status.local_sync_record is not None and _status.local_sync_record.sync_complete:
+                    _bs_sig = filter_signature(probe_exclude_path)
+                    if not has_usable_base(
+                        helper_kwargs["local_sync_record_path"],
+                        sync_record_ulid=_status.local_sync_record.ulid,
+                        filter_sig=_bs_sig,
+                    ):
+                        _bs_fp = tree_fingerprint(
+                            Path(helper_kwargs["local_path"]),
+                            literal_exclude_names(probe_exclude_path),
+                            filter_sig=_bs_sig,
+                        )
+                        if _bs_fp is not None:
+                            write_base(
+                                helper_kwargs["local_sync_record_path"],
+                                sync_record_ulid=str(_status.local_sync_record.ulid),
+                                fingerprint=_bs_fp,
+                                filter_sig=_bs_sig,
+                            )
                 return _status, False
     
             if _condition == SyncCondition.NEEDS_PULL:
@@ -614,6 +735,8 @@ async def sync_box(
             # ownership could never be transferred and `groups`/`parents` could not
             # be edited from a non-owner.
             _conf_sync_result = await _sync_part(
+                # D1: CONF, like META, blesses on a SYNCED verdict.
+                bless_on_synced=True,
                 rclone_config_path=config.rclone_config_path,
                 sync_direction=sync_direction,
                 sync_setting=sync_setting,
@@ -644,19 +767,16 @@ async def sync_box(
         _rclone_include_path = (
             box_meta.get_local_part_path(config, BoxPart.CONF) / const.RCLONE_INCLUDE_FILENAME
         )
-        _rclone_exclude_path = (
-            box_meta.get_local_part_path(config, BoxPart.CONF) / const.RCLONE_EXCLUDE_FILENAME
-        )
+        _rclone_exclude_path = None  # replaced below by the shared resolver
         _rclone_filters_path = (
             box_meta.get_local_part_path(config, BoxPart.CONF) / const.RCLONE_FILTERS_FILENAME
         )
     
         _rclone_include_path = _rclone_include_path if _rclone_include_path.exists() else None
-        _rclone_exclude_path = (
-            _rclone_exclude_path
-            if _rclone_exclude_path.exists()
-            else config.default_rclone_exclude_path
-        )
+        # One resolver for the effective exclude, everywhere: the filter SIGNATURE
+        # is part of the fingerprint baseline, so every reader and writer must
+        # agree on which file is in effect or baselines read as unusable.
+        _rclone_exclude_path = box_meta.get_effective_exclude_path(config)
         _rclone_filters_path = _rclone_filters_path if _rclone_filters_path.exists() else None
     
         # Sync the box data
@@ -712,6 +832,11 @@ async def sync_box(
                 probe_include_path=_rclone_include_path,
                 probe_exclude_path=_rclone_exclude_path,
                 probe_filters_path=_rclone_filters_path,
+                # D1: DATA converges by verify-then-bless -- a SYNCED verdict with
+                # no usable baseline pays one remote probe, writes the baseline on
+                # proven equality, and SURFACES a historical divergence instead of
+                # blessing it.
+                verify_bless_data=True,
                 rclone_config_path=config.rclone_config_path,
                 sync_direction=sync_direction,
                 sync_setting=sync_setting,

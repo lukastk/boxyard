@@ -377,6 +377,26 @@ def clear_base(local_sync_record_path: "str | Path") -> None:
     base_path_for(local_sync_record_path).unlink(missing_ok=True)
 
 
+def has_usable_base(
+    local_sync_record_path: "str | Path",
+    *,
+    sync_record_ulid,
+    filter_sig: str,
+) -> bool:
+    """
+    Would `local_tree_differs` accept this baseline? -- WITHOUT walking the
+    tree. Used by the convergence paths ("does this box still need a
+    baseline?") and by doctor's coverage gauge, so the two can never disagree
+    about what "usable" means.
+    """
+    base = read_base(local_sync_record_path)
+    return (
+        base is not None
+        and base["sync_record_ulid"] == str(sync_record_ulid)
+        and base.get("filter_signature") == filter_sig
+    )
+
+
 # %%
 #|export
 def local_tree_differs(

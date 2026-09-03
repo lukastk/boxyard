@@ -79,6 +79,7 @@ async def sync_helper(
     show_rclone_progress: bool = False,
     allow_missing_source: bool = False,
     preserve_exec_perms: bool = False,
+    bless_on_synced: bool = False,
 ) -> tuple[SyncStatus, bool]:
     """
     Helper to execute the standard routine for syncing a local and remote folder.
@@ -242,6 +243,42 @@ def _raise_unsafe(message=None):
 
 
 if sync_setting != SyncSetting.FORCE and sync_condition == SyncCondition.SYNCED:
+    # `bless_on_synced` -- the convergence path for parts whose SYNCED verdict
+    # is trusted as-is (META and CONF, per the D1 decision, 2026-09-03). A box
+    # that is already in sync never reaches the completion writes below, so a
+    # box that predates the fingerprint would stay on the mtime fallback FOR
+    # EVER without this. Writing here records the CURRENT tree against the
+    # CURRENT matching records: for a part with a historical invisible
+    # divergence that is exactly what the fallback already reports (SYNCED),
+    # so nothing regresses -- and every FUTURE change shape becomes visible.
+    # DATA deliberately does not take this path: its bless is gated on a
+    # remote probe in `sync_box` (verify-then-bless), because DATA divergence
+    # is where real work hides.
+    if bless_on_synced and local_sync_record is not None and local_sync_record.sync_complete:
+        from boxyard._fingerprint import (
+            filter_signature as _bs_sig_of,
+            has_usable_base as _bs_has_usable,
+            tree_fingerprint as _bs_fp_of,
+            write_base as _bs_write_base,
+        )
+        from boxyard._utils import literal_exclude_names as _bs_excl_of
+
+        _bs_sig = _bs_sig_of(exclude_path)
+        if not _bs_has_usable(
+            local_sync_record_path,
+            sync_record_ulid=local_sync_record.ulid,
+            filter_sig=_bs_sig,
+        ):
+            _bs_fp = _bs_fp_of(
+                local_path, _bs_excl_of(exclude_path), filter_sig=_bs_sig
+            )
+            if _bs_fp is not None:
+                _bs_write_base(
+                    local_sync_record_path,
+                    sync_record_ulid=str(local_sync_record.ulid),
+                    fingerprint=_bs_fp,
+                    filter_sig=_bs_sig,
+                )
     if verbose:
         print("Sync not needed.")
     sync_status, False  #|func_return_line

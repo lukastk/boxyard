@@ -935,15 +935,7 @@ async def run_doctor(
                     # match, which would silently park those parts on the mtime
                     # fallback for ever and let doctor and sync disagree after all.
                     if _part is BoxPart.DATA:
-                        _conf_exclude = (
-                            _bm.get_local_part_path(config, BoxPart.CONF)
-                            / const.RCLONE_EXCLUDE_FILENAME
-                        )
-                        _exc = (
-                            _conf_exclude
-                            if _conf_exclude.exists()
-                            else config.default_rclone_exclude_path
-                        )
+                        _exc = _bm.get_effective_exclude_path(config)
                     else:
                         _exc = None
                     # The comment above promises this mirrors `get_sync_status`
@@ -1372,12 +1364,7 @@ async def run_doctor(
                 continue  # not here at all, so nothing of ours can be stranded
     
             _data_path = bm.get_local_part_path(config, _BoxPart.DATA)
-            _conf_exclude = (
-                bm.get_local_part_path(config, _BoxPart.CONF) / const.RCLONE_EXCLUDE_FILENAME
-            )
-            _effective_exclude = (
-                _conf_exclude if _conf_exclude.exists() else config.default_rclone_exclude_path
-            )
+            _effective_exclude = bm.get_effective_exclude_path(config)
     
             _rec_path = bm.get_local_sync_record_path(config, _BoxPart.DATA)
             if not _rec_path.exists():
@@ -1490,7 +1477,7 @@ async def run_doctor(
     from boxyard._enums import StorageFormat as _FpStorageFormat
     from boxyard._fingerprint import (
         filter_signature as _fp_filter_signature,
-        read_base as _fp_read_base,
+        has_usable_base as _fp_has_usable_base,
     )
     from boxyard._models import BoxPart as _FpBoxPart, SyncRecord as _FpSyncRecord
     
@@ -1512,22 +1499,13 @@ async def run_doctor(
             if not _rec.sync_complete:
                 continue  # so is an interrupted one
             if _part is _FpBoxPart.DATA:
-                _fp_conf_exclude = (
-                    bm.get_local_part_path(config, _FpBoxPart.CONF)
-                    / const.RCLONE_EXCLUDE_FILENAME
-                )
-                _fp_exc = (
-                    _fp_conf_exclude
-                    if _fp_conf_exclude.exists()
-                    else config.default_rclone_exclude_path
-                )
+                _fp_exc = bm.get_effective_exclude_path(config)
             else:
                 _fp_exc = None
-            _base = _fp_read_base(_rec_path)
-            if (
-                _base is not None
-                and _base["sync_record_ulid"] == str(_rec.ulid)
-                and _base.get("filter_signature") == _fp_filter_signature(_fp_exc)
+            if _fp_has_usable_base(
+                _rec_path,
+                sync_record_ulid=_rec.ulid,
+                filter_sig=_fp_filter_signature(_fp_exc),
             ):
                 _fp_covered += 1
             else:
