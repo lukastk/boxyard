@@ -275,7 +275,7 @@ def test_an_upgraded_machine_can_restore_the_converted_box(two, tmp_path):
     )
     (tmp_path / "cache2").mkdir(exist_ok=True)
     dest = tmp_path / "restored"
-    run(pull(repo, dest, target_snapshot=result["snapshot_id"], base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=result["snapshot_id"], base_snapshot=None, excludes=[]))
     # Compared the way the conversion itself does: the exec-bit manifest is
     # excluded from the snapshot on purpose, because restic carries mode
     # natively, so its absence from the restore is the design working.

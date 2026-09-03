@@ -1719,14 +1719,50 @@ def apply_removals(data_path: Path, rel_paths: list[str]) -> int:
     return removed
 
 
+def matches_restic_exclude(rel: str, excludes: list[str]) -> bool:
+    """
+    Would `excludes` (translated restic patterns) exclude this relative path?
+
+    Mirrors restic's unanchored-pattern semantics the way `convert`'s verifier
+    does: an unanchored pattern matches ANY path component (excluding `.venv`
+    prunes everything beneath it), an anchored one matches from the box root.
+    Used to keep pulls off excluded content -- see `pull` -- so erring towards
+    True merely leaves a local file alone.
+    """
+    import fnmatch
+
+    components = rel.split("/")
+    for pattern in excludes:
+        if pattern.startswith("/"):
+            anchored = pattern.lstrip("/")
+            if fnmatch.fnmatch(rel, anchored) or rel.startswith(anchored + "/"):
+                return True
+        elif any(fnmatch.fnmatch(c, pattern) for c in components):
+            return True
+    return False
+
+
 async def pull(
     repo: ResticRepo,
     data_path: Path,
     *,
     target_snapshot: str,
     base_snapshot: str | None,
+    excludes: list[str],
 ) -> PullResult:
-    """Bring the local tree to `target_snapshot`."""
+    """
+    Bring the local tree to `target_snapshot`.
+
+    `excludes` is REQUIRED, not defaulted: the full-mode restore below runs
+    with `--delete`, and without the box's exclude patterns it deletes local
+    excluded content -- `.venv/` and friends, which the snapshot deliberately
+    never carried. Measured on restic 0.18.0, and unlike a plain pull there is
+    no `--backup-dir`, so what it deletes is locally unrecoverable. The
+    exclude contract everywhere else in boxyard is "excluded content is
+    local-only and untouched"; a defaulted `[]` here would let a new caller
+    silently violate it. A caller restoring into an EMPTY or throwaway target
+    (convert's verifier) passes `[]` explicitly and says why.
+    """
     data_path = Path(data_path)
     data_path.mkdir(parents=True, exist_ok=True)
 
@@ -1737,11 +1773,18 @@ async def pull(
             f"recorded source path."
         )
 
+    _exclude_args = [arg for pat in excludes for arg in ("--exclude", pat)]
+
     async def _full(mode: PullMode) -> PullResult:
         # `<snap>:<source>` places the snapshot's CONTENTS at the target,
         # rather than at `<target>/<absolute source path>` which the plain form
         # produces. That is what makes the local checkout path independent of
         # the pusher's -- mymain alone has two checkout roots.
+        #
+        # The excludes ride along so `--delete` cannot touch local excluded
+        # content (verified: restic's restore filters also decide what gets
+        # deleted). They cost the restore nothing -- the snapshot never held
+        # those paths to begin with.
         await run_restic(
             repo,
             [
@@ -1750,7 +1793,8 @@ async def pull(
                 "--target",
                 str(data_path),
                 "--delete",
-            ],
+            ]
+            + _exclude_args,
         )
         return PullResult(mode=mode, snapshot_id=target_snapshot)
 
@@ -1800,6 +1844,14 @@ async def pull(
             + anchored_include_args(changed),
         )
 
+    # The diff tier needs the same protection as the full tier, for a subtler
+    # reason: the diff names what changed BETWEEN SNAPSHOTS, and the exclude
+    # list can change between them too. Add `.coverage` to the excludes, push,
+    # and the newer snapshot simply lacks every `.coverage` -- so the diff says
+    # "removed", and a replica's pull would delete its local copies of files
+    # that were never deleted anywhere, merely excluded. Excluded content is
+    # local-only and untouched, on every tier.
+    removed = [r for r in removed if not matches_restic_exclude(r, excludes)]
     removed_count = apply_removals(data_path, removed)
     return PullResult(
         mode=PullMode.DIFF,

@@ -331,7 +331,11 @@ async def sync_data_restic(
         )
         mark_pull_started(config.boxyard_data_path, index_name, remote_snapshot)
         await pull(
-            repo, data_path, target_snapshot=remote_snapshot, base_snapshot=None
+            repo,
+            data_path,
+            target_snapshot=remote_snapshot,
+            base_snapshot=None,
+            excludes=excludes,
         )
         write_state(
             config.boxyard_data_path, index_name, remote_snapshot,
@@ -371,6 +375,7 @@ async def sync_data_restic(
             data_path,
             target_snapshot=interrupted_pull,
             base_snapshot=None,  # the tree is torn; a diff against it is meaningless
+            excludes=excludes,
         )
         write_state(
             config.boxyard_data_path, index_name, outcome.snapshot_id,
@@ -447,7 +452,11 @@ async def sync_data_restic(
         _say(f"Adopting the converted box '{index_name}' on this machine.")
         mark_pull_started(config.boxyard_data_path, index_name, remote_snapshot)
         await pull(
-            repo, data_path, target_snapshot=remote_snapshot, base_snapshot=None
+            repo,
+            data_path,
+            target_snapshot=remote_snapshot,
+            base_snapshot=None,
+            excludes=excludes,
         )
         write_state(
             config.boxyard_data_path, index_name, remote_snapshot,
@@ -495,6 +504,7 @@ async def sync_data_restic(
             data_path,
             target_snapshot=remote_snapshot,
             base_snapshot=local_snapshot,
+            excludes=excludes,
         )
         write_state(
             config.boxyard_data_path, index_name, remote_snapshot,

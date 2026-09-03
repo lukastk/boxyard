@@ -255,7 +255,12 @@ async def _reverse_to_plain(
     with tempfile.TemporaryDirectory(prefix="boxyard-reverse-") as _tmp:
         _restored = Path(_tmp) / "restored"
         _restored.mkdir()
-        await pull(repo, _restored, target_snapshot=_snapshot, base_snapshot=None)
+        # `excludes=[]`: the target is an empty throwaway directory, so there
+        # is no local excluded content for `--delete` to endanger -- and the
+        # verifier must see the WHOLE snapshot, unfiltered.
+        await pull(
+            repo, _restored, target_snapshot=_snapshot, base_snapshot=None, excludes=[]
+        )
         # `excludes` is NOT optional, and the forward path shipped without it:
         # the snapshot was written THROUGH the exclude list, so comparing the
         # whole local checkout against it reports every excluded path as a
@@ -829,6 +834,9 @@ try:
             _restored,
             target_snapshot=_push.snapshot_id,
             base_snapshot=None,
+            # Empty throwaway target: nothing local for `--delete` to endanger,
+            # and the verifier must see the WHOLE snapshot, unfiltered.
+            excludes=[],
         )
         _problems = compare_trees(_local_data, _restored, _excludes)
         # What restic ACTUALLY carried, which is not `_file_count`. That one is a

@@ -180,7 +180,7 @@ def test_the_excluded_manifest_is_not_restored_either(repo, data, tmp_path):
     result = run(push(repo, data))
 
     dest = tmp_path / "restored"
-    run(pull(repo, dest, target_snapshot=result.snapshot_id, base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=result.snapshot_id, base_snapshot=None, excludes=[]))
 
     assert not (dest / const.BOX_PERMS_MANIFEST_REL_PATH).exists()
     assert (dest / "notes.md").exists()
@@ -239,7 +239,7 @@ def test_a_pull_lands_contents_at_the_target_not_under_the_source_path(
     result = run(push(repo, data))
     dest = tmp_path / "elsewhere" / "different" / "root"
 
-    run(pull(repo, dest, target_snapshot=result.snapshot_id, base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=result.snapshot_id, base_snapshot=None, excludes=[]))
 
     assert (dest / "notes.md").read_text() == "first\n"
     assert (dest / "sub" / "keep.txt").exists()
@@ -277,6 +277,7 @@ def test_a_diff_across_two_source_paths_is_refused_not_acted_on(repo, tmp_path):
             dest,
             target_snapshot=snap_b.snapshot_id,
             base_snapshot=snap_a.snapshot_id,
+            excludes=[],
         )
     )
 
@@ -293,7 +294,7 @@ def test_a_full_pull_is_byte_identical(repo, data, tmp_path):
     result = run(push(repo, data))
     dest = tmp_path / "dest"
     outcome = run(
-        pull(repo, dest, target_snapshot=result.snapshot_id, base_snapshot=None)
+        pull(repo, dest, target_snapshot=result.snapshot_id, base_snapshot=None, excludes=[])
     )
     assert outcome.mode is PullMode.FULL_NO_BASE
     assert tree(dest) == tree(data)
@@ -302,7 +303,7 @@ def test_a_full_pull_is_byte_identical(repo, data, tmp_path):
 def test_an_incremental_pull_uses_the_diff_and_matches(repo, data, tmp_path):
     first = run(push(repo, data))
     dest = tmp_path / "dest"
-    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
 
     (data / "notes.md").write_text("second\n")
     (data / "sub" / "added.txt").write_text("new\n")
@@ -314,6 +315,7 @@ def test_an_incremental_pull_uses_the_diff_and_matches(repo, data, tmp_path):
             dest,
             target_snapshot=second.snapshot_id,
             base_snapshot=first.snapshot_id,
+            excludes=[],
         )
     )
 
@@ -329,7 +331,7 @@ def test_a_deletion_propagates_through_the_diff_path(repo, data, tmp_path):
     """
     first = run(push(repo, data))
     dest = tmp_path / "dest"
-    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
     assert (dest / "sub" / "doomed.txt").exists()
 
     (data / "sub" / "doomed.txt").unlink()
@@ -341,6 +343,7 @@ def test_a_deletion_propagates_through_the_diff_path(repo, data, tmp_path):
             dest,
             target_snapshot=second.snapshot_id,
             base_snapshot=first.snapshot_id,
+            excludes=[],
         )
     )
 
@@ -353,12 +356,87 @@ def test_a_deletion_propagates_through_the_diff_path(repo, data, tmp_path):
 def test_a_full_pull_removes_strays(repo, data, tmp_path):
     result = run(push(repo, data))
     dest = tmp_path / "dest"
-    run(pull(repo, dest, target_snapshot=result.snapshot_id, base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=result.snapshot_id, base_snapshot=None, excludes=[]))
     (dest / "stray.txt").write_text("not in the snapshot\n")
 
-    run(pull(repo, dest, target_snapshot=result.snapshot_id, base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=result.snapshot_id, base_snapshot=None, excludes=[]))
 
     assert not (dest / "stray.txt").exists()
+
+
+def test_a_full_pull_leaves_excluded_content_alone(repo, data, tmp_path):
+    """
+    `restore --delete` deletes anything in the target that is not in the
+    snapshot -- and excluded content is NEVER in the snapshot, by design.
+    Measured on restic 0.18.0: without the excludes riding along, a full pull
+    deleted the replica's `.venv/`, with no `--backup-dir` to recover it from.
+    The exclude contract everywhere else in boxyard is "excluded content is
+    local-only and untouched"; the full tier must honour it while still
+    removing genuine strays.
+    """
+    result = run(push(repo, data, excludes=[".venv"]))
+    dest = tmp_path / "dest"
+    run(
+        pull(
+            repo,
+            dest,
+            target_snapshot=result.snapshot_id,
+            base_snapshot=None,
+            excludes=[".venv"],
+        )
+    )
+
+    (dest / ".venv" / "lib").mkdir(parents=True)
+    (dest / ".venv" / "lib" / "x.so").write_text("local-only\n")
+    (dest / "stray.txt").write_text("not in the snapshot\n")
+
+    run(
+        pull(
+            repo,
+            dest,
+            target_snapshot=result.snapshot_id,
+            base_snapshot=None,
+            excludes=[".venv"],
+        )
+    )
+
+    assert (dest / ".venv" / "lib" / "x.so").read_text() == "local-only\n"
+    assert not (dest / "stray.txt").exists()
+
+
+def test_the_diff_tier_does_not_delete_newly_excluded_content(repo, data, tmp_path):
+    """
+    The diff names what changed BETWEEN SNAPSHOTS, and the exclude list can
+    change between them too: exclude `.coverage`, push, and the newer snapshot
+    simply lacks it -- so the diff reads "removed" for files that were never
+    deleted anywhere, merely excluded. A replica's pull must not act on that.
+    """
+    (data / ".coverage").write_text("expensive local state\n")
+    first = run(push(repo, data))  # not yet excluded: the snapshot carries it
+    dest = tmp_path / "dest"
+    run(
+        pull(
+            repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]
+        )
+    )
+    assert (dest / ".coverage").exists()
+
+    (data / "notes.md").write_text("moved on\n")
+    second = run(push(repo, data, parent=first.snapshot_id, excludes=[".coverage"]))
+
+    outcome = run(
+        pull(
+            repo,
+            dest,
+            target_snapshot=second.snapshot_id,
+            base_snapshot=first.snapshot_id,
+            excludes=[".coverage"],
+        )
+    )
+
+    assert outcome.mode is PullMode.DIFF
+    assert (dest / ".coverage").read_text() == "expensive local state\n"
+    assert (dest / "notes.md").read_text() == "moved on\n"
 
 
 def test_pull_refuses_a_snapshot_that_is_not_there(repo, tmp_path):
@@ -369,6 +447,7 @@ def test_pull_refuses_a_snapshot_that_is_not_there(repo, tmp_path):
                 tmp_path / "dest",
                 target_snapshot="0" * 64,
                 base_snapshot=None,
+                excludes=[],
             )
         )
 
@@ -386,7 +465,7 @@ def test_unix_mode_survives_a_round_trip(repo, data, tmp_path):
 
     result = run(push(repo, data))
     dest = tmp_path / "dest"
-    run(pull(repo, dest, target_snapshot=result.snapshot_id, base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=result.snapshot_id, base_snapshot=None, excludes=[]))
 
     assert (dest / "run.sh").stat().st_mode & 0o777 == 0o755
     assert (dest / "notes.md").stat().st_mode & 0o777 == 0o644
@@ -549,7 +628,7 @@ def test_no_timestamp_and_a_forgotten_base_assumes_changed(repo, data):
 def test_a_pull_with_a_forgotten_base_falls_back_and_converges(repo, data, tmp_path):
     first = run(push(repo, data))
     dest = tmp_path / "dest"
-    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
 
     (data / "notes.md").write_text("moved on\n")
     second = run(push(repo, data, parent=first.snapshot_id))
@@ -561,6 +640,7 @@ def test_a_pull_with_a_forgotten_base_falls_back_and_converges(repo, data, tmp_p
             dest,
             target_snapshot=second.snapshot_id,
             base_snapshot=first.snapshot_id,
+            excludes=[],
         )
     )
 
@@ -609,7 +689,7 @@ def test_status_is_needs_pull_when_only_the_remote_moved(repo, data, tmp_path):
     """
     first = run(push(repo, data))
     dest = tmp_path / "dest"
-    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
     write_state(tmp_path / "yard", "box", first.snapshot_id)
     state = read_state(tmp_path / "yard", "box")
 
@@ -637,7 +717,7 @@ def test_a_replica_at_a_different_path_is_not_falsely_modified(repo, data, tmp_p
     """
     first = run(push(repo, data))
     dest = tmp_path / "dest"
-    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
     write_state(tmp_path / "yard", "box", first.snapshot_id)
     state = read_state(tmp_path / "yard", "box")
 
@@ -663,7 +743,7 @@ def test_status_without_a_timestamp_is_conservative(repo, data, tmp_path):
     """
     first = run(push(repo, data))
     dest = tmp_path / "dest"
-    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
     (data / "notes.md").write_text("pushed elsewhere\n")
     second = run(push(repo, data, parent=first.snapshot_id))
 
@@ -683,7 +763,7 @@ def test_status_is_conflict_when_both_moved(repo, data, tmp_path):
 
     first = run(push(repo, data))
     dest = tmp_path / "dest"
-    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
     write_state(tmp_path / "yard", "box", first.snapshot_id)
     state = read_state(tmp_path / "yard", "box")
 
@@ -718,7 +798,7 @@ def test_a_forgotten_base_does_not_become_a_false_conflict(repo, data, tmp_path)
 
     first = run(push(repo, data))
     dest = tmp_path / "dest"
-    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None))
+    run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
     synced_at = time.time() + 1
 
     (data / "notes.md").write_text("theirs\n")
@@ -926,7 +1006,7 @@ def test_a_replica_on_another_checkout_root_is_not_falsely_modified(
 
     shutil.rmtree(m2)
     m2.mkdir(parents=True)
-    run(pull(repo, m2, target_snapshot=first.snapshot_id, base_snapshot=None))
+    run(pull(repo, m2, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
 
     assert (
         run(
@@ -944,7 +1024,7 @@ def test_an_edit_on_the_replica_is_still_seen(repo, canon_root, two_machines):
     first = run(push(repo, m1, box_index_name=idx))
     shutil.rmtree(m2)
     m2.mkdir(parents=True)
-    run(pull(repo, m2, target_snapshot=first.snapshot_id, base_snapshot=None))
+    run(pull(repo, m2, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
 
     (m2 / "a.txt").write_text("edited on the replica\n")
 
@@ -975,7 +1055,7 @@ def test_a_diff_pull_works_across_checkout_roots(repo, canon_root, two_machines)
     first = run(push(repo, m1, box_index_name=idx))
     shutil.rmtree(m2)
     m2.mkdir(parents=True)
-    run(pull(repo, m2, target_snapshot=first.snapshot_id, base_snapshot=None))
+    run(pull(repo, m2, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
 
     (m1 / "a.txt").write_text("moved on\n")
     second = run(push(repo, m1, box_index_name=idx, parent=first.snapshot_id))
@@ -986,6 +1066,7 @@ def test_a_diff_pull_works_across_checkout_roots(repo, canon_root, two_machines)
             m2,
             target_snapshot=second.snapshot_id,
             base_snapshot=first.snapshot_id,
+            excludes=[],
         )
     )
     assert outcome.mode is PullMode.DIFF
@@ -1031,7 +1112,7 @@ def test_a_machine_without_a_canonical_root_can_still_pull(
         "boxyard._restic.const.RESTIC_CANONICAL_ROOT", "/proc/cannot-create-me"
     )
     shutil.rmtree(m2)
-    run(pull(repo, m2, target_snapshot=first.snapshot_id, base_snapshot=None))
+    run(pull(repo, m2, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
     assert tree(m2) == tree(m1)
 
 

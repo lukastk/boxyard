@@ -135,15 +135,22 @@ async def discard_local(
             _backup_dir.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(_data_path, _backup_dir, symlinks=True)
     
+            _restic_excludes = restic_excludes_from_rclone_file(_exclude_path)
+            # The excludes ride along so the restore's `--delete` cannot touch
+            # excluded local content: discarding this machine's WORK must not also
+            # delete its `.venv/` -- content the snapshot never carried and the
+            # backup above is not the only copy of. Same contract as the plain
+            # branch below, where rclone retains excluded destination files.
             await _restic_pull(
                 _repo, _data_path,
                 target_snapshot=_pointer["snapshot"], base_snapshot=None,
+                excludes=_restic_excludes,
             )
             _restic_write_state(
                 config.boxyard_data_path, box_index_name, _pointer["snapshot"],
                 files=await _restic_count(
                     _repo, _data_path,
-                    excludes=restic_excludes_from_rclone_file(_exclude_path),
+                    excludes=_restic_excludes,
                     box_index_name=box_index_name,
                 ),
             )

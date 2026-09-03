@@ -214,6 +214,7 @@ if _box_meta_for_format.storage_format is StorageFormat.RESTIC:
         read_pointer,
         require_restic_available,
         pull as _restic_pull,
+        restic_excludes_from_rclone_file,
     )
 
     require_restic_available(config, f"copy '{box_index_name}' from the remote")
@@ -237,11 +238,25 @@ if _box_meta_for_format.storage_format is StorageFormat.RESTIC:
             f"Restoring DATA from {_repo.url} snapshot "
             f"{_pointer['snapshot'][:8]} to {dest_path}"
         )
+    # The box's excludes ride along so the restore's `--delete` cannot touch
+    # excluded content at the destination -- the copy usually lands in a fresh
+    # directory, where this changes nothing, but copying over an existing tree
+    # must honour the same "excluded content is local-only and untouched"
+    # contract as every other restore. (That the full restore deletes
+    # NON-excluded extraneous files at the destination, where the plain
+    # branch's `rclone copy` never deletes anything, is a pre-existing
+    # semantic difference recorded on ticket 43f05498.)
+    _conf_exclude = _box_meta_for_format.get_local_part_path(
+        config, BoxPart.CONF
+    ) / const.RCLONE_EXCLUDE_FILENAME
     await _restic_pull(
         _repo,
         dest_path,
         target_snapshot=_pointer["snapshot"],
         base_snapshot=None,
+        excludes=restic_excludes_from_rclone_file(
+            _conf_exclude if _conf_exclude.exists() else config.default_rclone_exclude_path
+        ),
     )
 else:
     if verbose:
