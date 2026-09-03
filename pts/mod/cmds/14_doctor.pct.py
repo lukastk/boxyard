@@ -1369,7 +1369,8 @@ else:
                     local_path=_bm.get_local_part_path(config, _part),
                     local_sync_record_path=_local_rec_path,
                     local_sync_record_ulid=_local_rec.ulid,
-                    exclude_names=literal_exclude_names(_exc),
+                    rclone_config_path=config.rclone_config_path,
+                    exclude_file=_exc,
                     filter_sig=_sig,
                 )
                 if _fp_changed is None:
@@ -2005,7 +2006,8 @@ else:
             local_path=_data_path,
             local_sync_record_path=_rec_path,
             local_sync_record_ulid=_rec.ulid,
-            exclude_names=literal_exclude_names(_effective_exclude),
+            rclone_config_path=config.rclone_config_path,
+            exclude_file=_effective_exclude,
             filter_sig=filter_signature(_effective_exclude),
         )
         if _wd_changed is None:

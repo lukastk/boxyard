@@ -3,58 +3,75 @@
 __all__ = ['FINGERPRINT_VERSION', 'base_path_for', 'clear_base', 'filter_signature', 'has_usable_base', 'local_tree_differs', 'read_base', 'tree_fingerprint', 'write_base']
 
 # %% pts/mod/_fingerprint.pct.py 3
+import csv
 import hashlib
+import io
 import json
 import os
 import stat as stat_mod
+import subprocess
 from pathlib import Path
 
 from . import const
 
 
-FINGERPRINT_VERSION = 1
+FINGERPRINT_VERSION = 2
 """Bumped when the digest's INPUTS change, so old sidecars read as unusable
-rather than being compared against a digest computed a different way."""
+rather than being compared against a digest computed a different way.
+
+v2 (2026-09-03): the tree is enumerated by rclone itself (`lsf` under the
+box's real exclude file) instead of a Python walk over literal exclude names,
+and the mtime is recorded as rclone's own max-precision string. Every v1
+sidecar reads as unusable; the box falls back to the mtime test and regains a
+v2 baseline through the ordinary convergence paths (bless-on-synced /
+verify-then-bless)."""
 
 # %% pts/mod/_fingerprint.pct.py 4
-def filter_signature(
-    exclude_path: "str | Path | None",
-    include_path: "str | Path | None" = None,
-    filters_path: "str | Path | None" = None,
-) -> str:
+def filter_signature(exclude_path: "str | Path | None") -> str:
     """
     A digest of the ACTIVE filter rules, so changing scope forces a reconcile.
 
     Blank lines and whole-line comments are normalised away, so reformatting a
-    comment does not churn every box. This is not a reimplementation of rclone's
-    matching -- it only has to change when the rules change.
+    comment does not churn every box.
+
+    Only the EXCLUDE file is signed, and that is now exact rather than a
+    simplification: the rclone command builder refuses to combine filter
+    families, so an exclude file is the only rule set a box can sync under.
+    (Include/filters files gate the sync itself until the translation work on
+    ticket 43f05498 -- this function once accepted them as parameters that no
+    caller ever passed.)
     """
     parts: list[str] = []
-    for label, path in (
-        ("exclude", exclude_path),
-        ("include", include_path),
-        ("filters", filters_path),
-    ):
-        if path is None:
-            continue
+    if exclude_path is not None:
         try:
-            text = Path(path).read_text(encoding="utf-8")
+            text = Path(exclude_path).read_text(encoding="utf-8")
         except FileNotFoundError:
-            continue
+            text = ""
         rules = [
             ln.strip()
             for ln in text.splitlines()
             if ln.strip() and not ln.strip().startswith("#")
         ]
-        parts.append(f"{label}:" + "\n".join(rules))
+        if rules:
+            parts.append("exclude:" + "\n".join(rules))
     digest = hashlib.sha256("\n--\n".join(parts).encode("utf-8")).hexdigest()
     return digest[:32]
 
 # %% pts/mod/_fingerprint.pct.py 5
+_RCLONELINK_SUFFIX = ".rclonelink"
+
+
+def _rclone_binary() -> str:
+    from ._utils.rclone import get_rclone_binary
+
+    return get_rclone_binary()
+
+
 def tree_fingerprint(
     path: "str | Path",
-    exclude_names: "set[str] | None" = None,
     *,
+    rclone_config_path: "str | Path | None" = None,
+    exclude_file: "str | Path | None" = None,
     filter_sig: str = "",
 ) -> "str | None":
     """
@@ -65,76 +82,101 @@ def tree_fingerprint(
     existing but EMPTY tree digests to a real, stable value, so emptying a box
     is a change like any other and its deletions propagate.
 
-    Per entry: the relative path, the kind, the size, the mtime in nanoseconds,
-    and -- for regular files -- the owner-execute bit. For symlinks, the target
-    string instead of a size, because the target IS what rclone writes into the
-    `.rclonelink` file, making this the transport's own view rather than a guess
-    about symlink semantics.
+    THE TRANSPORT ENUMERATES. v1 walked the tree in Python and skipped
+    entries whose NAME matched a literal exclude -- an approximation with
+    errors on both sides, measured: a glob-excluded file landed in the digest
+    (its churn read as a change -- a no-op push cycle on every git operation
+    in a `.git/**`-excluded box), and a regular file named like a dir-only
+    pattern (`target/` excludes directories; a FILE named `target` syncs) was
+    invisible, so its lone changes were never detected -- the exact bug class
+    this module exists to kill. Now `rclone lsf` lists the tree under the
+    SAME exclude file the transfer uses, so "in the digest" and "would be
+    transferred" are the same set by construction, glob or not.
+
+    Per entry: the rclone-listed relative path, the kind, the size (for
+    symlinks: the target string, which IS what rclone writes into the
+    `.rclonelink` file), rclone's own max-precision mtime string, and -- for
+    regular files -- the owner-execute bit from an lstat. An entry that
+    vanishes between the listing and the stat keeps rclone's metadata: races
+    read as changes (loud), never as absences.
 
     Entries are hashed individually and the digests sorted before the final
-    hash, so memory stays bounded on a box with hundreds of thousands of files
-    rather than holding every path tuple at once.
-
-    An unreadable directory RAISES, exactly as `check_last_time_modified` does
-    and for the same reason: swallowing it would shrink the tree, and a smaller
-    tree hashes to a digest that says "unchanged" about files it never looked
-    at. A directory that vanishes mid-walk is a legitimate race and tolerated.
+    hash, so memory stays bounded on a box with hundreds of thousands of
+    files. A listing failure RAISES, exactly as the v1 walk raised on an
+    unreadable directory and for the same reason: a shrunken enumeration
+    hashes to a digest that says "unchanged" about files it never saw.
     """
-    exclude_names = exclude_names or set()
     root = Path(path).expanduser().resolve()
     if not root.exists():
         return None
 
     entry_digests: list[str] = []
 
-    def record(rel: str, kind: str, size_or_target, mtime_ns: int, execbit: str) -> None:
-        line = f"{rel}\0{kind}\0{size_or_target}\0{mtime_ns}\0{execbit}"
-        entry_digests.append(hashlib.sha256(line.encode("utf-8", "surrogateescape")).hexdigest())
+    def record(rel: str, kind: str, size_or_target, mtime: str, execbit: str) -> None:
+        line = f"{rel}\0{kind}\0{size_or_target}\0{mtime}\0{execbit}"
+        entry_digests.append(
+            hashlib.sha256(line.encode("utf-8", "surrogateescape")).hexdigest()
+        )
 
     if root.is_file():
         st = root.lstat()
-        record(root.name, "file", st.st_size, st.st_mtime_ns,
+        record(root.name, "file", st.st_size, str(st.st_mtime_ns),
                "x" if st.st_mode & stat_mod.S_IXUSR else "-")
     else:
-        stack = [str(root)]
-        while stack:
-            current = stack.pop()
-            try:
-                entries = list(os.scandir(current))
-            except FileNotFoundError:
-                continue
-            except OSError as e:
-                raise OSError(
-                    f"Cannot fingerprint '{root}': '{current}' could not be read "
-                    f"({e}). Fix the permissions, or exclude it from the box."
-                ) from e
+        cmd = [
+            _rclone_binary(),
+            "lsf",
+            "--recursive",
+            "--files-only",
+            "--links",
+            "--csv",
+            "--format",
+            "pst",
+            "--time-format",
+            "max",
+        ]
+        if rclone_config_path is not None:
+            cmd += ["--config", str(rclone_config_path)]
+        if exclude_file is not None and Path(exclude_file).is_file():
+            cmd += ["--exclude-from", str(exclude_file)]
+        cmd.append(str(root))
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=600
+            )
+        except subprocess.TimeoutExpired as e:
+            raise OSError(
+                f"Cannot fingerprint '{root}': the rclone listing timed out."
+            ) from e
+        if proc.returncode != 0:
+            raise OSError(
+                f"Cannot fingerprint '{root}': the rclone listing failed "
+                f"({proc.stderr.strip()})."
+            )
 
-            for entry in entries:
-                if entry.name in exclude_names:
-                    continue
-                rel = Path(entry.path).relative_to(root).as_posix()
+        for row in csv.reader(io.StringIO(proc.stdout)):
+            if len(row) != 3:
+                raise OSError(
+                    f"Cannot fingerprint '{root}': unexpected rclone lsf row "
+                    f"{row!r}."
+                )
+            listed_rel, size, mtime = row
+            if listed_rel.endswith(_RCLONELINK_SUFFIX):
+                rel = listed_rel[: -len(_RCLONELINK_SUFFIX)]
                 try:
-                    st = entry.stat(follow_symlinks=False)
-                except FileNotFoundError:
-                    continue
-                if stat_mod.S_ISLNK(st.st_mode):
-                    try:
-                        target = os.readlink(entry.path)
-                    except OSError:
-                        continue
-                    record(rel, "symlink", target, st.st_mtime_ns, "-")
-                elif entry.is_dir(follow_symlinks=False):
-                    # Directories are descended into but NOT recorded: rclone
-                    # does not sync empty directories, and recording them would
-                    # let an excluded file's arrival move a directory mtime and
-                    # so change the digest -- the .DS_Store false positive this
-                    # design exists to avoid.
-                    stack.append(entry.path)
-                elif entry.is_file(follow_symlinks=False):
-                    record(rel, "file", st.st_size, st.st_mtime_ns,
-                           "x" if st.st_mode & stat_mod.S_IXUSR else "-")
-                # Anything else (fifo, socket, device) is skipped, matching what
-                # rclone will transfer -- parity, not an omission.
+                    target = os.readlink(root / rel)
+                except OSError:
+                    # Raced away, or a REAL file carrying the suffix: rclone's
+                    # metadata still identifies the entry deterministically.
+                    target = f"<unreadable:{size}>"
+                record(rel, "symlink", target, mtime, "-")
+            else:
+                try:
+                    st = (root / listed_rel).lstat()
+                    execbit = "x" if st.st_mode & stat_mod.S_IXUSR else "-"
+                except OSError:
+                    execbit = "-"
+                record(listed_rel, "file", size, mtime, execbit)
 
     entry_digests.sort()
     h = hashlib.sha256()
@@ -241,7 +283,8 @@ def local_tree_differs(
     local_path: "str | Path",
     local_sync_record_path: "str | Path",
     local_sync_record_ulid: "str | None",
-    exclude_names: "set[str] | None",
+    rclone_config_path: "str | Path | None" = None,
+    exclude_file: "str | Path | None" = None,
     filter_sig: str,
 ) -> "bool | None":
     """
@@ -268,7 +311,12 @@ def local_tree_differs(
     if base.get("filter_signature") != filter_sig:
         return None
 
-    current = tree_fingerprint(local_path, exclude_names, filter_sig=filter_sig)
+    current = tree_fingerprint(
+        local_path,
+        rclone_config_path=rclone_config_path,
+        exclude_file=exclude_file,
+        filter_sig=filter_sig,
+    )
     if current is None:
         # The tree is gone entirely. That is an existence question, not a
         # modification one, and the caller's existence logic already answers it.

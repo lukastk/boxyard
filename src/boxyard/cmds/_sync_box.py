@@ -517,7 +517,10 @@ async def sync_box(
             # Fingerprint BEFORE the probe (the usual rule: anything changed after
             # this walk mismatches next pass, the loud direction).
             _fp = tree_fingerprint(
-                Path(local_path), literal_exclude_names(probe_exclude_path), filter_sig=_sig
+                Path(local_path),
+                rclone_config_path=config.rclone_config_path,
+                exclude_file=probe_exclude_path,
+                filter_sig=_sig,
             )
             if _fp is None:
                 return
@@ -624,7 +627,8 @@ async def sync_box(
                     ):
                         _bs_fp = tree_fingerprint(
                             Path(helper_kwargs["local_path"]),
-                            literal_exclude_names(probe_exclude_path),
+                            rclone_config_path=config.rclone_config_path,
+                            exclude_file=probe_exclude_path,
                             filter_sig=_bs_sig,
                         )
                         if _bs_fp is not None:
@@ -688,7 +692,8 @@ async def sync_box(
                     _bl_sig = filter_signature(_bl_exclude)
                     _bl_fp = tree_fingerprint(
                         Path(helper_kwargs["local_path"]),
-                        literal_exclude_names(_bl_exclude),
+                        rclone_config_path=config.rclone_config_path,
+                        exclude_file=_bl_exclude,
                         filter_sig=_bl_sig,
                     )
                     if _bl_fp is not None and _status.local_sync_record is not None:

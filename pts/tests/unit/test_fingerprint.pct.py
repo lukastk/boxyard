@@ -210,7 +210,8 @@ def test_excluded_churn_does_not_move_the_fingerprint(tmp_path):
     never be transferred. Directories are therefore not in the digest.
     """
     root = _tree(tmp_path / "box")
-    excludes = {".DS_Store", "node_modules"}
+    excludes = tmp_path / "excl"
+    excludes.write_text(".DS_Store\nnode_modules/\n")
 
     # THE SLEEP IS THE TEST. A directory's mtime is stamped from a coarse clock,
     # so a file created in the same tick as the directory's last change does not
@@ -221,42 +222,68 @@ def test_excluded_churn_does_not_move_the_fingerprint(tmp_path):
     # recording variant fails, without it the variant passes.
     time.sleep(2.2)
 
-    before = tree_fingerprint(root, excludes)
+    before = tree_fingerprint(root, exclude_file=excludes)
 
     (root / "sub" / ".DS_Store").write_bytes(b"\x00mac")
     (root / "node_modules").mkdir()
     (root / "node_modules" / "huge.js").write_text("x" * 1000)
 
-    assert tree_fingerprint(root, excludes) == before
+    assert tree_fingerprint(root, exclude_file=excludes) == before
 
 
 # %%
 #|export
-def test_a_glob_excluded_file_over_detects_and_then_converges(tmp_path):
+def test_a_glob_excluded_file_is_invisible_to_the_digest(tmp_path):
     """
-    A glob-excluded file DOES move the fingerprint, and that is the old contract.
-
-    `literal_exclude_names` does not interpret globs, so such a file lands in the
-    digest and its churn reads as a change. This module briefly REFUSED to
-    fingerprint boxes like that, reasoning the approximation would churn for
-    ever. The suite disproved it immediately -- the failures were the very tests
-    that exist to prove glob-excluded files are handled -- and the churn
-    reasoning was wrong anyway: the push or probe that follows transfers nothing
-    and RE-RECORDS the baseline, so the next check is clean. Over-detecting
-    costs one no-op reconcile; refusing broke a supported feature.
+    The v2 win on the over-detection side. Under v1's literal-name walk a
+    glob-excluded file landed IN the digest, so its churn read as a change --
+    measured live: four of five per-box exclude files carry globs
+    (`.git/**` among them), so every git operation in those boxes cost a
+    converging no-op push cycle. The transport-enumerated digest applies the
+    same glob the transfer does, so the churn is simply not there.
     """
     root = tmp_path / "box"
     root.mkdir()
     (root / "keep.txt").write_text("keep\n")
+    excludes = tmp_path / "excl"
+    excludes.write_text("*.log\n.git/**\n")
 
-    literal_only = {"node_modules"}  # what a "*.log" exclude reduces to
-    before = tree_fingerprint(root, literal_only)
+    before = tree_fingerprint(root, exclude_file=excludes)
     (root / "noisy.log").write_text("chatter\n")
-    after = tree_fingerprint(root, literal_only)
-    assert after != before, "a glob-excluded file is not in the exclude set"
+    (root / ".git").mkdir()
+    (root / ".git" / "index").write_bytes(b"churn")
+    assert tree_fingerprint(root, exclude_file=excludes) == before
 
-    # ... and the baseline written after the no-op reconcile makes it clean.
-    assert tree_fingerprint(root, literal_only) == after
+
+def test_a_file_named_like_a_dir_only_pattern_is_seen(tmp_path):
+    """
+    The v2 win on the UNDER-detection side, which is the dangerous one. 35 of
+    the 36 fleet exclude patterns are dir-only (`target/`); rclone transfers a
+    regular FILE named `target`, but v1's name-matching walk skipped it -- so
+    its lone changes were invisible and the lone-deletion bug survived, inside
+    the fix, for colliding names. Measured with real rclone before this was
+    written.
+    """
+    root = tmp_path / "box"
+    root.mkdir()
+    (root / "keep.txt").write_text("keep\n")
+    (root / "target").write_text("a FILE, not the excluded directory\n")
+    excludes = tmp_path / "excl"
+    excludes.write_text("target/\n")
+
+    before = tree_fingerprint(root, exclude_file=excludes)
+    (root / "target").unlink()  # the lone change
+    assert tree_fingerprint(root, exclude_file=excludes) != before, (
+        "a synced file was invisible to the digest because a DIRECTORY "
+        "pattern shares its name"
+    )
+
+    # ...while a directory of that name (with contents) stays excluded.
+    (root / "target").mkdir()
+    (root / "target" / "build.o").write_bytes(b"obj")
+    assert tree_fingerprint(root, exclude_file=excludes) == tree_fingerprint(
+        root, exclude_file=excludes
+    )
 
 
 # %%
@@ -297,13 +324,12 @@ def test_the_baseline_is_bound_to_the_sync_it_describes(tmp_path):
     rec = tmp_path / "records" / "data.rec"
     rec.parent.mkdir(parents=True)
     sig = filter_signature(None)
-    fp = tree_fingerprint(root, set(), filter_sig=sig)
+    fp = tree_fingerprint(root, filter_sig=sig)
     write_base(rec, sync_record_ulid="ULID-A", fingerprint=fp, filter_sig=sig)
 
     common = dict(
         local_path=root,
         local_sync_record_path=rec,
-        exclude_names=set(),
         filter_sig=sig,
     )
     assert local_tree_differs(local_sync_record_ulid="ULID-A", **common) is False
@@ -327,13 +353,12 @@ def test_an_unusable_sidecar_reads_as_unknown_never_as_unchanged(tmp_path):
     rec = tmp_path / "records" / "data.rec"
     rec.parent.mkdir(parents=True)
     sig = filter_signature(None)
-    fp = tree_fingerprint(root, set(), filter_sig=sig)
+    fp = tree_fingerprint(root, filter_sig=sig)
 
     common = dict(
         local_path=root,
         local_sync_record_path=rec,
         local_sync_record_ulid="U",
-        exclude_names=set(),
         filter_sig=sig,
     )
     assert local_tree_differs(**common) is None  # absent
@@ -393,7 +418,7 @@ def test_an_unreadable_directory_raises_rather_than_shrinking_the_tree(tmp_path)
     try:
         if os.geteuid() == 0:
             pytest.skip("root ignores directory permissions")
-        with pytest.raises(OSError, match="could not be read"):
+        with pytest.raises(OSError, match="listing failed"):
             tree_fingerprint(root)
     finally:
         os.chmod(locked, 0o755)

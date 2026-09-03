@@ -211,7 +211,10 @@ async def force_push_to_remote(
     
             _pre_sig = filter_signature(_exclude_file)
             _pre_fp = tree_fingerprint(
-                source_path, literal_exclude_names(_exclude_file), filter_sig=_pre_sig
+                source_path,
+                rclone_config_path=config.rclone_config_path,
+                exclude_file=_exclude_file,
+                filter_sig=_pre_sig,
             )
     
         # Perform the sync (source -> remote DATA), under the box's real filters.

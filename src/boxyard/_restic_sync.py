@@ -358,8 +358,9 @@ async def sync_data_restic(
             local_sync_record_path=box_meta.get_local_sync_record_path(
                 config, BoxPart.DATA
             ),
+            rclone_config_path=config.rclone_config_path,
             local_sync_record_ulid=plain_record.ulid,
-            exclude_names=literal_exclude_names(_adoption_exc),
+            exclude_file=_adoption_exc,
             filter_sig=filter_signature(_adoption_exc),
         )
         if _adoption_differs is None:

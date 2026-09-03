@@ -1407,7 +1407,8 @@ async def get_sync_status(
         local_sync_record_ulid=(
             local_sync_record.ulid if local_sync_record is not None else None
         ),
-        exclude_names=_exclude_names,
+        rclone_config_path=rclone_config_path,
+        exclude_file=exclude_path,
         filter_sig=_filter_sig,
     )
     # There used to be a guard here: "local path exists, is not empty, and

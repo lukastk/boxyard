@@ -143,7 +143,6 @@ async def sync_helper(
                 tree_fingerprint as _bs_fp_of,
                 write_base as _bs_write_base,
             )
-            from boxyard._utils import literal_exclude_names as _bs_excl_of
     
             _bs_sig = _bs_sig_of(exclude_path)
             if not _bs_has_usable(
@@ -152,7 +151,10 @@ async def sync_helper(
                 filter_sig=_bs_sig,
             ):
                 _bs_fp = _bs_fp_of(
-                    local_path, _bs_excl_of(exclude_path), filter_sig=_bs_sig
+                    local_path,
+                    rclone_config_path=rclone_config_path,
+                    exclude_file=exclude_path,
+                    filter_sig=_bs_sig,
                 )
                 if _bs_fp is not None:
                     _bs_write_base(
@@ -436,7 +438,8 @@ async def sync_helper(
                     sig=_sig,
                     fp=tree_fingerprint(
                         local_path,
-                        literal_exclude_names(exclude_path),
+                        rclone_config_path=rclone_config_path,
+                        exclude_file=exclude_path,
                         filter_sig=_sig,
                     ),
                 )
@@ -460,7 +463,10 @@ async def sync_helper(
         # reconcile push -- the loud direction.
         _push_sig = filter_signature(exclude_path)
         _push_fp = tree_fingerprint(
-            local_path, literal_exclude_names(exclude_path), filter_sig=_push_sig
+            local_path,
+            rclone_config_path=rclone_config_path,
+            exclude_file=exclude_path,
+            filter_sig=_push_sig,
         )
     
         # Save the incomplete sync record on BOTH local and remote to signify an ongoing sync

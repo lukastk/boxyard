@@ -143,20 +143,25 @@ result;
   files are executable, so `+x` survives sync over backends that drop Unix mode
   (e.g. SFTP). Generated before push / applied after pull by `_utils/perms.py`.
   v1 is additive-only (restores `+x`, never clears it).
-- **Fingerprint baselines (v0.8.0)**: "has this box changed locally?" is
-  answered by comparing a digest of the tree — per entry `(relpath, kind, size,
-  mtime_ns, owner-exec bit)`, plus a signature of the active exclude rules —
-  against a machine-local sidecar `sync_records/<box>/<part>.base.json` written
-  when a sync completes (push: the PRE-transfer tree; pull: the post-pull tree,
-  refused if anything changed while the pull ran) and on the non-owner
-  probe-clean path. The sidecar is bound to the sync record's ULID and NEVER
-  synced (a pulled record is the pusher's verbatim, and `SyncRecord` is
-  `extra="forbid"`). No usable baseline (absent, ULID mismatch, or filter-
-  signature mismatch) falls back to the old newest-mtime test — the
-  `TODO(cleanup)` sites in `_models` and `_doctor`. Signatures must match
-  between writer and reader: DATA is written under the box's effective exclude
-  file, META and CONF under `filter_signature(None)` — pass the same when
-  reading or the baseline is dead weight.
+- **Fingerprint baselines (v0.8.0, transport-enumerated since v0.8.3)**: "has
+  this box changed locally?" is answered by comparing a digest of the tree —
+  enumerated by `rclone lsf` under the box's REAL exclude file, per entry
+  `(relpath, kind, size-or-symlink-target, rclone's max-precision mtime,
+  owner-exec bit)`, plus a signature of the exclude rules — against a
+  machine-local sidecar `sync_records/<box>/<part>.base.json` written when a
+  sync completes (push: the PRE-transfer tree; pull: the post-pull tree,
+  refused if anything changed while the pull ran), on the non-owner
+  probe-clean path, and by the convergence paths (META/CONF bless on a SYNCED
+  verdict; DATA verifies against the remote first). The sidecar is bound to
+  the sync record's ULID and NEVER synced (a pulled record is the pusher's
+  verbatim, and `SyncRecord` is `extra="forbid"`). No usable baseline (absent,
+  wrong `FINGERPRINT_VERSION`, ULID mismatch, or filter-signature mismatch)
+  falls back to the old newest-mtime test — the `TODO(cleanup)` sites in
+  `_models`, `_doctor` and `_restic_sync`. Signatures must match between
+  writer and reader: resolve the exclude with
+  `BoxMeta.get_effective_exclude_path` for DATA and pass None for META/CONF —
+  anything else makes the baseline dead weight. `boxyard doctor` prints
+  coverage as a gauge.
 - **Sync backups**: every sync writes the files it is about to overwrite or
   delete into `sync_backups/<sync ULID>/` (local `~/.boxyard/sync_backups/` for a
   pull, `<store>/sync_backups/` on the remote for a push) and purges that

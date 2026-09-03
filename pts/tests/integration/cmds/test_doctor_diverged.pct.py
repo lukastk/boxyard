@@ -309,7 +309,7 @@ _meta_sig = filter_signature(None)
 write_base(
     meta_rec_path,
     sync_record_ulid=str(_local_ulid),
-    fingerprint=tree_fingerprint(meta_path, set(), filter_sig=_meta_sig),
+    fingerprint=tree_fingerprint(meta_path, filter_sig=_meta_sig),
     filter_sig=_meta_sig,
 )
 
