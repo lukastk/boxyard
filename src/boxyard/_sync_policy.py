@@ -515,16 +515,31 @@ def data_boxes_needing_sync(
 
     - the remote pointer has not moved, by (ModTime, Size) against what was
       recorded at the last check;
-    - the local tree has not changed since this machine last agreed, by the same
-      mtime-versus-record-time test the plain backend already applies.
+    - the local tree has not been TOUCHED since this machine last agreed, by
+      `tree_touched_since` -- the same gate the restic backend uses to decide
+      whether to talk to the repository at all.
 
     Skipping is ONLY ever an optimisation. A wrong "changed" costs a sync. A
-    wrong "unchanged" is prevented the same way META's is: the pointer is
-    rewritten on every push, so its ModTime moves, and the local test is the
-    one the plain path has always used.
+    wrong "unchanged" LOSES DATA, silently, until something else moves.
+
+    IT USED TO USE `tree_modified_since`, AND THAT WAS TWO BUGS ON ONE LINE:
+
+    1. That helper is the plain backend's newest-mtime walk, which sees two of
+       ten change shapes. A restic box whose only change was a lone deletion, a
+       rename, a chmod or a symlink edit was declared "provably unchanged" and
+       skipped -- so it was never backed up, while this docstring claimed a
+       wrong "unchanged" was prevented. `tree_touched_since` stats directories
+       and uses max(mtime, ctime), which catches all of them; its false
+       positives cost the real path one local check, which is precisely the
+       trade a gate is allowed to make.
+    2. It was called with NO exclude names, so any `.DS_Store` counted as a
+       change. On a fleet with Macs in it that likely meant the filter never
+       skipped anything at all -- the optimisation silently defeating itself,
+       in the harmless direction, which is why nobody noticed.
     """
     from ._enums import StorageFormat
-    from ._restic import read_state, tree_modified_since
+    from ._restic import read_state, tree_touched_since
+    from ._utils import literal_exclude_names
 
     needed: list[str] = []
     skippable: list[str] = []
@@ -553,7 +568,16 @@ def data_boxes_needing_sync(
         if synced_at is None or not data_path.is_dir():
             needed.append(index_name)
             continue
-        if tree_modified_since(data_path, float(synced_at)):
+        _conf_exclude = (
+            box_meta.get_local_part_path(config, BoxPart.CONF)
+            / const.RCLONE_EXCLUDE_FILENAME
+        )
+        _exclude_names = literal_exclude_names(
+            _conf_exclude
+            if _conf_exclude.exists()
+            else config.default_rclone_exclude_path
+        )
+        if tree_touched_since(data_path, float(synced_at), _exclude_names):
             needed.append(index_name)
             continue
 
