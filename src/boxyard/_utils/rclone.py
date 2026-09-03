@@ -120,6 +120,40 @@ def get_rclone_binary() -> str:
     return _rclone_binary
 
 # %% pts/mod/_utils/01_rclone.pct.py 10
+# Environment variables that change WHICH FILES rclone considers different.
+# Boxyard's change detection (the fingerprint baseline) is a digest over
+# (path, size, modtime) precisely because that is rclone's default comparison;
+# any of these being set makes the transport disagree with the detector under
+# it, silently. Measured: a same-size same-mtime content edit transfers 0
+# files by default and 1 under RCLONE_CHECKSUM=1. rclone has no global config
+# mechanism for these besides the environment, so this check closes the only
+# silent vector.
+_COMPARISON_ENV_VARS = (
+    "RCLONE_CHECKSUM",
+    "RCLONE_SIZE_ONLY",
+    "RCLONE_IGNORE_TIMES",
+    "RCLONE_IGNORE_SIZE",
+    "RCLONE_UPDATE",
+)
+
+
+def _refuse_comparison_env() -> None:
+    import os as _os
+
+    _set = [
+        v
+        for v in _COMPARISON_ENV_VARS
+        if _os.environ.get(v, "").strip().lower() not in ("", "0", "false")
+    ]
+    if _set:
+        raise ValueError(
+            f"Refusing to run rclone with {', '.join(_set)} set: boxyard's "
+            f"change detection assumes rclone's default (size, modtime) "
+            f"comparison, and this environment silently changes it. Unset the "
+            f"variable(s) to sync with boxyard."
+        )
+
+
 def _rclone_cmd_helper(
     cmd_name: str,
     rclone_config_path: str,
@@ -137,6 +171,37 @@ def _rclone_cmd_helper(
     progress: bool,
     use_fast_list: bool = True,
 ) -> list[str]:
+    _refuse_comparison_env()
+
+    # rclone itself declares mixing the filter families indeterminate -- it
+    # logs an ERROR recommending --filter over --include + --exclude, and
+    # measurably lets an include-from rule beat an exclude-from rule for the
+    # same pattern. Boxyard always applies an exclude file (the box's own or
+    # the fleet default), so a box carrying `.rclone_include` or
+    # `.rclone_filters` lands in the indeterminate zone the moment it syncs --
+    # files the exclude list was supposed to block can transfer. No box in the
+    # fleet has either file (checked 2026-09-03), so this refusal gates a
+    # combination that has never worked coherently rather than breaking one in
+    # use. The way forward is translating all three files into ONE ordered
+    # filter list -- ticket 43f05498.
+    _families = [
+        bool(include or include_file),
+        bool(exclude or exclude_file),
+        bool(filter or filters_file),
+    ]
+    if sum(_families) > 1:
+        raise ValueError(
+            "Refusing to combine rclone filter families (include/exclude/"
+            "filter): rclone applies the combination in an indeterminate "
+            "order, so an include rule can override the exclude list and sync "
+            "files it was supposed to block. A box's `conf/.rclone_include` "
+            "or `conf/.rclone_filters` always combines with an exclude file "
+            "(its own, or the fleet default), so those files cannot be used "
+            "until boxyard translates all three into one ordered filter list "
+            "(ticket 43f05498). Express the box's scope in "
+            "`conf/.rclone_exclude` alone for now."
+        )
+
     source_spec = f"{source}:{source_path}" if source else source_path
     dest_spec = f"{dest}:{dest_path}" if dest else dest_path
     cmd = [

@@ -323,7 +323,12 @@ class TestRcloneSyncCommand:
         asyncio.run(_test())
 
     def test_sync_with_all_options(self):
-        """Sync command with all options."""
+        """
+        All non-filter options together, under ONE filter family. This test
+        used to pass every family at once and assert all six flags -- pinning
+        exactly the indeterminate combination rclone warns about and the
+        builder now refuses (see TestFilterFamilyRefusal).
+        """
         async def _test():
             result = await rclone_sync(
                 rclone_config_path="/tmp/rclone.conf",
@@ -331,23 +336,15 @@ class TestRcloneSyncCommand:
                 source_path="data",
                 dest="dst_remote",
                 dest_path="backup",
-                include=["*.txt"],
                 exclude=["*.tmp"],
-                filter=["+ important/"],
-                include_file="/inc.txt",
                 exclude_file="/exc.txt",
-                filters_file="/filters.txt",
                 backup_path="/backup",
                 dry_run=True,
                 progress=True,
                 return_command=True,
             )
-            assert "--include '*.txt'" in result
             assert "--exclude '*.tmp'" in result
-            assert "--filter '+ important/'" in result
-            assert "--include-from /inc.txt" in result
             assert "--exclude-from /exc.txt" in result
-            assert "--filter-from /filters.txt" in result
             assert "--backup-dir /backup" in result
             assert "--dry-run" in result
             assert "--progress" in result
@@ -1488,3 +1485,86 @@ class TestCopytoDryRun:
             assert "--dry-run" not in cmd
 
         asyncio.run(_test())
+
+# %% [markdown]
+# ## The two refusals: mixed filter families, and a comparison-changing environment
+
+# %%
+#|export
+class TestFilterFamilyRefusal:
+    """
+    rclone applies the include/exclude/filter combination in an indeterminate
+    order — measured: an include-from rule beat an exclude-from rule for the
+    same pattern — and boxyard always applies an exclude file, so any box with
+    `.rclone_include`/`.rclone_filters` would sync files its exclude list was
+    supposed to block. The builder refuses the mix until the translation work
+    on ticket 43f05498 lands.
+    """
+
+    def _copy(self, **kwargs):
+        return rclone_copy(
+            rclone_config_path="/tmp/rclone.conf",
+            source="remote",
+            source_path="path",
+            dest="",
+            dest_path="/dest",
+            return_command=True,
+            **kwargs,
+        )
+
+    def test_include_plus_exclude_refuses(self):
+        with pytest.raises(ValueError, match="filter families"):
+            asyncio.run(self._copy(include=["*.py"], exclude=[".git/"]))
+
+    def test_filters_file_plus_exclude_file_refuses(self):
+        with pytest.raises(ValueError, match="filter families"):
+            asyncio.run(
+                self._copy(
+                    exclude_file="/tmp/exclude.txt", filters_file="/tmp/filters.txt"
+                )
+            )
+
+    def test_each_family_alone_is_fine(self):
+        for kwargs in (
+            {"include": ["*.py"], "include_file": "/tmp/include.txt"},
+            {"exclude": [".git/"], "exclude_file": "/tmp/exclude.txt"},
+            {"filter": ["+ *.py", "- *"], "filters_file": "/tmp/filters.txt"},
+        ):
+            result = asyncio.run(self._copy(**kwargs))
+            assert "rclone" in result
+
+
+class TestComparisonEnvRefusal:
+    """
+    The fingerprint baseline is a digest over (path, size, modtime) because
+    that is rclone's default comparison. An environment variable that changes
+    the comparison makes the transport disagree with the detector under it,
+    silently — so the builder refuses to run rather than sync under a
+    different metric than the one recorded.
+    """
+
+    def _copy(self):
+        return rclone_copy(
+            rclone_config_path="/tmp/rclone.conf",
+            source="remote",
+            source_path="path",
+            dest="",
+            dest_path="/dest",
+            return_command=True,
+        )
+
+    def test_rclone_checksum_refuses(self, monkeypatch):
+        monkeypatch.setenv("RCLONE_CHECKSUM", "1")
+        with pytest.raises(ValueError, match="RCLONE_CHECKSUM"):
+            asyncio.run(self._copy())
+
+    def test_an_explicit_false_is_not_a_violation(self, monkeypatch):
+        monkeypatch.setenv("RCLONE_CHECKSUM", "false")
+        monkeypatch.setenv("RCLONE_SIZE_ONLY", "0")
+        result = asyncio.run(self._copy())
+        assert "rclone" in result
+
+    def test_size_only_and_ignore_times_refuse(self, monkeypatch):
+        monkeypatch.setenv("RCLONE_SIZE_ONLY", "true")
+        with pytest.raises(ValueError, match="RCLONE_SIZE_ONLY"):
+            asyncio.run(self._copy())
