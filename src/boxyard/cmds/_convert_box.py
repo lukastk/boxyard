@@ -177,7 +177,13 @@ async def _reverse_to_plain(
         _restored = Path(_tmp) / "restored"
         _restored.mkdir()
         await pull(repo, _restored, target_snapshot=_snapshot, base_snapshot=None)
-        _problems = compare_trees(local_data, _restored)
+        # `excludes` is NOT optional, and the forward path shipped without it:
+        # the snapshot was written THROUGH the exclude list, so comparing the
+        # whole local checkout against it reports every excluded path as a
+        # difference. Measured on a real box: 28,060 files, 16,201 false
+        # differences, every one a `.venv/` or `__pycache__/` path. Conversion
+        # could not have succeeded on any box with a virtualenv in it.
+        _problems = compare_trees(local_data, _restored, excludes)
     if _problems:
         raise ReversalRefused(
             f"The local checkout of '{box_index_name}' is NOT identical to "

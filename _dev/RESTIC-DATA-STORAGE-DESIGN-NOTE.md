@@ -1921,10 +1921,38 @@ slack before taking its baseline.
 
 The general rule: **any tolerance window a test operates near — a timestamp
 slack, a retry budget, a debounce, a cache TTL — will swallow the very property
-the test claims to check, unless the test deliberately starts outside it.** The
-other three cases in this work were a vacuous `in report["checks"]`, a test
-naming a machine it never built, and counting node kinds; this is the first
-where the surviving mutation was a bug someone had named beforehand.
+the test claims to check, unless the test deliberately starts outside it.**
+
+### Two sharper variants of the same lesson
+
+**A test can be absent rather than merely weak.** A `# %%` cell without
+`#|export` is dropped from the exported module **silently**: `nbl export` says
+nothing, pytest collects a file that looks complete, and the suite goes green
+while the test never runs. A regression test for the exclude defect below did
+not run at all for exactly this reason, and was found only by mutating the fix
+away and noticing that `-k compare_trees` selected 3 tests where it should have
+selected 5. **Verify a test EXISTS in the exported module before trusting that
+it passed** — `pts/tests/unit/test_export_completeness.py` now compares every
+`def test_` in `pts/` against the exported `src/` module and fails naming any
+that were dropped.
+
+**A fixture that lacks the thing under test hides the defect completely.**
+`compare_trees` compared the whole local checkout against a snapshot written
+THROUGH the exclude list, so every excluded path came back as a difference —
+measured on a real box, 28,060 files and **16,201 false differences**, all
+`.venv/` and `__pycache__/`. Conversion could not have succeeded on any box
+holding a virtualenv. Every test passed, and the canary passed, because no
+fixture contained anything excluded: the round trip never exercised the exclude
+list at all. The reverse path inherited the same bug, and `compare_trees` now
+takes `excludes` with NO default so the omission is a loud `TypeError` rather
+than a silent wrong answer. The round-trip fixture now holds `.venv/` and
+`__pycache__/`; without the fix, eight of its tests fail.
+
+Five green tests in this work proved nothing, each in a different way: a vacuous
+`in report["checks"]`, a test naming a machine it never built, counting node
+kinds, a slack window swallowing the property, and a fixture missing the
+feature. The pattern is that a passing test is evidence only about the path it
+actually took.
 
 **The polarity is the contract**, and it is stated in tests rather than in
 comments: the gate may only ever skip the check when NOTHING has been touched. A
@@ -1949,39 +1977,34 @@ that edit is gated away and lost.
 So on the Macs the first `.DS_Store` in a directory costs a full check, which
 then correctly reports the box unchanged. Slower, never wrong.
 
-### Where restic now beats plain
+### Where restic beats plain — measured on the real remote
 
-Measured through the real `sync_box`, one yard, two boxes with identical
-content, one converted:
+The local figures an earlier draft gave for this were half wrong, and only the
+half that mattered. Measured by Lukas against the live remote, with both
+backends now gated on a local walk:
 
-| files | plain unchanged | restic unchanged | plain 1 edit | restic 1 edit |
-|---|---|---|---|---|
-| 200 | 1.06 s | **0.87 s** | 1.62 s | 3.89 s |
-| 2,000 | 1.08 s | **0.83 s** | 1.65 s | 4.11 s |
-| 20,000 | 0.89 s | **0.68 s** | 1.96 s | 5.16 s |
-
-**Unchanged: restic wins at every size measured**, which is the answer to the
-crossover question for the case that dominates.
-
-**The "1 edit" column is NOT representative and must not be read as one.** This
-remote is a local directory, which makes the exact thing plain is slow at —
-listing and reconciling remote objects — free. It removes plain's whole cost and
-leaves restic's. The real-remote data point for that column is Lukas's:
-
-| something changed, 1,419,522 files | plain **HOURS** | restic **seconds** |
+| | plain | restic |
 |---|---|---|
+| no-op, every size | ~7-8 s | ~7-8 s |
+| one file edited, 1,000 files | 16 s | 18 s |
+| one file edited, 13,659 files | 54 s | **20 s** |
+| one file edited, 1,419,522 files | **HOURS** | seconds |
 
-The shapes are what matter: restic's changed-case cost is roughly CONSTANT (a
-few remote calls plus a chunked upload of what actually changed), while plain's
-grows with the number of remote objects. So there is a crossover in the changed
-case, below which plain is quicker, and these local numbers cannot locate it —
-they only bound restic's side at a few seconds. **Locating it needs a one-edit
-sync on the real remote at two or three box sizes**, which is a measurement only
-Lukas can take.
+**The crossover is about 2,000 files**, and restic's changed-case cost is FLAT
+where plain's grows with the number of remote objects — which is the shape the
+local benchmark could not show, because a local-filesystem remote makes
+listing and reconciling remote objects free and so deletes plain's entire cost.
+The local numbers said restic lost the one-edit case at every size; on the real
+remote it wins above ~2,000 files and is within two seconds below it.
 
-With the gate, "convert everything" is defensible in a way the earlier figures
-did not support: the dominant case is now faster for restic at every size, and
-the changed case is faster by orders of magnitude exactly where it hurts most.
+The no-op row is the one that changed the conclusion: the two are now equal at
+every size, because both short-circuit on a local walk. Before the gate, restic
+paid ~2.2 s for `restic snapshots` on every box regardless — which is how a
+42-file restic box lost to a 1.4-million-file plain one.
+
+All eleven change shapes in the audit table were verified through restic on real
+hardware, including both directions of `chmod` and a symlink retargeted in
+place.
 
 ### The route back: `boxyard convert --to-plain`
 

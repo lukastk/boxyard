@@ -96,6 +96,11 @@ def fingerprint(root: Path) -> dict:
             # Generated for a plain box and excluded from every snapshot, so it
             # legitimately differs across a round trip. Asserted separately.
             continue
+        if {".venv", "__pycache__"} & set(rel.split("/")):
+            # Excluded from the box, so it is on this machine and never on the
+            # remote or in a snapshot. Its PRESENCE is asserted separately: the
+            # reversal must leave it alone rather than delete it.
+            continue
         if rel == ".git" or rel.startswith(".git/"):
             # `.git` is in `_PRUNED_DIR_NAMES`, so the exec-bit manifest
             # deliberately never covers it -- a pre-existing plain-path
@@ -149,6 +154,21 @@ def converted(monkeypatch, tmp_path):
     (d / "src" / "nested" / "keep.txt").write_text("keep\n")
     (d / "src" / "link-to-readme").symlink_to("../README.md")
     (d / "big.bin").write_bytes(bytes(range(256)) * 200)
+
+    # EXCLUDED content, and the fixture is wrong without it.
+    #
+    # The forward conversion shipped comparing the whole local checkout against
+    # a snapshot written THROUGH the exclude list, so every excluded path came
+    # back as a difference -- 16,201 of them on a real box, all `.venv/` and
+    # `__pycache__/`. It could not have succeeded on any box holding a
+    # virtualenv. It reached a real machine because no test fixture contained
+    # anything excluded, so the round trip never exercised the exclude list at
+    # all.
+    (d / ".venv" / "lib").mkdir(parents=True)
+    (d / ".venv" / "lib" / "thing.so").write_text("a built artefact\n")
+    (d / ".venv" / "pyvenv.cfg").write_text("home = /usr\n")
+    (d / "src" / "__pycache__").mkdir()
+    (d / "src" / "__pycache__" / "a.cpython-311.pyc").write_bytes(b"\x00compiled")
 
     run(sync_box(config_path=cpA, box_index_name=idx, verbose=False))
     original = fingerprint(d)
@@ -466,3 +486,44 @@ def test_reversing_a_plain_box_is_a_no_op(converted):
                              box_index_name=converted["idx"],
                              to_plain=True, verbose=False))
     assert result["already"] == "plain"
+
+
+# %% [markdown]
+# ## Excluded content
+#
+# The defect that reached a real box, in both directions: the snapshot is
+# written THROUGH the exclude list, so comparing the whole local checkout
+# against it reports every excluded path as a difference. It survived because
+# no fixture held anything excluded — so the round trip never exercised the
+# exclude list at all.
+
+# %%
+#|export
+def test_a_box_with_a_virtualenv_can_be_reversed(converted):
+    """
+    The regression. Without `excludes` in the comparison this raises
+    `ReversalRefused` listing every `.venv/` and `__pycache__/` path.
+    """
+    run(convert_box(config_path=converted["cpA"], box_index_name=converted["idx"],
+                    to_plain=True, verbose=False))
+    assert fmt(converted["cpA"], converted["remote_name"],
+               converted["idx"]) is StorageFormat.PLAIN
+
+
+def test_the_reversal_leaves_excluded_content_alone(converted):
+    """
+    Excluded paths live only on this machine. The reversal must neither send
+    them to the remote nor delete them locally.
+    """
+    run(convert_box(config_path=converted["cpA"], box_index_name=converted["idx"],
+                    to_plain=True, verbose=False))
+
+    d = converted["dataA"]
+    assert (d / ".venv" / "lib" / "thing.so").read_text() == "a built artefact\n"
+    assert (d / "src" / "__pycache__" / "a.cpython-311.pyc").exists()
+
+    remote_data = converted["box_root"] / const.BOX_DATA_REL_PATH
+    assert not (remote_data / ".venv").exists(), (
+        "an excluded directory was pushed to the remote"
+    )
+    assert not (remote_data / "src" / "__pycache__").exists()
