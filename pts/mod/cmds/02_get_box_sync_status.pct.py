@@ -125,6 +125,35 @@ if box_meta.get_storage_location_config(config).storage_type == _StorageType.LOC
 from boxyard._models import get_sync_status, BoxPart
 import asyncio
 
+# Guard the checkout root BEFORE probing DATA, exactly as `sync_box` does. An
+# unmounted volume makes the DATA directory absent, and an absent directory is
+# indistinguishable from a deleted tree -- so without this, `box-status` on a
+# machine whose removable root is unplugged reports the box as excluded or
+# deleted when nothing of the sort is true. `sync_box` RAISES here; a status
+# command should still report the other parts, so DATA gets an explicit ERROR
+# instead.
+from boxyard._checkout import LocalCheckoutState, get_box_checkout_status
+from boxyard._models import SyncCondition as _SyncCondition, SyncStatus as _SyncStatus
+
+_checkout_state = get_box_checkout_status(config, box_meta).state
+_data_unreadable = _checkout_state in (
+    LocalCheckoutState.UNAVAILABLE,
+    LocalCheckoutState.RELOCATING,
+)
+_data_error_status = _SyncStatus(
+    sync_condition=_SyncCondition.ERROR,
+    local_path_exists=False,
+    remote_path_exists=False,
+    local_sync_record=None,
+    remote_sync_record=None,
+    is_dir=True,
+    error_message=(
+        f"The checkout root for this box is {_checkout_state.value} -- an "
+        f"unmounted volume, or an interrupted relocation. DATA cannot be "
+        f"judged from a tree that is not there; nothing has been probed."
+    ),
+)
+
 # Resolve the box's EFFECTIVE exclude file the same way `sync_box` does, so
 # `box-status` reports the same modification state a sync would act on. A box's
 # own `conf/.rclone_exclude` REPLACES the global default; using the default for
@@ -139,6 +168,9 @@ _effective_exclude_path = (
     else config.default_rclone_exclude_path
 )
 
+_probed_parts = [
+    p for p in BoxPart if not (p is BoxPart.DATA and _data_unreadable)
+]
 tasks = [
     get_sync_status(
         rclone_config_path=config.rclone_config_path,
@@ -159,13 +191,15 @@ tasks = [
             _effective_exclude_path if box_part is BoxPart.DATA else None
         ),
     )
-    for box_part in BoxPart
+    for box_part in _probed_parts
 ]
 
 box_sync_status = {
     box_part: sync_status
-    for box_part, sync_status in zip(BoxPart, await asyncio.gather(*tasks))
+    for box_part, sync_status in zip(_probed_parts, await asyncio.gather(*tasks))
 }
+if _data_unreadable:
+    box_sync_status[BoxPart.DATA] = _data_error_status
 
 # %%
 from boxyard._models import SyncCondition
