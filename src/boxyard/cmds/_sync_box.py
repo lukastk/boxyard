@@ -552,11 +552,18 @@ async def sync_box(
                     # box's real filters, which is exactly the fact a completed sync
                     # would have established. Bind it to the existing record, since
                     # no new sync happened.
-                    _bl_exclude = (
-                        probe_exclude_path
-                        if probe_exclude_path is not None
-                        else config.default_rclone_exclude_path
-                    )
+                    #
+                    # The exclude file is the probe's own, VERBATIM -- None for
+                    # CONF, which syncs unfiltered. It must match what
+                    # `get_sync_status` will use when it reads this baseline back
+                    # (the status call above used exactly `probe_exclude_path`), or
+                    # the filter signatures never agree and the baseline is
+                    # write-only garbage: the box falls back to the mtime test,
+                    # reads NEEDS_PUSH again, and re-probes the remote every pass
+                    # for ever -- the exact non-convergence this write exists to
+                    # prevent. A default here (this line used to fall back to
+                    # `config.default_rclone_exclude_path`) was that bug for CONF.
+                    _bl_exclude = probe_exclude_path
                     _bl_sig = filter_signature(_bl_exclude)
                     _bl_fp = tree_fingerprint(
                         Path(helper_kwargs["local_path"]),

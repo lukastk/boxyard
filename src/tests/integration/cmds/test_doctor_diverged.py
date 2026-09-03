@@ -140,3 +140,49 @@ async def _test_doctor_diverged_box():
     assert offline["checks"]["diverged-box"]["skipped"] is True, (
         "with no remote access the check must report SKIPPED, never 'ok'"
     )
+    # Reset the wreckage of the previous sections with a real sync.
+    await sync_box(config_path=config_path2, box_index_name=index_name)
+    
+    from boxyard._fingerprint import filter_signature, tree_fingerprint, write_base
+    
+    meta_path = box_meta.get_local_part_path(config2, BoxPart.META)
+    meta_rec_path = box_meta.get_local_sync_record_path(config2, BoxPart.META)
+    remote_meta_rec_path = remote_rec_path.with_name(f"{BoxPart.META.value}.rec")
+    
+    _local_ulid = ULID.from_datetime(NOW - timedelta(days=2))
+    meta_rec_path.write_text(
+        SyncRecord(ulid=_local_ulid, sync_complete=True, syncer_hostname="macbook").model_dump_json()
+    )
+    remote_meta_rec_path.write_text(
+        SyncRecord(
+            ulid=ULID.from_datetime(NOW - timedelta(days=1)),  # remote moved ahead
+            sync_complete=True,
+            syncer_hostname="macstudio",
+        ).model_dump_json()
+    )
+    
+    # A usable baseline for the CURRENT boxmeta, bound to the local record, written
+    # exactly as `sync_helper` writes it for META: no exclude file, sig(None).
+    _meta_sig = filter_signature(None)
+    write_base(
+        meta_rec_path,
+        sync_record_ulid=str(_local_ulid),
+        fingerprint=tree_fingerprint(meta_path, set(), filter_sig=_meta_sig),
+        filter_sig=_meta_sig,
+    )
+    
+    # The edit the mtime fallback cannot see: content changes, mtime backdated
+    # behind the local record.
+    meta_path.write_text(meta_path.read_text() + "\n# edited on this machine\n")
+    _when = (NOW - timedelta(days=3)).timestamp()
+    os.utime(meta_path, (_when, _when))
+    
+    report, _ = await findings()
+    _meta_found = [
+        f for f in report["checks"]["diverged-box"]["findings"]
+        if f.get("index_name") == index_name and f.get("box_part") == "meta"
+    ]
+    assert _meta_found, (
+        "an edited META with a backdated mtime went unreported: doctor is not "
+        "reading the META baseline under the signature META is written with"
+    )

@@ -1347,15 +1347,25 @@ else:
                 # what separates a real conflict from a plain needs-pull. This
                 # mirrors `get_sync_status` exactly -- same exclude-aware scan,
                 # same comparison -- so doctor and sync cannot disagree.
-                _conf_exclude = (
-                    _bm.get_local_part_path(config, BoxPart.CONF)
-                    / const.RCLONE_EXCLUDE_FILENAME
-                )
-                _exc = (
-                    _conf_exclude
-                    if _conf_exclude.exists()
-                    else config.default_rclone_exclude_path
-                )
+                #
+                # PER PART: only DATA syncs under an exclude file. META and
+                # CONF go through `sync_helper` with no exclude at all, so
+                # their baselines are written under `filter_signature(None)` --
+                # reading them under the DATA exclude's signature can never
+                # match, which would silently park those parts on the mtime
+                # fallback for ever and let doctor and sync disagree after all.
+                if _part is BoxPart.DATA:
+                    _conf_exclude = (
+                        _bm.get_local_part_path(config, BoxPart.CONF)
+                        / const.RCLONE_EXCLUDE_FILENAME
+                    )
+                    _exc = (
+                        _conf_exclude
+                        if _conf_exclude.exists()
+                        else config.default_rclone_exclude_path
+                    )
+                else:
+                    _exc = None
                 # The comment above promises this mirrors `get_sync_status`
                 # exactly, so it has to move with it. Sync now decides on the
                 # machine-local fingerprint; if doctor stayed on the mtime scan

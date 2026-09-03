@@ -149,7 +149,15 @@ tasks = [
         remote_sync_record_path=box_meta.get_remote_sync_record_path(
             config, box_part
         ),
-        exclude_path=_effective_exclude_path,
+        # Only DATA syncs under an exclude file; META and CONF go through
+        # `sync_helper` with none, and their fingerprint baselines are written
+        # under `filter_signature(None)`. Passing the DATA exclude for those
+        # parts made the signatures mismatch, so `box-status` read them off the
+        # mtime fallback while sync read the fingerprint -- and the two could
+        # disagree, which is the one thing this command must not do.
+        exclude_path=(
+            _effective_exclude_path if box_part is BoxPart.DATA else None
+        ),
     )
     for box_part in BoxPart
 ]

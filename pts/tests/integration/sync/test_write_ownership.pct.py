@@ -921,3 +921,72 @@ def test_claim_all_included_refuses_to_be_combined_with_steal():
     assert "must never take boxes from other machines" in result.output
     # The other machine still owns it.
     assert fleet.remote_owner == "test-machine-1"
+
+
+# ============================================================================
+# The probe-clean baseline must be readable next pass, for every part
+# ============================================================================
+
+# %%
+#|export
+@pytest.mark.integration
+def test_conf_probe_clean_baseline_converges_instead_of_reprobing_forever():
+    """
+    When the probe proves a non-owner clean, the baseline it records must be
+    written under the SAME filter signature the status check reads it with.
+    CONF syncs with no exclude file, so that signature is
+    `filter_signature(None)` -- a fallback to the machine's default exclude
+    here (which this once did) makes the baseline write-only garbage: the box
+    falls back to the mtime test, reads NEEDS_PUSH again, and pays a remote
+    `rclone check` on every supervisor pass, for ever -- the exact
+    non-convergence the baseline write exists to prevent.
+    """
+    import json
+    import os
+
+    from boxyard._fingerprint import base_path_for, filter_signature
+    from boxyard.cmds import _sync_box as _sync_box_module
+
+    fleet = Fleet(include_on_m2=True)
+
+    # The owner gives the box a conf file; the non-owner pulls it.
+    m1_conf = fleet.meta(fleet.cp1).get_local_part_path(
+        get_config(fleet.cp1), BoxPart.CONF
+    )
+    m1_conf.mkdir(parents=True, exist_ok=True)
+    (m1_conf / "keep.txt").write_text("conf content")
+    run(sync_box(config_path=fleet.cp1, box_index_name=fleet.index_name, verbose=False))
+    fleet.sync_m2()
+
+    # An mtime-only touch: the fingerprint flips NEEDS_PUSH, but the probe
+    # (content-based) finds nothing to transfer -- the probe-clean path.
+    m2_conf = fleet.meta(fleet.cp2).get_local_part_path(
+        get_config(fleet.cp2), BoxPart.CONF
+    )
+    os.utime(m2_conf / "keep.txt")
+    fleet.sync_m2()
+
+    # The baseline it just recorded is bound to the adopted record and carries
+    # the reader's signature...
+    conf_rec = fleet.meta(fleet.cp2).get_local_sync_record_path(
+        get_config(fleet.cp2), BoxPart.CONF
+    )
+    base = json.loads(base_path_for(conf_rec).read_text())
+    assert base["filter_signature"] == filter_signature(None)
+
+    # ...so the next pass converges: no part asks the remote what a push
+    # would transfer, because nothing reads NEEDS_PUSH any more.
+    probe_calls = []
+    real_probe = _sync_box_module.push_would_transfer
+
+    async def _spy(*args, **kwargs):
+        probe_calls.append(1)
+        return await real_probe(*args, **kwargs)
+
+    from unittest.mock import patch
+
+    with patch.object(_sync_box_module, "push_would_transfer", new=_spy):
+        results = fleet.sync_m2()
+
+    assert not probe_calls
+    assert results[BoxPart.CONF][0].sync_condition == SyncCondition.SYNCED
