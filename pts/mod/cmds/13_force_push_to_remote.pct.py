@@ -203,12 +203,9 @@ _is_canonical_source = source_path == Path(_canonical_data_path).resolve()
 # does not clean the remote; see the default exclude file's own header).
 _conf_path = box_meta.get_local_part_path(config, BoxPart.CONF)
 _include_file = _conf_path / const.RCLONE_INCLUDE_FILENAME
-_exclude_file = _conf_path / const.RCLONE_EXCLUDE_FILENAME
 _filters_file = _conf_path / const.RCLONE_FILTERS_FILENAME
 _include_file = _include_file if _include_file.exists() else None
-_exclude_file = (
-    _exclude_file if _exclude_file.exists() else config.default_rclone_exclude_path
-)
+_exclude_file = box_meta.get_effective_exclude_path(config)
 _filters_file = _filters_file if _filters_file.exists() else None
 
 # Sync record paths

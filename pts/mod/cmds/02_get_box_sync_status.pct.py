@@ -133,7 +133,6 @@ import asyncio
 # command should still report the other parts, so DATA gets an explicit ERROR
 # instead.
 from boxyard._checkout import LocalCheckoutState, get_box_checkout_status
-from boxyard._models import SyncCondition as _SyncCondition, SyncStatus as _SyncStatus
 
 _checkout_state = get_box_checkout_status(config, box_meta).state
 _data_unreadable = _checkout_state in (
@@ -154,19 +153,9 @@ _data_error_status = _SyncStatus(
     ),
 )
 
-# Resolve the box's EFFECTIVE exclude file the same way `sync_box` does, so
-# `box-status` reports the same modification state a sync would act on. A box's
-# own `conf/.rclone_exclude` REPLACES the global default; using the default for
-# a box that overrides it could skip a directory the box really does sync.
-from boxyard import const as _const
-
-_conf_path = box_meta.get_local_part_path(config, BoxPart.CONF)
-_box_exclude_path = _conf_path / _const.RCLONE_EXCLUDE_FILENAME
-_effective_exclude_path = (
-    _box_exclude_path
-    if _box_exclude_path.exists()
-    else config.default_rclone_exclude_path
-)
+# The box's EFFECTIVE exclude file, from the same resolver every other site
+# uses -- `box-status` must report the modification state a sync would act on.
+_effective_exclude_path = box_meta.get_effective_exclude_path(config)
 
 _probed_parts = [
     p for p in BoxPart if not (p is BoxPart.DATA and _data_unreadable)

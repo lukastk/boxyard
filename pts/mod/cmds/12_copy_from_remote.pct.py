@@ -246,16 +246,13 @@ if _box_meta_for_format.storage_format is StorageFormat.RESTIC:
     # NON-excluded extraneous files at the destination, where the plain
     # branch's `rclone copy` never deletes anything, is a pre-existing
     # semantic difference recorded on ticket 43f05498.)
-    _conf_exclude = _box_meta_for_format.get_local_part_path(
-        config, BoxPart.CONF
-    ) / const.RCLONE_EXCLUDE_FILENAME
     await _restic_pull(
         _repo,
         dest_path,
         target_snapshot=_pointer["snapshot"],
         base_snapshot=None,
         excludes=restic_excludes_from_rclone_file(
-            _conf_exclude if _conf_exclude.exists() else config.default_rclone_exclude_path
+            _box_meta_for_format.get_effective_exclude_path(config)
         ),
     )
 else:
