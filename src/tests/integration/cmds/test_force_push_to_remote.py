@@ -108,14 +108,12 @@ async def _test_force_push_to_remote():
         assert "another_file.txt" in file_names
         # Initial file should be gone (sync replaces everything)
         assert "initial_file.txt" not in file_names
-    # Read sync records and verify they're complete
     local_sync_record_path = box_meta.get_local_sync_record_path(config, BoxPart.DATA)
     assert local_sync_record_path.exists()
     
     local_record = SyncRecord.model_validate_json(local_sync_record_path.read_text())
     assert local_record.sync_complete == True
     
-    # Read remote sync record
     remote_sync_record = await SyncRecord.rclone_read(
         config.rclone_config_path,
         remote_name,
@@ -124,8 +122,83 @@ async def _test_force_push_to_remote():
     assert remote_sync_record is not None
     assert remote_sync_record.sync_complete == True
     
-    # Verify ULIDs match
+    # The remote advanced; the local record is still the one the last REAL sync
+    # wrote -- so this machine reads the remote as newer and will pull.
+    assert local_record.ulid != remote_sync_record.ulid
+    assert remote_sync_record.ulid.datetime > local_record.ulid.datetime
+    
+    from boxyard._models import SyncCondition, get_sync_status
+    
+    _status_after_external = await get_sync_status(
+        rclone_config_path=config.rclone_config_path,
+        local_path=local_data_path,
+        local_sync_record_path=local_sync_record_path,
+        remote=remote_name,
+        remote_path=box_meta.get_remote_part_path(config, BoxPart.DATA),
+        remote_sync_record_path=box_meta.get_remote_sync_record_path(config, BoxPart.DATA),
+        exclude_path=config.default_rclone_exclude_path,
+    )
+    assert _status_after_external.sync_condition is SyncCondition.NEEDS_PULL
+    # Bring local back in step first (accept the force-pushed remote).
+    await sync_box(config_path=config_path, box_index_name=box_index_name)
+    
+    (local_data_path / "canonical_work.txt").write_text("from the checkout")
+    await force_push_to_remote(
+        config_path=config_path,
+        box_index_name=box_index_name,
+        source_path=local_data_path,
+        force=True,
+    )
+    
+    local_record = SyncRecord.model_validate_json(local_sync_record_path.read_text())
+    remote_sync_record = await SyncRecord.rclone_read(
+        config.rclone_config_path,
+        remote_name,
+        str(box_meta.get_remote_sync_record_path(config, BoxPart.DATA)),
+    )
+    assert local_record.sync_complete and remote_sync_record.sync_complete
     assert local_record.ulid == remote_sync_record.ulid
+    
+    import json as _json
+    
+    from boxyard._fingerprint import base_path_for
+    
+    _base = _json.loads(base_path_for(local_sync_record_path).read_text())
+    assert _base["sync_record_ulid"] == str(local_record.ulid)
+    
+    _status_after_canonical = await get_sync_status(
+        rclone_config_path=config.rclone_config_path,
+        local_path=local_data_path,
+        local_sync_record_path=local_sync_record_path,
+        remote=remote_name,
+        remote_path=box_meta.get_remote_part_path(config, BoxPart.DATA),
+        remote_sync_record_path=box_meta.get_remote_sync_record_path(config, BoxPart.DATA),
+        exclude_path=config.default_rclone_exclude_path,
+    )
+    assert _status_after_canonical.sync_condition is SyncCondition.SYNCED
+    _venv_dir = local_data_path / ".venv"
+    _venv_dir.mkdir(exist_ok=True)
+    (_venv_dir / "pyvenv.cfg").write_text("home = /usr")
+    assert ".venv" in config.default_rclone_exclude_path.read_text()
+    
+    await force_push_to_remote(
+        config_path=config_path,
+        box_index_name=box_index_name,
+        source_path=local_data_path,
+        force=True,
+    )
+    
+    remote_files = await rclone_lsjson(
+        config.rclone_config_path,
+        source=remote_name,
+        source_path=str(remote_data_path),
+    )
+    _names = [f["Name"] for f in remote_files]
+    assert "canonical_work.txt" in _names
+    assert ".venv" not in _names
+    import shutil as _shutil
+    
+    _shutil.rmtree(_venv_dir)
     # First, exclude the box to remove local DATA
     await exclude_box(config_path=config_path, box_index_name=box_index_name)
     

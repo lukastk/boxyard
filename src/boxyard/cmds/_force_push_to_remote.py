@@ -25,7 +25,15 @@ async def force_push_to_remote(
     Force push a local folder to a box's remote DATA location.
 
     This is a destructive operation that overwrites the remote DATA with the
-    contents of source_path. It properly manages sync records for consistency.
+    contents of source_path, under the box's effective rclone filters (a force
+    push must not upload what an ordinary sync would never transfer).
+
+    Local state afterwards depends on WHAT was pushed. When source_path is the
+    box's own checkout, this is an ordinary push with the safety rails off and
+    ends like one: local record, remote record, fingerprint baseline. When it
+    is any other directory, only REMOTE state is written -- the canonical
+    checkout is not marked as synced to data it never held, so the next sync
+    correctly reads NEEDS_PULL (or CONFLICT if this machine holds changes).
 
     Args:
         config_path: Path to the boxyard config file
@@ -92,6 +100,34 @@ async def force_push_to_remote(
     remote_box_path = sl_config.store_path / const.REMOTE_BOXES_REL_PATH / remote_index_name
     remote_data_path = remote_box_path / const.BOX_DATA_REL_PATH
     
+    # Whether the source IS this box's checkout decides what may be recorded
+    # locally afterwards. A force push from the canonical checkout is an ordinary
+    # push with the safety rails off, so it ends like one: local record, remote
+    # record, fingerprint baseline. A force push from anywhere else writes REMOTE
+    # state only -- marking the canonical checkout as synced to data it never held
+    # was how a box could lie about itself, and (worse, once the mtime fallbacks
+    # are gone) how the next ordinary sync would silently push the canonical tree
+    # back over whatever was just force-pushed. Untouched local state means the
+    # next sync reads NEEDS_PULL, or CONFLICT if this machine holds changes --
+    # which is simply the truth.
+    _canonical_data_path = box_meta.get_local_part_path(config, BoxPart.DATA)
+    _is_canonical_source = source_path == Path(_canonical_data_path).resolve()
+    
+    # The box's effective filters, exactly as `sync_box` computes them. A force
+    # push used to run UNFILTERED, so it uploaded `.venv/`, `node_modules/` and
+    # everything else the exclude list exists to stop -- content that every later
+    # filtered sync then ignores, stranded invisibly on the remote (an exclude
+    # does not clean the remote; see the default exclude file's own header).
+    _conf_path = box_meta.get_local_part_path(config, BoxPart.CONF)
+    _include_file = _conf_path / const.RCLONE_INCLUDE_FILENAME
+    _exclude_file = _conf_path / const.RCLONE_EXCLUDE_FILENAME
+    _filters_file = _conf_path / const.RCLONE_FILTERS_FILENAME
+    _include_file = _include_file if _include_file.exists() else None
+    _exclude_file = (
+        _exclude_file if _exclude_file.exists() else config.default_rclone_exclude_path
+    )
+    _filters_file = _filters_file if _filters_file.exists() else None
+    
     # Sync record paths
     local_sync_record_path = box_meta.get_local_sync_record_path(config, BoxPart.DATA)
     remote_sync_record_path = (
@@ -135,17 +171,23 @@ async def force_push_to_remote(
         if verbose:
             print(f"Creating sync session with ULID: {rec.ulid}")
     
-        # Save incomplete record to both sides BEFORE syncing
+        # Save the incomplete record BEFORE syncing. Both sides for a canonical
+        # push (the same session marker an ordinary push leaves, so an interrupted
+        # one is recognisably this machine's); REMOTE ONLY for an external source,
+        # whose whole point is that the canonical checkout's state is not being
+        # claimed. A force push is retried by re-running force-push, so the local
+        # marker buys the external case nothing and misrepresents the checkout.
         await rec.rclone_save(
             config.rclone_config_path.as_posix(),
             storage_location,
             remote_sync_record_path.as_posix(),
         )
-        await rec.rclone_save(
-            config.rclone_config_path.as_posix(),
-            "",
-            local_sync_record_path.as_posix(),
-        )
+        if _is_canonical_source:
+            await rec.rclone_save(
+                config.rclone_config_path.as_posix(),
+                "",
+                local_sync_record_path.as_posix(),
+            )
     
         # Create backup directory on remote
         backup_path = remote_sync_backups_path / backup_name
@@ -162,13 +204,29 @@ async def force_push_to_remote(
         if source_path.is_dir():
             generate_exec_manifest(source_path)
     
-        # Perform the sync (source -> remote DATA)
+        # For a canonical push, fingerprint BEFORE the transfer (and after the
+        # manifest write above, which is part of the digest) -- the same rule as
+        # `sync_helper`: recording the post-transfer tree would bless anything
+        # written mid-push as already on the remote.
+        if _is_canonical_source:
+            from boxyard._fingerprint import filter_signature, tree_fingerprint, write_base
+            from boxyard._utils import literal_exclude_names
+    
+            _pre_sig = filter_signature(_exclude_file)
+            _pre_fp = tree_fingerprint(
+                source_path, literal_exclude_names(_exclude_file), filter_sig=_pre_sig
+            )
+    
+        # Perform the sync (source -> remote DATA), under the box's real filters.
         success, stdout, stderr = await rclone_sync(
             rclone_config_path=config.rclone_config_path.as_posix(),
             source="",
             source_path=source_path.as_posix(),
             dest=storage_location,
             dest_path=remote_data_path.as_posix(),
+            include_file=_include_file,
+            exclude_file=_exclude_file,
+            filters_file=_filters_file,
             backup_path=f"{storage_location}:{backup_path.as_posix()}",
             progress=show_rclone_progress,
         )
@@ -179,13 +237,22 @@ async def force_push_to_remote(
         if verbose:
             print("Sync completed successfully.")
     
-        # Update sync records to complete state
+        # Complete state: remote always; local records and baseline only when the
+        # source IS the canonical checkout (see `_is_canonical_source` above).
         complete_rec = SyncRecord.create(sync_complete=True)
-        await complete_rec.rclone_save(
-            config.rclone_config_path.as_posix(),
-            "",
-            local_sync_record_path.as_posix(),
-        )
+        if _is_canonical_source:
+            if _pre_fp is not None:
+                write_base(
+                    local_sync_record_path,
+                    sync_record_ulid=str(complete_rec.ulid),
+                    fingerprint=_pre_fp,
+                    filter_sig=_pre_sig,
+                )
+            await complete_rec.rclone_save(
+                config.rclone_config_path.as_posix(),
+                "",
+                local_sync_record_path.as_posix(),
+            )
         await complete_rec.rclone_save(
             config.rclone_config_path.as_posix(),
             storage_location,
@@ -194,6 +261,15 @@ async def force_push_to_remote(
     
         if verbose:
             print("Sync records updated.")
+        if not _is_canonical_source:
+            # Not gated on `verbose`: this is the one fact the user must not
+            # miss -- the box's own checkout was NOT what just went out.
+            print(
+                f"Pushed from '{source_path}', which is not this box's checkout. "
+                f"The local sync state was left alone, so this machine now reads "
+                f"the remote as newer: sync to pull the pushed content into the "
+                f"checkout, or resolve the conflict if you have local changes."
+            )
     
         # Clean up backup. Caught rather than raised for the same reason as in
         # `sync_helper`: the push is done and both records say so, so a failed
