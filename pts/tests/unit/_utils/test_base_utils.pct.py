@@ -932,3 +932,61 @@ def test_run_cmd_async_env_does_not_mutate_the_parent(monkeypatch):
         run_cmd_async(["true"], env={"BOXYARD_TEST_OTHER": "x", "PATH": "/usr/bin:/bin"})
     )
     assert "BOXYARD_TEST_OTHER" not in os.environ
+
+# %%
+#|export
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "KNOWN BUG, pinned deliberately: a pure deletion is invisible to "
+        "`check_last_time_modified`, so the plain backend never pushes it and "
+        "the remote keeps the file for ever. Reproduced against the live "
+        "remote on 2026-09-03: deleting one file from a 16,746-file box and "
+        "syncing took exactly no-op time (8s vs 19s for an add) and left the "
+        "file on the remote. The fix is an ARCHITECTURAL decision, not a "
+        "one-liner -- see the ticket -- because simply also stat-ing "
+        "directories reintroduces the .DS_Store false-positive this function's "
+        "exclude filtering exists to prevent: an EXCLUDED file appearing in a "
+        "directory still moves that directory's mtime, which would flip a box "
+        "to NEEDS_PUSH and, when the remote had also moved on, to CONFLICT. "
+        "strict=True so this test FAILS as XPASS the moment the bug is fixed, "
+        "forcing whoever fixes it to delete this marker."
+    ),
+)
+def test_a_deletion_is_seen_as_a_modification(tmp_path):
+    """
+    Deleting a file must count as the box having changed.
+
+    It is the one change shape that leaves NOTHING new to stat: the file is
+    gone, and only its parent DIRECTORY's mtime moves. `check_last_time_modified`
+    takes mtimes from `entry.is_file()` only and uses directories purely to
+    descend, so its answer cannot go up when a file disappears -- it can only
+    stay the same or, if the tree empties, become None.
+
+    The restic backend's `tree_touched_since` already gets this right and says
+    so in its docstring ("DIRECTORIES are stat-ed too ... deleting a file leaves
+    nothing new to look at, and only its parent's mtime moves"). Plain does not.
+    """
+    import time
+
+    from boxyard._utils import check_last_time_modified
+
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "keep.txt").write_text("keep\n")
+    (sub / "doomed.txt").write_text("doomed\n")
+
+    # Past any timestamp slack, so the assertion is about the deletion and not
+    # about two events landing inside the same tolerance window.
+    time.sleep(2.2)
+
+    before = check_last_time_modified(tmp_path)
+    (sub / "doomed.txt").unlink()
+    after = check_last_time_modified(tmp_path)
+
+    assert before is not None
+    assert after is not None
+    assert after > before, (
+        "a deletion did not advance the box's last-modified time, so the plain "
+        "sync will treat the box as SYNCED and never push the removal"
+    )
