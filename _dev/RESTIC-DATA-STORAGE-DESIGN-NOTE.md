@@ -1910,6 +1910,22 @@ the same bug one level up.** `check_last_time_modified` is mtime-only, and a
 in the audit table, including both directions of `chmod` and a symlink
 retargeted in place.
 
+**A SLACK WINDOW HIDES THE PROPERTY UNDER TEST, and this is the fourth green
+test in this work that proved nothing.** Every gate test builds its fixture and
+then takes a baseline — but the fixture is seconds old, so it sits INSIDE
+`GATE_SLACK_SECONDS`, the gate answers "touched" whatever the mutation was, and
+the test passes without the gate ever being exercised. An **mtime-only gate
+survived the entire suite** on that basis: the exact trap named in advance,
+surviving the tests written to catch it. Every gate test now sleeps past the
+slack before taking its baseline.
+
+The general rule: **any tolerance window a test operates near — a timestamp
+slack, a retry budget, a debounce, a cache TTL — will swallow the very property
+the test claims to check, unless the test deliberately starts outside it.** The
+other three cases in this work were a vacuous `in report["checks"]`, a test
+naming a machine it never built, and counting node kinds; this is the first
+where the surviving mutation was a bug someone had named beforehand.
+
 **The polarity is the contract**, and it is stated in tests rather than in
 comments: the gate may only ever skip the check when NOTHING has been touched. A
 false "maybe" costs a slow check; a false "no" loses an edit, silently, for
@@ -1967,7 +1983,71 @@ With the gate, "convert everything" is defensible in a way the earlier figures
 did not support: the dominant case is now faster for restic at every size, and
 the changed case is faster by orders of magnitude exactly where it hurts most.
 
-### There is no supported route back, and there should be
+### The route back: `boxyard convert --to-plain`
+
+Built, because the safety case for this whole design is that every state is
+recoverable — and conversion was the one act that escaped it, with the state
+that had no exit being the FINAL one.
+
+**Its step order is the OPPOSITE of the forward one, and that is the design.**
+
+Forward, the switch is enforced by DESTROYING the old format's sync record
+first, because a machine on an older boxyard cannot read `storage_format` at
+all: publishing the boxmeta would redirect nobody, so the only way to stop those
+machines acting on the plain tree is to make every read of it an error.
+
+Reverse has the opposite property. `plain` is the format EVERY build
+understands, including one that has never heard of the key — an absent
+`storage_format` reads as plain. So the switch is a PUBLISH, performed at the
+moment both formats are complete on the remote, and the old one is removed only
+afterwards.
+
+That is not cosmetic. Removing the repository or the pointer while the boxmeta
+still says `restic` reaches the state "declares restic, has neither repo nor
+pointer", which `sync_data_restic` reads as a box that has never been pushed —
+so the next machine to sync would **initialise a new repository and push its
+local tree**, recreating the format the command is trying to leave. Publishing
+first makes that state unreachable, and a test asserts the repository and
+pointer are still present at the moment the publish lands.
+
+| # | after | remote holds | this machine | a peer | recovery |
+|---|---|---|---|---|---|
+| 0 | nothing | repo, pointer, boxmeta=restic | restic, syncs | restic, syncs | start again |
+| 1 | verified | unchanged | restic, syncs | restic, syncs | as 0 |
+| 2 | plain tree pushed | + `data/`, `data.rec` | restic, syncs | restic, syncs | re-push is a no-op |
+| 3 | boxmeta PUBLISHED | both formats, boxmeta=plain | plain, syncs | plain, syncs | re-run cleans up |
+| 4 | pointer deleted | repo remains | plain, syncs | plain, syncs | re-run cleans up |
+| 5 | repo purged | `data/`, `data.rec`, boxmeta=plain | plain, syncs | plain, syncs | done |
+
+**Every row is a WORKING state, not a refusal** — a stronger property than the
+forward direction has, and a direct consequence of the ordering: at every point
+the boxmeta names a format that is complete on the remote.
+
+**Rows 3 and 4 needed the resume path, and a test found that they did not have
+it.** Because the publish IS the switch, a re-run arrives with the boxmeta
+already saying `plain` — and the first version stopped there with "already
+plain, nothing to do", silently orphaning the repository on the remote. The
+reversal now treats "already plain, but artifacts remain" as a resume and
+finishes the removal.
+
+Everything else mirrors the forward command: the local tree is verified
+byte-identically against the snapshot — content, mode AND symlink targets, via
+the same `compare_trees` — before anything is written; the format is PUBLISHED
+as part of the operation rather than left as a follow-up (defect 1 forward, not
+reintroduced backward); `--dry-run` writes nothing; and it refuses when restic
+or the password is absent, when the box is being synced, and when the local
+checkout does not match the snapshot.
+
+**One thing the round trip surfaced that is NOT this command's.** A plain box
+loses `+x` on `.git/hooks/*.sample` when adopted on another machine, because
+`.git` is in `_PRUNED_DIR_NAMES` and the exec-bit manifest deliberately never
+covers it — a trade-off taken to stop the manifest listing thousands of entries.
+Verified against a box that was never converted at all, so the round trip merely
+displays it.
+
+### Why it had to exist
+
+
 
 `boxyard convert` is one-way. There is no `--to-plain`, and nothing else sets a
 box's format back to `plain`. The nearest route with the commands that exist is
@@ -1982,15 +2062,11 @@ every converted box while the pin is in place — was told to run a command that
 only goes the other way. The hint is now direction-aware and says plainly that
 there is no route back.
 
-**It should exist.** The safety argument for this whole design is that every
+**It exists now.** The safety argument for this whole design is that every
 intermediate state is a loud refusal and every step is recoverable; the
-interruption table exists to prove it. Conversion is the one act that escapes
-that property — the final state is the only one with no way out. And the reverse
-has exactly the same shape as the forward procedure, so it is not hard: push the
-restored tree as a plain `data/`, verify it byte-for-byte, write `data.rec`,
-delete the pointer, remove the repository, publish the boxmeta. It is not built
-here because it is a new command rather than a fix, and because Lukas should
-decide whether it blocks converting a large box.
+interruption table exists to prove it. Conversion was the one act that escaped
+that property — the final state being the only one with no way out, which is the
+worst place to put it.
 
 ### The same blindness was in the PULL, and only an end-to-end test found it
 

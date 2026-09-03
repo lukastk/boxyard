@@ -14,6 +14,9 @@ from .._models import (
 from .._remote_index import find_remote_box_by_id
 from .._restic import (
     ResticRepo,
+    clear_state,
+    pointer_remote_path,
+    read_pointer,
     estimate_stored_bytes,
     init_repo,
     pull,
@@ -26,7 +29,12 @@ from .._restic import (
     write_pointer,
     write_state,
 )
-from .._utils import rclone_delete_absent_ok, rclone_purge_absent_ok
+from .._utils import (
+    rclone_delete_absent_ok,
+    rclone_purge_absent_ok,
+    rclone_sync,
+)
+from .._utils.sync_helper import SyncDirection, SyncSetting, sync_helper
 from .._utils.locking import BoxyardLockManager
 from ..config import StorageType, get_config
 
@@ -36,6 +44,245 @@ class ConversionRefused(Exception):
 
     Always raised BEFORE anything is written, so a refusal never leaves a
     half-converted box.
+    """
+
+async def _reverse_to_plain(
+    *,
+    config,
+    box_meta,
+    box_index_name,
+    remote_index_name,
+    store,
+    repo,
+    local_data,
+    remote_data,
+    remote_rec_path,
+    excludes,
+    include_path,
+    exclude_path,
+    filters_path,
+    dry_run,
+    say,
+    did,
+    result,
+):
+    """
+    Take a restic-backed box back to a plain rclone tree.
+
+    THE ORDER IS THE OPPOSITE OF THE FORWARD ONE, AND FOR A REASON.
+
+    Forward, the switch is enforced by DESTROYING the old format's sync record
+    first, because a machine on an older boxyard cannot read `storage_format` at
+    all -- publishing the boxmeta would redirect nobody, so the only way to stop
+    those machines acting on the plain tree is to make every read of it an
+    error.
+
+    Reverse has the opposite property: `plain` is the format EVERY build
+    understands, including one that has never heard of the key (an absent
+    `storage_format` reads as plain). So the switch is enforced by PUBLISHING
+    the boxmeta, at the moment when BOTH formats are complete on the remote --
+    and the old one is removed only afterwards.
+
+    That ordering is not cosmetic. Removing the repository or the pointer while
+    the boxmeta still says `restic` reaches the state "declares restic, has
+    neither repo nor pointer", which `sync_data_restic` reads as a box that has
+    never been pushed: the next machine to sync would INITIALISE A NEW
+    REPOSITORY and push its local tree, recreating the format this command is
+    trying to leave. Publishing first makes that state unreachable.
+
+    The consequence is a stronger safety property than the forward direction
+    has: every intermediate state here is a WORKING state rather than a loud
+    refusal, because at every point the boxmeta names a format that is complete.
+    """
+    _pointer = await read_pointer(
+        config.rclone_config_path, box_meta.storage_location, store,
+        remote_index_name,
+    )
+    _remote_pointer_path = pointer_remote_path(store, remote_index_name)
+    _remote_repo_path = (
+        store
+        / const.REMOTE_BOXES_REL_PATH
+        / remote_index_name
+        / const.BOX_RESTIC_REL_PATH
+    )
+
+    # ALREADY SWITCHED? Then this is a resume, not a reversal.
+    #
+    # The publish is the switch, so once it has happened the boxmeta says
+    # `plain` and everything before it is done. A re-run must therefore NOT
+    # stop at "already plain" -- rows 3 and 4 of the interruption table are
+    # exactly that state with the repository or the pointer still on the
+    # remote, and stopping would orphan them silently. Found by the row-4 test.
+    if box_meta.storage_format is StorageFormat.PLAIN:
+        _leftovers = _pointer is not None or await repo_exists(repo)
+        if not _leftovers:
+            result["already"] = "plain"
+            say(f"Box '{box_index_name}' is already a plain tree. Nothing to do.")
+            return result
+        result["already"] = "published"
+        say(
+            f"Box '{box_index_name}' already publishes as plain; removing the "
+            f"restic artifacts a previous run left behind."
+        )
+        if dry_run:
+            return result
+        await _remove_restic_artifacts(
+            config=config,
+            box_meta=box_meta,
+            box_index_name=box_index_name,
+            pointer_path=_remote_pointer_path,
+            repo_path=_remote_repo_path,
+            did=did,
+        )
+        return result
+
+    if _pointer is None:
+        raise ReversalRefused(
+            f"Box '{box_index_name}' declares restic but has no data.snapshot "
+            f"pointer, so there is no snapshot to verify the local tree "
+            f"against. Finish the conversion with `boxyard convert -r "
+            f"'{box_index_name}'` first, then reverse it."
+        )
+    _snapshot = _pointer["snapshot"]
+    result["snapshot_id"] = _snapshot
+
+    say(f"Reverse '{box_index_name}' to a plain tree:")
+    say(f"  from snapshot {_snapshot[:8]} in {repo.url}")
+    say("  steps, in order:")
+    say("    1. verify the local tree restores byte-identically from the snapshot")
+    say(f"    2. push it to the remote plain tree {remote_data.as_posix()}")
+    say("    3. PUBLISH storage_format = plain in boxmeta.toml")
+    say(f"    4. delete the pointer {_remote_pointer_path.as_posix()}")
+    say(f"    5. purge the repository {repo.url}")
+    say(
+        "  the boxmeta goes BEFORE the repository is removed, the opposite of "
+        "the forward order: `plain` is the format every build understands, so "
+        "publishing it redirects the whole fleet onto a tree that is already "
+        "complete. Removing the repo first would leave the box declaring restic "
+        "with no repository, which the next machine to sync reads as a box that "
+        "has never been pushed -- and it would create a new one."
+    )
+    if dry_run:
+        return result
+
+    # ---- Step 1 -- verify BEFORE anything is written -----------------------
+    #
+    # The local checkout is what will become the plain tree, so it must be
+    # proved to match the snapshot first. Content, mode AND symlink targets --
+    # `compare_trees` is the same comparison the forward conversion uses.
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="boxyard-reverse-") as _tmp:
+        _restored = Path(_tmp) / "restored"
+        _restored.mkdir()
+        await pull(repo, _restored, target_snapshot=_snapshot, base_snapshot=None)
+        _problems = compare_trees(local_data, _restored)
+    if _problems:
+        raise ReversalRefused(
+            f"The local checkout of '{box_index_name}' is NOT identical to "
+            f"snapshot {_snapshot[:8]}, so nothing has been changed. Sync the "
+            f"box first. {len(_problems)} difference(s), first few:\n  "
+            + "\n  ".join(_problems[:10])
+        )
+    did(f"verified the local tree matches snapshot {_snapshot[:8]}")
+
+    # ---- Step 2 -- push the plain tree, with its sync record ---------------
+    #
+    # Through `sync_helper`, not a bare rclone call, so the remote `data/` and
+    # `sync_records/<box>/data.rec` are written exactly as an ordinary plain
+    # push writes them -- including the exec-bit manifest, which a plain box
+    # needs again because sftp drops the mode.
+    await sync_helper(
+        rclone_config_path=config.rclone_config_path,
+        sync_direction=SyncDirection.PUSH,
+        sync_setting=SyncSetting.FORCE,
+        local_path=local_data,
+        local_sync_record_path=box_meta.get_local_sync_record_path(
+            config, BoxPart.DATA
+        ),
+        remote=box_meta.storage_location,
+        remote_path=remote_data,
+        remote_sync_record_path=remote_rec_path,
+        local_sync_backups_path=config.local_sync_backups_path,
+        remote_sync_backups_path=store / const.REMOTE_BACKUP_REL_PATH,
+        include_path=include_path,
+        exclude_path=exclude_path,
+        filters_path=filters_path,
+        verbose=False,
+        preserve_exec_perms=True,
+    )
+    did("pushed the plain tree and its sync record")
+
+    # ---- Step 3 -- PUBLISH the format. This is the switch. ----------------
+    _on_disk = BoxMeta.load(config, box_meta.storage_location, box_index_name)
+    _on_disk.storage_format = StorageFormat.PLAIN
+    _on_disk.save(config)
+    refresh_boxyard_meta(config)
+    from ..cmds import sync_box as _sync_box
+
+    try:
+        await _sync_box(
+            config_path=config.config_path,
+            box_index_name=box_index_name,
+            sync_choices=[BoxPart.META],
+            verbose=False,
+            _skip_lock=True,
+        )
+    except Exception as _publish_error:
+        raise ConversionIncomplete(
+            f"'{box_index_name}' now has a complete plain tree on the remote, "
+            f"but its boxmeta could not be published, so the fleet still reads "
+            f"it as restic: {_publish_error}\n"
+            f"Re-run `boxyard convert -r '{box_index_name}' --to-plain` when "
+            f"the remote is reachable. Nothing has been removed."
+        ) from None
+    did("published storage_format = plain -- the fleet now reads the plain tree")
+
+    # ---- Steps 4 and 5 -- remove what nothing reads any more ---------------
+    await _remove_restic_artifacts(
+        config=config,
+        box_meta=box_meta,
+        box_index_name=box_index_name,
+        pointer_path=_remote_pointer_path,
+        repo_path=_remote_repo_path,
+        did=did,
+    )
+    say(f"Reversed '{box_index_name}' to a plain tree.")
+    return result
+
+async def _remove_restic_artifacts(
+    *, config, box_meta, box_index_name, pointer_path, repo_path, did
+):
+    """
+    Steps 4 and 5, shared by the full reversal and by a resume.
+
+    Absent-ok throughout, for the same reason the forward steps are: a reversal
+    resumes by re-running from the top and legitimately finds these already
+    gone.
+    """
+    await rclone_delete_absent_ok(
+        rclone_config_path=config.rclone_config_path,
+        dest=box_meta.storage_location,
+        dest_path=pointer_path.as_posix(),
+    )
+    did("deleted data.snapshot")
+
+    await rclone_purge_absent_ok(
+        rclone_config_path=config.rclone_config_path,
+        source=box_meta.storage_location,
+        source_path=repo_path.as_posix(),
+    )
+    did("purged the repository")
+
+    # This machine's restic state describes a repository that is gone.
+    clear_state(config.boxyard_data_path, box_index_name)
+    did("cleared this machine's restic state")
+
+class ReversalRefused(Exception):
+    """
+    The box is not in a state where reversing the conversion is safe.
+
+    Raised BEFORE anything is written, like `ConversionRefused`.
     """
 
 class ConversionIncomplete(Exception):
@@ -111,6 +358,7 @@ async def convert_box(
     box_index_name: str,
     dry_run: bool = False,
     estimate_size: bool = False,
+    to_plain: bool = False,
     verbose: bool = True,
 ) -> dict:
     """
@@ -123,6 +371,9 @@ async def convert_box(
         estimate_size: With `dry_run`, also measure what restic would store, by
             ingesting into a LOCAL temporary repository. Reads the whole tree
             and writes nothing to the remote.
+        to_plain: Reverse the conversion -- take a restic-backed box back to a
+            plain rclone tree. See `_reverse_to_plain` for why its step order is
+            the opposite of the forward one.
         verbose: Print each step as it happens.
 
     Returns:
@@ -235,7 +486,7 @@ async def convert_box(
                 f"be mid-push. Resolve it before converting."
             )
     
-        if box_meta.storage_format is StorageFormat.RESTIC:
+        if not to_plain and box_meta.storage_format is StorageFormat.RESTIC:
             result["already"] = "converted"
             _say(f"Box '{box_index_name}' is already restic-backed. Nothing to do.")
             return result
@@ -259,6 +510,49 @@ async def convert_box(
     _excludes = restic_excludes_from_rclone_file(
         _conf_exclude if _conf_exclude.exists() else config.default_rclone_exclude_path
     )
+    # The reverse runs here, once the repository, the excludes and the remote paths
+    # are all bound. Everything above it -- the lock, the interrupted-sync checks,
+    # the checkout and local-storage refusals -- applies to both directions.
+    if to_plain:
+        # Reversing READS the repository -- to verify the local tree against the
+        # snapshot before anything is destroyed -- so it needs the binary and the
+        # password exactly as converting does. Checked before anything is written or
+        # printed, the same scar as `include`.
+        from boxyard._restic import require_restic_available
+    
+        require_restic_available(config, f"reverse '{box_index_name}' to a plain tree")
+        result["direction"] = "to-plain"
+        # try/finally, matching the forward path: an interrupted or refused reversal
+        # must not leave the box's sync lock held. A real crash frees it when the
+        # process dies, but a refusal returns to a live process and would otherwise
+        # wedge the box until restart.
+        try:
+            result = await _reverse_to_plain(
+                config=config,
+                box_meta=box_meta,
+                box_index_name=box_index_name,
+                remote_index_name=_remote_index_name,
+                store=_store,
+                repo=_repo,
+                local_data=_local_data,
+                remote_data=_remote_data,
+                remote_rec_path=_remote_rec_path,
+                excludes=_excludes,
+                include_path=None,
+                exclude_path=(
+                    _conf_exclude
+                    if _conf_exclude.exists()
+                    else config.default_rclone_exclude_path
+                ),
+                filters_path=None,
+                dry_run=dry_run,
+                say=_say,
+                did=_did,
+                result=result,
+            )
+        finally:
+            _convert_lock.release()
+        return result
     
     _file_count = sum(1 for p in _local_data.rglob("*") if p.is_file())
     _byte_count = sum(

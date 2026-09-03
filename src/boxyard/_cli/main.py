@@ -3217,6 +3217,15 @@ def cli_convert(
     dry_run: bool = Option(
         False, "--dry-run", help="Report what would happen and change nothing."
     ),
+    to_plain: bool = Option(
+        False,
+        "--to-plain",
+        help=(
+            "Reverse the conversion: take a restic-backed box back to a plain "
+            "rclone tree, after verifying the local checkout against the "
+            "snapshot."
+        ),
+    ),
     estimate_size: bool = Option(
         False,
         "--estimate-size",
@@ -3243,7 +3252,7 @@ def cli_convert(
     import asyncio
 
     from ..cmds import convert_box
-    from ..cmds._convert_box import ConversionRefused
+    from ..cmds._convert_box import ConversionRefused, ReversalRefused
 
     _config, _, resolved = _resolve_box(
         box_index_name, box_id, box_name, name_match_mode, name_match_case,
@@ -3251,16 +3260,31 @@ def cli_convert(
     )
 
     if not dry_run and not yes:
-        typer.echo(
-            f"This converts '{resolved}' to a restic repository and PURGES its "
-            f"plain copy from the remote, after verifying a byte-identical "
-            f"restore.\n"
-            f"Machines still running an older boxyard will refuse this box until "
-            f"they are upgraded.\n"
-            f"Run with --dry-run first if you have not."
-        )
-        if not typer.confirm(f"Convert '{resolved}' to restic?"):
-            raise typer.Exit(code=0)
+        if to_plain:
+            typer.echo(
+                f"This takes '{resolved}' BACK to a plain rclone tree: it pushes "
+                f"the local checkout as the remote `data/`, publishes "
+                f"storage_format = plain, and then removes the repository and "
+                f"its pointer.\n"
+                f"The local tree is verified against the snapshot before "
+                f"anything is written, and the boxmeta is published BEFORE the "
+                f"repository is removed, so every intermediate state is a "
+                f"working box.\n"
+                f"Run with --dry-run first if you have not."
+            )
+            if not typer.confirm(f"Reverse '{resolved}' to a plain tree?"):
+                raise typer.Exit(code=0)
+        else:
+            typer.echo(
+                f"This converts '{resolved}' to a restic repository and PURGES its "
+                f"plain copy from the remote, after verifying a byte-identical "
+                f"restore.\n"
+                f"Machines still running an older boxyard will refuse this box until "
+                f"they are upgraded.\n"
+                f"Run with --dry-run first if you have not."
+            )
+            if not typer.confirm(f"Convert '{resolved}' to restic?"):
+                raise typer.Exit(code=0)
 
     try:
         asyncio.run(
@@ -3269,9 +3293,10 @@ def cli_convert(
                 box_index_name=resolved,
                 dry_run=dry_run,
                 estimate_size=estimate_size,
+                to_plain=to_plain,
             )
         )
-    except ConversionRefused as e:
+    except (ConversionRefused, ReversalRefused) as e:
         typer.echo(f"Refused: {e}", err=True)
         raise typer.Exit(code=1) from None
 
