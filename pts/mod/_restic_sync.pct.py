@@ -118,6 +118,8 @@ from boxyard._restic import (
     write_pointer,
     write_state,
 )
+from boxyard._fingerprint import filter_signature, local_tree_differs
+from boxyard._utils import literal_exclude_names
 from boxyard._utils.sync_helper import SyncUnsafe
 
 # %%
@@ -428,7 +430,35 @@ async def sync_data_restic(
                 f"is kept under the sync backups directory)."
             )
 
-        if tree_modified_since(data_path, plain_record.timestamp.timestamp()):
+        # "Did this replica hold unpushed work when the box was converted?" is
+        # exactly the question the plain fingerprint baseline answers, when one
+        # exists: it digests every change shape, where the mtime test this used
+        # to rely on sees two of ten -- an unpushed deletion, rename, chmod or
+        # symlink edit read "clean" here and was silently reverted by the full
+        # restore that follows. UNKNOWN (no baseline yet) falls back to that
+        # old mtime test: exactly the transition rule `get_sync_status` uses,
+        # for the same reason -- never worse than before, strictly better once
+        # the box has synced on >= 0.8.0.
+        _adoption_exc = box_meta.get_effective_exclude_path(config)
+        _adoption_differs = local_tree_differs(
+            local_path=data_path,
+            local_sync_record_path=box_meta.get_local_sync_record_path(
+                config, BoxPart.DATA
+            ),
+            local_sync_record_ulid=plain_record.ulid,
+            exclude_names=literal_exclude_names(_adoption_exc),
+            filter_sig=filter_signature(_adoption_exc),
+        )
+        if _adoption_differs is None:
+            # TODO(cleanup): drop this fallback with the others -- once `boxyard
+            # doctor` reports 0 uncovered fingerprint baselines on every machine
+            # (a sync pass alone does NOT achieve this: an already-synced box
+            # never writes a baseline), AND the historical backlog has been
+            # reviewed deliberately rather than by upgrade.
+            _adoption_differs = tree_modified_since(
+                data_path, plain_record.timestamp.timestamp()
+            )
+        if _adoption_differs:
             if not may_push:
                 return (
                     _status(
@@ -489,6 +519,20 @@ async def sync_data_restic(
         condition = ResticCondition.NEEDS_PULL
 
     if condition is ResticCondition.SYNCED:
+        if restic_status.clean_check_at_unix is not None:
+            # The FULL check just proved the tree clean, which means the cheap
+            # gate had been opened by something the check then dismissed -- an
+            # excluded-name arrival bumping its directory's mtime, typically a
+            # `.DS_Store`. Without a fresh stamp the gate stays open FOR EVER:
+            # every later pass pays the 2-5s dry-run, and `--skip-unchanged`
+            # never skips this box again. Re-stamp with the moment captured
+            # BEFORE the check walked the tree (a mid-check write then reopens
+            # the gate -- the loud direction), same snapshot, same file count.
+            write_state(
+                config.boxyard_data_path, index_name, local_snapshot,
+                now_unix=restic_status.clean_check_at_unix,
+                files=expected_files,
+            )
         _say(f"'{index_name}' DATA is up to date ({remote_snapshot[:8]}).")
         return _status(SyncCondition.SYNCED, local_exists=True, remote_exists=True), False
 

@@ -529,3 +529,77 @@ def test_an_ordinary_push_stamps_agreement_before_the_push(pair, monkeypatch):
         "was reading the tree becomes permanently invisible"
     )
     assert before <= seen["now_unix"] <= after
+
+# %% [markdown]
+# ## A replica's unpushed DELETION also refuses adoption
+#
+# The shape the mtime test could not see: deleting a file moves no surviving
+# mtime, so the old adoption check read the replica as clean and the full
+# restore silently brought the deleted file back. The plain fingerprint
+# baseline (written by the replica's own last plain sync) sees it.
+
+# %%
+#|export
+def test_a_replica_with_an_unpushed_deletion_refuses_to_adopt(pair):
+    (pair["dataB"] / "sub" / "keep.txt").unlink()
+
+    with pytest.raises(SyncUnsafe) as excinfo:
+        sync(pair, "B")
+    assert "converted to restic elsewhere" in str(excinfo.value)
+    # The deletion was not reverted by a restore.
+    assert not (pair["dataB"] / "sub" / "keep.txt").exists()
+
+
+# %% [markdown]
+# ## One excluded-name arrival does not tax the box for ever
+#
+# `.DS_Store` lands, its directory's mtime moves, the cheap gate opens, and
+# the full check correctly answers "clean" — after which a fresh
+# `synced_at_unix` must be recorded, or the gate stays open and every later
+# pass pays the 2–5s dry-run (and `--skip-unchanged` never skips the box
+# again). The third pass here must make NO restic calls at all.
+
+# %%
+#|export
+def test_a_clean_full_check_closes_the_gate_again(pair, monkeypatch):
+    import time as _time
+
+    import boxyard._restic as _restic_mod
+    from boxyard._restic import GATE_SLACK_SECONDS, read_state
+
+    sync(pair)  # settled
+    _stamp0 = read_state(pair["cfgA"].boxyard_data_path, pair["idx"])["synced_at_unix"]
+
+    _time.sleep(1.1)  # past mtime granularity, so the arrival genuinely opens the gate
+    (pair["dataA"] / "sub" / ".DS_Store").write_text("finder junk")
+    assert ".DS_Store" in pair["cfgA"].default_rclone_exclude_path.read_text()
+
+    # This pass pays the full check, answers clean, and re-stamps -- the
+    # wiring under test. (The stamp advancing is what a missing re-stamp
+    # cannot fake.)
+    results = sync(pair)
+    assert data_condition(results) is SyncCondition.SYNCED
+    _stamp1 = read_state(pair["cfgA"].boxyard_data_path, pair["idx"])["synced_at_unix"]
+    assert _stamp1 > _stamp0, "a clean full check did not re-stamp synced_at_unix"
+
+    # The gate's slack means an arrival is only provably quiet once a re-stamp
+    # postdates it by more than the slack: one more spaced pass pays one more
+    # (clean) check and re-stamps beyond it...
+    _time.sleep(GATE_SLACK_SECONDS + 0.3)
+    results = sync(pair)
+    assert data_condition(results) is SyncCondition.SYNCED
+
+    # ...after which the box is genuinely quiet again: NO restic calls at all.
+    calls = []
+    real = _restic_mod.run_restic
+
+    async def counting(repo, args, **kwargs):
+        calls.append(args[0] if args else "?")
+        return await real(repo, args, **kwargs)
+
+    monkeypatch.setattr(_restic_mod, "run_restic", counting)
+    results = sync(pair)
+    assert data_condition(results) is SyncCondition.SYNCED
+    assert not calls, (
+        f"the gate was left open after a clean full check: restic ran {calls}"
+    )

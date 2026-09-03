@@ -346,6 +346,23 @@ class BoxMeta(const.StrictModel):
         else:
             raise ValueError(f"Invalid box part: {box_part}")
 
+    def get_effective_exclude_path(self, config: boxyard.config.Config) -> Path:
+        """
+        The exclude file this box's DATA actually syncs under: its own
+        `conf/.rclone_exclude` when it has one -- which REPLACES the fleet
+        default -- else the default. Every consumer of the exclude list must
+        resolve it this way and identically: the fingerprint's filter
+        signature is part of the baseline, so two sites disagreeing about the
+        effective file makes one of them read every baseline the other writes
+        as unusable. This method exists because the recipe had been duplicated
+        at seven call sites.
+        """
+        own = (
+            self.get_local_part_path(config, BoxPart.CONF)
+            / const.RCLONE_EXCLUDE_FILENAME
+        )
+        return own if own.exists() else config.default_rclone_exclude_path
+
     def get_remote_sync_record_path(
         self, config: boxyard.config.Config, box_part: BoxPart
     ) -> Path:

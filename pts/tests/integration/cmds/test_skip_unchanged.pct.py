@@ -504,3 +504,33 @@ def test_the_real_filter_admits_the_pointer(yard):
         "the settled box was not dropped from the pass -- the bulk listing "
         "did not return its data.snapshot"
     )
+
+# %% [markdown]
+# ## The motivating shape: a lone deletion is never skipped
+#
+# The whole 0.8.x arc started from a deletion that left no newer mtime behind.
+# The filter's local gate is `tree_touched_since` — ctime-and-directories —
+# precisely so this shape opens it (deleting a file moves its parent's
+# mtime/ctime). Reverting that gate to the files-only mtime test left this
+# file's every test green, so the shape gets pinned by name.
+
+# %%
+#|export
+@needs_restic
+def test_a_lone_deletion_is_never_skipped(yard):
+    run(convert_box(config_path=yard["config_path"],
+                    box_index_name=yard["idx"], verbose=False))
+    config = get_config(yard["config_path"])
+    listing = pointer_entry(yard)
+    modtime, size = listing[yard["idx"]]
+    write_check_record(config, yard["idx"], BoxPart.DATA, 1000.0,
+                       remote_modtime=modtime, remote_size=size)
+
+    (yard["data"] / "notes.md").unlink()  # the ONLY change: no mtime survives it
+
+    needed, skippable = data_boxes_needing_sync(config, metas(yard), listing)
+    assert needed == [yard["idx"]], (
+        "a box whose only change is a deletion was skipped -- the exact shape "
+        "the 0.8.x work exists to catch"
+    )
+    assert skippable == []

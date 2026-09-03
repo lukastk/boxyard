@@ -96,11 +96,12 @@ def box(tmp_path):
 
 def modified(box) -> bool:
     repo, d, result = box
-    return run(
+    answer, _clean_at = run(
         local_is_modified(
             repo, d, result.snapshot_id, expected_files=result.files
         )
     )
+    return answer
 
 
 # %% [markdown]
@@ -295,13 +296,13 @@ def test_touching_an_EXCLUDED_file_is_not_a_change(box):
     settled = run(push(repo, d, parent=None, excludes=patterns, box_index_name=None))
     assert run(local_is_modified(repo, d, settled.snapshot_id,
                                  excludes=patterns,
-                                 expected_files=settled.files)) is False
+                                 expected_files=settled.files))[0] is False
 
     time.sleep(1.1)
     excluded.write_text("changed, and still excluded\n")
     assert run(local_is_modified(repo, d, settled.snapshot_id,
                                  excludes=patterns,
-                                 expected_files=settled.files)) is False, (
+                                 expected_files=settled.files))[0] is False, (
         "an excluded file's write was read as a change to the box"
     )
 
@@ -378,7 +379,7 @@ def test_the_file_count_backstop_catches_a_deletion(box, monkeypatch):
     (d / "src" / "a.txt").unlink()
     assert run(
         local_is_modified(repo, d, result.snapshot_id, expected_files=result.files)
-    ) is True
+    )[0] is True
 
 
 # %% [markdown]
@@ -414,7 +415,7 @@ def count_restic_calls(monkeypatch):
 
 def gated(box, *, synced_at, exclude_names=None):
     repo, d, result = box
-    return run(
+    answer, _clean_at = run(
         local_is_modified(
             repo, d, result.snapshot_id,
             synced_at_unix=synced_at,
@@ -422,6 +423,7 @@ def gated(box, *, synced_at, exclude_names=None):
             exclude_names=exclude_names,
         )
     )
+    return answer
 
 
 def test_an_untouched_box_makes_NO_restic_calls_at_all(box, monkeypatch):
@@ -544,7 +546,7 @@ def test_an_excluded_write_costs_a_check_and_answers_correctly(box, monkeypatch)
     excluded.write_text("changed, still excluded\n")
 
     seen = count_restic_calls(monkeypatch)
-    answer = run(local_is_modified(
+    answer, _clean_at = run(local_is_modified(
         repo, d, settled.snapshot_id, synced_at_unix=baseline,
         excludes=patterns, expected_files=settled.files,
     ))
@@ -575,7 +577,7 @@ def test_naming_an_excluded_DIRECTORY_lets_the_gate_fire(box, monkeypatch):
     (venv / "thing.so").write_text("rebuilt\n")
 
     seen = count_restic_calls(monkeypatch)
-    answer = run(local_is_modified(
+    answer, _clean_at = run(local_is_modified(
         repo, d, settled.snapshot_id, synced_at_unix=baseline,
         excludes=patterns, expected_files=settled.files,
         exclude_names={".venv"},
@@ -601,7 +603,7 @@ def test_rewriting_a_named_excluded_file_is_gated_out(box, monkeypatch):
     excluded.write_text("changed, still excluded\n")
 
     seen = count_restic_calls(monkeypatch)
-    answer = run(local_is_modified(
+    answer, _clean_at = run(local_is_modified(
         repo, d, settled.snapshot_id, synced_at_unix=baseline,
         excludes=patterns, expected_files=settled.files,
         exclude_names={"ignored.tmp"},
@@ -629,7 +631,7 @@ def test_CREATING_an_excluded_file_still_costs_a_check(box, monkeypatch):
     (d / "ignored.tmp").write_text("brand new, and excluded\n")
 
     seen = count_restic_calls(monkeypatch)
-    answer = run(local_is_modified(
+    answer, _clean_at = run(local_is_modified(
         repo, d, settled.snapshot_id, synced_at_unix=baseline,
         excludes=patterns, expected_files=settled.files,
         exclude_names={"ignored.tmp"},
@@ -763,3 +765,55 @@ def test_synced_at_is_stamped_before_the_push_not_after(tmp_path, monkeypatch):
         "this documents the defect: a late stamp makes the mid-flight write "
         "invisible, which is why the stamp is taken before the push"
     )
+
+# %% [markdown]
+# ## The unusable-parent fallback, and the stamp a clean check hands back
+
+# %%
+#|export
+def test_an_unusable_parent_with_a_lone_deletion_reports_changed(box, monkeypatch):
+    """
+    Retention pruned the parent and the ONLY local change is a deletion --
+    mtime-invisible, so the old `tree_modified_since` fallback read it as
+    clean and the next full restore silently reverted it. Nothing can prove
+    this tree clean without the parent, so the answer is "changed",
+    unconditionally.
+    """
+    import boxyard._restic as restic_mod
+
+    repo, d, result = box
+
+    async def unusable(repo_, snapshot, path):
+        return False
+
+    monkeypatch.setattr(restic_mod, "parent_is_usable", unusable)
+    (d / "src" / "a.txt").unlink()
+    answer, clean_at = run(
+        local_is_modified(
+            repo, d, result.snapshot_id,
+            synced_at_unix=time.time(),  # the mtime test would call this clean
+            expected_files=result.files,
+        )
+    )
+    assert answer is True
+    assert clean_at is None
+
+
+def test_a_clean_full_check_hands_back_a_stamp_that_closes_the_gate(box):
+    """
+    The gate opened (or there was no stamp), the full check ran and proved the
+    tree clean: the moment captured BEFORE that check is returned so the
+    caller can re-stamp. Without it, one excluded-name arrival holds the gate
+    open for ever and every later pass pays the full check.
+    """
+    repo, d, result = box
+    before = time.time()
+    answer, clean_at = run(
+        local_is_modified(repo, d, result.snapshot_id, expected_files=result.files)
+    )
+    after = time.time()
+    assert answer is False
+    assert clean_at is not None
+    assert before <= clean_at <= after
+    # A gate stamped with it stays closed: the whole point of the hand-back.
+    assert gated(box, synced_at=clean_at) is False

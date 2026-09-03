@@ -66,6 +66,7 @@ import contextlib
 import json
 import os
 import stat
+import time
 from datetime import datetime
 import shutil
 from dataclasses import dataclass, field
@@ -1273,9 +1274,20 @@ async def local_is_modified(
     box_index_name: str | None = None,
     expected_files: int | None = None,
     exclude_names: "set[str] | None" = None,
-) -> bool:
+) -> "tuple[bool, float | None]":
     """
     Does this machine hold DATA changes the remote has not seen?
+
+    Returns `(modified, clean_check_at_unix)`. The second value is set ONLY
+    when the answer "not modified" was proved by the FULL check (the dry-run
+    plus node comparison), and holds the moment captured BEFORE that check
+    started reading the tree. The caller re-stamps `synced_at_unix` with it,
+    which is what closes the cheap gate again after an excluded-name arrival
+    (a `.DS_Store` bumping its directory's mtime) has opened it: without the
+    re-stamp the gate stays open FOR EVER and every subsequent pass pays the
+    full check -- and `--skip-unchanged` never skips the box again. Captured
+    before the walk per 0.8.1's rule: erring early costs one extra check,
+    erring late hides a mid-check write.
     """
     # THE CHEAP GATE, and it is parity rather than an optimisation.
     #
@@ -1297,18 +1309,26 @@ async def local_is_modified(
     # when nothing at all has been touched.
     if parent_snapshot is not None and synced_at_unix is not None:
         if not tree_touched_since(data_path, synced_at_unix, exclude_names):
-            return False
+            return False, None
 
     with _backup_path(box_index_name, data_path) as (effective_path, _):
         if parent_snapshot and not await parent_is_usable(
             repo, parent_snapshot, effective_path
         ):
-            if synced_at_unix is None:
-                # No timestamp either: a record written before this field
-                # existed. Now we genuinely cannot tell, and "assume changed" is
-                # the safe direction -- it costs a sync, never a wrong skip.
-                return True
-            return tree_modified_since(data_path, synced_at_unix)
+            # The parent snapshot is gone (retention pruned it) or unusable,
+            # so nothing can prove this tree clean. Assume changed -- the same
+            # direction the no-timestamp case below always took. This used to
+            # fall back to `tree_modified_since`, the files-only mtime test
+            # that sees two of ten change shapes, so a replica whose ONLY
+            # change since the pruned snapshot was a deletion, rename, chmod
+            # or symlink edit read "clean" and had that change silently
+            # reverted by the next full restore. The cost of assuming: an
+            # owner pays one parentless backup and converges; a non-owner
+            # reports WRITE_DENIED until a person looks -- rare (pruning), and
+            # honest, since the replica genuinely cannot be proven clean.
+            return True, None
+
+        _pre_check_unix = time.time()
 
         args = ["backup", "--dry-run", "--json"] + _backup_args(
             effective_path, excludes
@@ -1320,7 +1340,7 @@ async def local_is_modified(
         returncode, stdout, _ = await run_restic(repo, args, check=False)
 
         if returncode != 0:
-            return True  # cannot tell -> assume changed
+            return True, None  # cannot tell -> assume changed
 
         summary: dict = {}
         for line in stdout.splitlines():
@@ -1333,7 +1353,7 @@ async def local_is_modified(
                 break
 
         if not summary:
-            return True
+            return True, None
 
         # Restic's counters, which are ANCESTOR-IMMUNE -- measured: writing an
         # unrelated file in the box's parent directory moves none of them. That
@@ -1345,12 +1365,12 @@ async def local_is_modified(
             or summary.get("files_changed")
             or summary.get("dirs_new")
         ):
-            return True
+            return True, None
         if (
             expected_files is not None
             and summary.get("total_files_processed") != expected_files
         ):
-            return True
+            return True, None
 
         # ...and what those counters CANNOT express. They count node KINDS, so
         # a symlink -- neither a file nor a directory -- moves none of them, and
@@ -1363,13 +1383,15 @@ async def local_is_modified(
         # list. It runs only when the cheap counters have already said "clean",
         # which is the common case for a box nobody has touched.
         if parent_snapshot is None:
-            return False
+            return False, _pre_check_unix
         expected = await snapshot_nodes(repo, parent_snapshot)
         if not expected:
             # Unlistable, or listed nothing: either way nothing is known, and
             # "assume changed" costs a sync rather than losing work.
-            return True
-        return local_nodes_differ(data_path, expected)
+            return True, None
+        if local_nodes_differ(data_path, expected):
+            return True, None
+        return False, _pre_check_unix
 
 # %% [markdown]
 # ## Status
@@ -1399,6 +1421,11 @@ class ResticStatus:
     remote_snapshot: str | None = None
     local_snapshot: str | None = None
     local_modified: bool = False
+    # Set when "not modified" was proved by the FULL check rather than the
+    # cheap gate: the moment captured before that check read the tree. The
+    # sync path re-stamps `synced_at_unix` with it, closing the gate that an
+    # excluded-name arrival would otherwise hold open for ever.
+    clean_check_at_unix: "float | None" = None
 
 
 async def count_tracked_files(
@@ -1459,7 +1486,7 @@ async def get_status(
     if remote_snapshot is None:
         return ResticStatus(ResticCondition.UNINITIALISED, None, local_snapshot, True)
 
-    modified = await local_is_modified(
+    modified, clean_check_at = await local_is_modified(
         repo,
         data_path,
         local_snapshot,
@@ -1476,6 +1503,7 @@ async def get_status(
             remote_snapshot,
             local_snapshot,
             modified,
+            clean_check_at_unix=clean_check_at,
         )
 
     if modified:
