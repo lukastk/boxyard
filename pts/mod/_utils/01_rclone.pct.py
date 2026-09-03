@@ -230,7 +230,14 @@ def _rclone_cmd_helper(
         cmd.append("--filter")
         cmd.append(f)
     if filters_file is not None:
-        cmd.append("--filters-file")
+        # `--filter-from`, NOT `--filters-file`, which rclone has never had --
+        # `rclone help flags` lists only `--filter-from` and
+        # `--metadata-filter-from`. Any box carrying a `.rclone_filters` would
+        # have died on "unknown flag" at the first sync. It survived because no
+        # box in the fleet has ever had one (checked: zero), so the flag was
+        # never emitted -- and two unit tests asserted the typo, so the suite
+        # confirmed it instead of catching it.
+        cmd.append("--filter-from")
         cmd.append(filters_file)
     if progress:
         cmd.append("--progress")

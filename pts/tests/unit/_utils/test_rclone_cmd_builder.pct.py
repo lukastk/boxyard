@@ -212,7 +212,7 @@ class TestRcloneCopyCommand:
                 filters_file="/tmp/filters.txt",
                 return_command=True,
             )
-            assert "--filters-file /tmp/filters.txt" in result
+            assert "--filter-from /tmp/filters.txt" in result
 
         asyncio.run(_test())
 
@@ -347,7 +347,7 @@ class TestRcloneSyncCommand:
             assert "--filter '+ important/'" in result
             assert "--include-from /inc.txt" in result
             assert "--exclude-from /exc.txt" in result
-            assert "--filters-file /filters.txt" in result
+            assert "--filter-from /filters.txt" in result
             assert "--backup-dir /backup" in result
             assert "--dry-run" in result
             assert "--progress" in result
