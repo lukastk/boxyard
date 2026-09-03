@@ -208,7 +208,25 @@ async def sync_helper(
                         "Cleared a stale incomplete sync record: neither side has "
                         "this part, so there was no interrupted transfer to resume."
                     )
-            if verbose:
+            if dest_exists:
+                # A missing SOURCE with a PRESENT destination is a real divergence
+                # -- the part was deleted on one side -- and this branch does not
+                # reconcile it (deleting the surviving copy on inference would be
+                # worse). What it must not be is SILENT: this exact shape is how a
+                # deleted conf/ leaves a stale exclude list active on the remote
+                # for ever, with nothing anywhere saying so. Not gated on
+                # `verbose`; a divergence that only speaks when asked is the
+                # failure mode the review keeps finding.
+                _side = "locally" if sync_direction == SyncDirection.PUSH else "on the remote"
+                _survivor = "remote" if sync_direction == SyncDirection.PUSH else "local"
+                print(
+                    f"WARNING: '{local_path}' is missing {_side} while the "
+                    f"{_survivor} copy still exists. Deletions of a whole part do "
+                    f"not propagate; the surviving copy stays as it is. Pull to "
+                    f"restore the missing side, or remove the surviving copy "
+                    f"deliberately if the deletion was intended."
+                )
+            elif verbose:
                 print(f"Source does not exist and allow_missing_source=True. Skipping sync.")
             return sync_status, False
     from boxyard._utils import rclone_sync, BisyncResult, rclone_mkdir, rclone_purge

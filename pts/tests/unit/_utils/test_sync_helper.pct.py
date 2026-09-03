@@ -1398,3 +1398,59 @@ class TestSyncHelperMissingSourceClearsStaleRecord:
 
         status, synced = asyncio.run(_test())
         assert synced is False
+
+# %%
+#|export
+class TestSyncHelperMissingSourceSpeaksUp:
+    """
+    A missing SOURCE with a PRESENT destination is a real divergence -- a
+    whole part deleted on one side -- and deliberately not reconciled. What it
+    must not be is SILENT: this exact shape is how a deleted conf/ leaves its
+    exclude list active on the surviving side for ever. The warning is not
+    gated on `verbose`.
+    """
+
+    def _run(self, tmp_path, capsys):
+        from boxyard._models import SyncRecord
+
+        rec_path = tmp_path / "conf.rec"
+        rec = SyncRecord.create(sync_complete=False, syncer_hostname="h")
+        rec_path.write_text(rec.model_dump_json())
+        status = SyncStatus(
+            sync_condition=SyncCondition.SYNC_FROM_REMOTE_INCOMPLETE,
+            local_path_exists=True,
+            remote_path_exists=False,
+            local_sync_record=rec,
+            remote_sync_record=None,
+            is_dir=True,
+            error_message=None,
+        )
+
+        async def _test():
+            with patch(
+                "boxyard._models.get_sync_status",
+                new=AsyncMock(return_value=status),
+            ):
+                return await sync_helper(
+                    rclone_config_path="/config",
+                    sync_direction=SyncDirection.PULL,
+                    sync_setting=SyncSetting.CAREFUL,
+                    local_path="/local",
+                    local_sync_record_path=str(rec_path),
+                    remote="myremote",
+                    remote_path="/remote",
+                    remote_sync_record_path="remote/.sync",
+                    local_sync_backups_path="/backups",
+                    remote_sync_backups_path="remote/backups",
+                    allow_missing_source=True,
+                    verbose=False,  # the warning must not depend on this
+                )
+
+        _, synced = asyncio.run(_test())
+        return synced, capsys.readouterr().out
+
+    def test_the_divergence_is_reported_even_without_verbose(self, tmp_path, capsys):
+        synced, out = self._run(tmp_path, capsys)
+        assert synced is False
+        assert "WARNING" in out
+        assert "do not propagate" in out
