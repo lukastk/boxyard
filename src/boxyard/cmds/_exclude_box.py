@@ -124,7 +124,16 @@ async def exclude_box(
         #
         # Absence here is a legitimate expected state, not a swallowed error: the
         # record's whole purpose is to describe a local tree, and there is none.
-        box_meta.get_local_sync_record_path(config, BoxPart.DATA).unlink(missing_ok=True)
+        _data_rec_path = box_meta.get_local_sync_record_path(config, BoxPart.DATA)
+        _data_rec_path.unlink(missing_ok=True)
+        # The fingerprint baseline describes the very tree that was just removed, so
+        # it goes with the record it belongs to. Leaving it would mean a later
+        # re-include compared the fresh checkout against a baseline from the old
+        # one -- a mismatch, which is merely one wasted reconcile, but the sidecar
+        # is meaningless here either way and stale state is not worth keeping.
+        from boxyard._fingerprint import clear_base
+    
+        clear_base(_data_rec_path)
         # Same reasoning for the restic side: this machine's state record claims a
         # local tree at some snapshot, and that claim is now false.
         from boxyard._restic import clear_state

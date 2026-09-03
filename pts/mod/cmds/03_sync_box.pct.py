@@ -35,6 +35,8 @@ from boxyard._models import (
     record_meta_base,
 )
 from boxyard._enums import StorageFormat
+from boxyard._fingerprint import filter_signature, tree_fingerprint, write_base
+from boxyard._utils import literal_exclude_names
 from boxyard._ownership import may_push, push_would_transfer, write_denied_message
 from boxyard.config import get_config, StorageType
 from boxyard._utils import (
@@ -647,6 +649,38 @@ try:
                 # Nothing to send. Report it as what it is rather than as a
                 # refusal, or every machine would carry a permanent complaint
                 # about changes that do not exist.
+                #
+                # RECORD THE BASELINE HERE, or this path never converges. A
+                # non-owner machine cannot push, so it never reaches the place
+                # baselines are normally written -- and with no baseline the
+                # status check says NEEDS_PUSH, which lands here again, which
+                # pays for a full remote listing of the box. Every pass. For
+                # ever. That is the expensive operation, on the machines least
+                # able to do anything about it.
+                #
+                # It is also the RIGHT moment, not a convenient one: the probe
+                # just proved local and remote hold the same files under the
+                # box's real filters, which is exactly the fact a completed sync
+                # would have established. Bind it to the existing record, since
+                # no new sync happened.
+                _bl_exclude = (
+                    probe_exclude_path
+                    if probe_exclude_path is not None
+                    else config.default_rclone_exclude_path
+                )
+                _bl_sig = filter_signature(_bl_exclude)
+                _bl_fp = tree_fingerprint(
+                    Path(helper_kwargs["local_path"]),
+                    literal_exclude_names(_bl_exclude),
+                    filter_sig=_bl_sig,
+                )
+                if _bl_fp is not None and _status.local_sync_record is not None:
+                    write_base(
+                        helper_kwargs["local_sync_record_path"],
+                        sync_record_ulid=str(_status.local_sync_record.ulid),
+                        fingerprint=_bl_fp,
+                        filter_sig=_bl_sig,
+                    )
                 return _status._replace(sync_condition=SyncCondition.SYNCED), False
             return _deny(_status)
 

@@ -18,6 +18,7 @@ from .config import BoxGroupConfig, BoxTimestampFormat
 
 # %% pts/mod/_models.pct.py 5
 from ._enums import BoxPart, StorageFormat
+from ._fingerprint import filter_signature, local_tree_differs
 
 # %% pts/mod/_models.pct.py 6
 def _validate_single_path_component(value: str, label: str) -> None:
@@ -1357,8 +1358,45 @@ async def get_sync_status(
         )
         return SyncStatus(**sync_status)
 
+    _exclude_names = literal_exclude_names(exclude_path)
     local_last_modified = check_last_time_modified(
-        local_path, exclude_names=literal_exclude_names(exclude_path)
+        local_path, exclude_names=_exclude_names
+    )
+
+    # THE change-detection predicate. Three-valued on purpose: True/False when
+    # this machine's baseline can answer, and None for UNKNOWN -- no baseline,
+    # one bound to a different sync, or a filter-scope change.
+    #
+    # `local_last_modified` survives ONLY as the transitional answer for UNKNOWN
+    # at the second decision site below. It is not the decision any more, because
+    # it cannot be: it sees two of ten change shapes. A deletion, a rename, a
+    # chmod, a symlink edit and an mtime-preserving write all leave the newest
+    # mtime exactly where it was, so the box reads SYNCED and the change is never
+    # pushed -- measured against the live remote, and tabulated in `_fingerprint`.
+    #
+    # A glob-excluded file makes this OVER-detect, and that is the contract this
+    # codebase already had rather than a flaw introduced here:
+    # `literal_exclude_names` deliberately does not interpret globs, and its
+    # docstring states the consequence -- "a glob-excluded file can still make a
+    # box look modified (a false 'needs push', which sync then resolves as a
+    # no-op)". There are tests for exactly that path.
+    #
+    # An earlier version of this REFUSED such boxes outright. That was wrong: it
+    # broke a supported feature, and it was unnecessary, because the
+    # over-detection converges. A false NEEDS_PUSH leads to a push (or, on a
+    # non-owner, the probe) which transfers nothing and then RE-RECORDS the
+    # baseline -- so the next check compares against the churned tree and is
+    # clean. The thing that makes it converge is the baseline write, which had
+    # to exist anyway.
+    _filter_sig = filter_signature(exclude_path)
+    _locally_modified = local_tree_differs(
+        local_path=local_path,
+        local_sync_record_path=local_sync_record_path,
+        local_sync_record_ulid=(
+            local_sync_record.ulid if local_sync_record is not None else None
+        ),
+        exclude_names=_exclude_names,
+        filter_sig=_filter_sig,
     )
     if local_last_modified is None and local_path_exists:
         if (not local_path_is_dir) or (local_path_is_dir and not local_path_is_empty):
@@ -1391,10 +1429,35 @@ async def get_sync_status(
         sync_condition = SyncCondition.SYNC_FROM_REMOTE_INCOMPLETE
     else:
         if sync_records_match:
-            if (
-                local_last_modified is not None
-                and local_last_modified > local_sync_record.timestamp
-            ):
+            # UNKNOWN falls back to the OLD test, and does NOT mean "modified".
+            #
+            # Resolving it to NEEDS_PUSH was the first design here, on the
+            # argument that it rescues the lone deletions the old test blessed
+            # as SYNCED. It does -- but a push reconciles local ONTO remote, so
+            # on upgrade day it would silently propagate every historical local
+            # deletion across the whole fleet, deleting remote files nobody
+            # asked about in this session, on the strength of no evidence at
+            # all. Today's bug is an accidental safety net for a box whose local
+            # copy was emptied by an unmounted volume or a stray clean; turning
+            # that into an automatic mass delete is not a migration, it is a
+            # surprise with a `--backup-dir` under it.
+            #
+            # So the migration is a NO-OP by construction: behaviour is exactly
+            # today's until a box syncs once and gets a baseline, after which
+            # every change shape is caught. Nothing is actioned retroactively.
+            #
+            # TODO(cleanup): drop this fallback and treat UNKNOWN as NEEDS_PUSH
+            # -- once every machine has completed one full sync pass on >= 0.8.0,
+            # so every locally-included box has a baseline, AND the historical
+            # backlog has been reviewed deliberately rather than by upgrade.
+            if _locally_modified is None:
+                _modified_a = (
+                    local_last_modified is not None
+                    and local_last_modified > local_sync_record.timestamp
+                )
+            else:
+                _modified_a = _locally_modified
+            if _modified_a:
                 sync_condition = SyncCondition.NEEDS_PUSH
             else:
                 sync_condition = SyncCondition.SYNCED
@@ -1412,10 +1475,34 @@ async def get_sync_status(
                         > local_sync_record.ulid.datetime
                     )
                     if remote_sync_more_recent:
-                        if (
-                            local_last_modified is not None
-                            and local_last_modified > local_sync_record.timestamp
-                        ):
+                        # THE SECOND DECISION SITE. Leaving this one on mtime was
+                        # the same bug wearing the other branch: delete a file
+                        # locally, let another machine push, and this reads "not
+                        # locally modified" -> NEEDS_PULL -> THE PULL SILENTLY
+                        # RESTORES THE FILE THAT WAS DELETED.
+                        #
+                        # UNKNOWN must NOT mean modified here, unlike the branch
+                        # above. Treating it as modified turns every box merely
+                        # awaiting a pull at upgrade time into a CONFLICT needing
+                        # manual resolution -- hundreds on a machine that was off
+                        # for a week. So an unknown baseline uses the OLD mtime
+                        # test: exactly today's behaviour, never worse, and
+                        # bounded to one cycle per box because the pull that
+                        # resolves it writes the baseline.
+                        #
+                        # TODO(cleanup): drop the `local_last_modified` fallback
+                        # here and treat UNKNOWN as CONFLICT -- once every machine
+                        # has completed one full sync pass on >= 0.8.0, so every
+                        # locally-included box has a baseline. `boxyard doctor`
+                        # reports the boxes that still lack one.
+                        if _locally_modified is None:
+                            _modified = (
+                                local_last_modified is not None
+                                and local_last_modified > local_sync_record.timestamp
+                            )
+                        else:
+                            _modified = _locally_modified
+                        if _modified:
                             sync_condition = SyncCondition.CONFLICT
                         else:
                             sync_condition = SyncCondition.NEEDS_PULL

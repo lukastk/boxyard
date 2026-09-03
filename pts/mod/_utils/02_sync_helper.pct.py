@@ -397,9 +397,32 @@ async def _sync(
 # %%
 #|export
 from boxyard._models import SyncRecord
+from boxyard._utils import literal_exclude_names
+from boxyard._fingerprint import filter_signature, tree_fingerprint, write_base
 
 if check_interrupted():
     raise SoftInterruption()
+
+# The machine-local baseline the next status check compares against. Written
+# only on a COMPLETED sync, and bound to that sync's ULID, so every crash
+# ordering degrades to "no usable baseline" -- which is loud (it forces one
+# reconcile) rather than a digest that wrongly says "unchanged".
+def _record_baseline(ulid) -> None:
+    if not sync_path_is_dir and not Path(local_path).exists():
+        return
+    _sig = filter_signature(exclude_path)
+    _fp = tree_fingerprint(
+        local_path, literal_exclude_names(exclude_path), filter_sig=_sig
+    )
+    if _fp is None:
+        return
+    write_base(
+        local_sync_record_path,
+        sync_record_ulid=str(ulid),
+        fingerprint=_fp,
+        filter_sig=_sig,
+    )
+
 
 rec = SyncRecord.create(syncer_hostname=syncer_hostname, sync_complete=False)
 backup_name = str(rec.ulid)
@@ -446,6 +469,11 @@ if sync_direction == SyncDirection.PULL:
                 f"'{remote_sync_record_path}' has disappeared. The local sync "
                 f"record is left incomplete; retry the pull."
             )
+        # Baseline BEFORE the record, so a crash between the two leaves no
+        # baseline rather than one bound to a record that is not there yet.
+        # The tree has already been rewritten by the pull and by
+        # `apply_exec_manifest`, so this describes what is actually on disk.
+        _record_baseline(rec.ulid)
         await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
 
 elif sync_direction == SyncDirection.PUSH:
@@ -477,6 +505,7 @@ elif sync_direction == SyncDirection.PUSH:
     if res:
         # Create a new sync record and save it at the remote
         rec = SyncRecord.create(syncer_hostname=syncer_hostname, sync_complete=True)
+        _record_baseline(rec.ulid)
         await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
         await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
 

@@ -43,6 +43,11 @@ REMOTE_BOXES_REL_PATH = "boxes"
 REMOTE_BACKUP_REL_PATH = "sync_backups"
 
 BOX_DATA_REL_PATH = "data"
+BOX_SYNC_BASE_SUFFIX = ".base.json"
+"""Suffix of the machine-local fingerprint sidecar that sits beside a part's
+`.rec` sync record. Deliberately NOT `.rec`: doctor's interrupted-record scan
+globs `*.rec`, and the sidecar must not be mistaken for a sync record."""
+
 BOX_METAFILE_REL_PATH = "boxmeta.toml"
 BOX_CONF_REL_PATH = "conf"
 

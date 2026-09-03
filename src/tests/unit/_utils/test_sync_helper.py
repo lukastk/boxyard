@@ -358,6 +358,11 @@ class TestSyncHelperAutoDirection:
         async def _test():
             mock_record = MagicMock(spec=SyncRecord)
             mock_record.rclone_save = AsyncMock()
+            # `spec=SyncRecord` does NOT provide `ulid`: pydantic v2 keeps fields
+            # off the class, so the spec cannot see them. The pull path reads the
+            # adopted remote record's ulid to bind the fingerprint baseline to
+            # it, which a real SyncRecord always has.
+            mock_record.ulid = "remote-ulid"
             mock_status = SyncStatus(
                 sync_condition=SyncCondition.NEEDS_PULL,
                 local_path_exists=True,
@@ -1127,6 +1132,11 @@ class TestSyncHelperForceMode:
         async def _test():
             mock_record = MagicMock(spec=SyncRecord)
             mock_record.rclone_save = AsyncMock()
+            # `spec=SyncRecord` does NOT provide `ulid`: pydantic v2 keeps fields
+            # off the class, so the spec cannot see them. The pull path reads the
+            # adopted remote record's ulid to bind the fingerprint baseline to
+            # it, which a real SyncRecord always has.
+            mock_record.ulid = "remote-ulid"
             mock_status = SyncStatus(
                 sync_condition=SyncCondition.SYNCED,
                 local_path_exists=True,
@@ -1189,6 +1199,11 @@ class TestSyncHelperForceMode:
         async def _test():
             mock_record = MagicMock(spec=SyncRecord)
             mock_record.rclone_save = AsyncMock()
+            # `spec=SyncRecord` does NOT provide `ulid`: pydantic v2 keeps fields
+            # off the class, so the spec cannot see them. The pull path reads the
+            # adopted remote record's ulid to bind the fingerprint baseline to
+            # it, which a real SyncRecord always has.
+            mock_record.ulid = "remote-ulid"
             mock_status = SyncStatus(
                 sync_condition=SyncCondition.CONFLICT,
                 local_path_exists=True,

@@ -765,6 +765,7 @@ async def run_doctor(
             rclone_cat,
         )
         from boxyard._utils.rclone import RcloneFailed
+        from boxyard._fingerprint import filter_signature, local_tree_differs
     
         # A remote record written at our own record's moment IS our record, so only
         # the rest need a round trip. rclone stamps the destination with the source
@@ -930,18 +931,42 @@ async def run_doctor(
                         _bm.get_local_part_path(config, BoxPart.CONF)
                         / const.RCLONE_EXCLUDE_FILENAME
                     )
-                    _local_modified = check_last_time_modified(
-                        _bm.get_local_part_path(config, _part),
-                        exclude_names=literal_exclude_names(
-                            _conf_exclude
-                            if _conf_exclude.exists()
-                            else config.default_rclone_exclude_path
-                        ),
+                    _exc = (
+                        _conf_exclude
+                        if _conf_exclude.exists()
+                        else config.default_rclone_exclude_path
                     )
-                    _local_changed = (
-                        _local_modified is not None
-                        and _local_modified > _local_rec.timestamp
+                    # The comment above promises this mirrors `get_sync_status`
+                    # exactly, so it has to move with it. Sync now decides on the
+                    # machine-local fingerprint; if doctor stayed on the mtime scan
+                    # it would report "needs_pull, the next sync resolves it" for a
+                    # box sync is about to call CONFLICT -- and the two would
+                    # disagree precisely when it matters.
+                    _sig = filter_signature(_exc)
+                    _fp_changed = local_tree_differs(
+                        local_path=_bm.get_local_part_path(config, _part),
+                        local_sync_record_path=_local_rec_path,
+                        local_sync_record_ulid=_local_rec.ulid,
+                        exclude_names=literal_exclude_names(_exc),
+                        filter_sig=_sig,
                     )
+                    if _fp_changed is None:
+                        # No usable baseline: fall back to the old scan, exactly as
+                        # `get_sync_status`'s remote-newer branch does, so the two
+                        # still cannot disagree during the migration.
+                        # TODO(cleanup): drop this fallback with the matching one in
+                        # `_models.get_sync_status` -- once every machine has
+                        # completed a full sync pass on >= 0.8.0.
+                        _local_modified = check_last_time_modified(
+                            _bm.get_local_part_path(config, _part),
+                            exclude_names=literal_exclude_names(_exc),
+                        )
+                        _local_changed = (
+                            _local_modified is not None
+                            and _local_modified > _local_rec.timestamp
+                        )
+                    else:
+                        _local_changed = _fp_changed
                     _remote_newer = _remote_rec.ulid.datetime > _local_rec.ulid.datetime
                     if _remote_newer and not _local_changed:
                         continue  # NEEDS_PULL -- the next sync resolves it
@@ -1317,7 +1342,8 @@ async def run_doctor(
             write_denied_hint,
             write_denied_message,
         )
-        from boxyard._utils import check_last_time_modified, literal_exclude_names
+        from boxyard._utils import check_last_time_modified
+        from boxyard._fingerprint import filter_signature, local_tree_differs
     
         for bm in box_metas:
             if bm.write_owner is None or bm.write_owner == config.machine_name:
@@ -1348,10 +1374,25 @@ async def run_doctor(
             except Exception:
                 continue  # a malformed record is `interrupted-sync`'s business
     
-            _modified = check_last_time_modified(
-                _data_path, exclude_names=literal_exclude_names(_effective_exclude)
+            # Same predicate as sync, for the same reason as above: on the mtime
+            # scan this check kept reporting "nothing is stranded" for a non-owner
+            # machine whose only local change was a deletion -- a stranded change
+            # this check exists to find.
+            _wd_changed = local_tree_differs(
+                local_path=_data_path,
+                local_sync_record_path=_rec_path,
+                local_sync_record_ulid=_rec.ulid,
+                exclude_names=literal_exclude_names(_effective_exclude),
+                filter_sig=filter_signature(_effective_exclude),
             )
-            if _modified is None or _modified <= _rec.timestamp:
+            if _wd_changed is None:
+                # TODO(cleanup): drop this fallback with the others -- once every
+                # machine has completed a full sync pass on >= 0.8.0.
+                _modified = check_last_time_modified(
+                    _data_path, exclude_names=literal_exclude_names(_effective_exclude)
+                )
+                _wd_changed = _modified is not None and _modified > _rec.timestamp
+            if not _wd_changed:
                 continue  # unchanged since our own record: nothing is stranded
     
             # Only now is a remote call worth making. `needs_push` is not evidence
