@@ -171,6 +171,14 @@ async def _reverse_to_plain(
     # The local checkout is what will become the plain tree, so it must be
     # proved to match the snapshot first. Content, mode AND symlink targets --
     # `compare_trees` is the same comparison the forward conversion uses.
+    #
+    # `excludes` is NOT optional here either. The snapshot was written through
+    # the exclude list, so the restore has no `.venv/` or `__pycache__/` in it
+    # while the local checkout does; comparing them raw reports every excluded
+    # path as a difference and refuses a reversal that is in fact correct. This
+    # is the same defect the forward path had -- it failed a real 28,060-file
+    # box with 16,201 false differences -- and it is why `compare_trees` takes
+    # the argument with no default.
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="boxyard-reverse-") as _tmp:
@@ -604,7 +612,8 @@ async def convert_box(
     result["local_bytes"] = _byte_count
     
     _say(f"Convert '{box_index_name}' to restic:")
-    _say(f"  local DATA: {_file_count:,} files, {_byte_count / 2**30:.3f} GiB")
+    _say(f"  local DATA: {_file_count:,} files, {_byte_count / 2**30:.3f} GiB "
+         f"(counts excluded paths too; the snapshot stores fewer)")
     _say(f"  repository: {_repo.url}")
     _say("  steps, in order:")
     _say("    1. push the box into the repository")
@@ -683,6 +692,12 @@ async def convert_box(
                 base_snapshot=None,
             )
             _problems = compare_trees(_local_data, _restored, _excludes)
+            # What restic ACTUALLY carried, which is not `_file_count`. That one is a
+            # raw local walk and counts the excluded paths too -- on the first real
+            # box converted it said 28,060 where 13,825 files had been compared.
+            # Reporting the bigger number would claim a verification that did not
+            # happen, so the success line reports the restore's own count.
+            _verified = sum(1 for _p in _restored.rglob("*") if _p.is_file())
         if _problems:
             raise ConversionRefused(
                 f"The restore of '{box_index_name}' is NOT identical to the box, so "
@@ -690,7 +705,7 @@ async def convert_box(
                 f"{len(_problems)} difference(s), first few:\n  "
                 + "\n  ".join(_problems[:10])
             )
-        _did(f"verified {_file_count:,} files restore byte-identically (content, mode, symlinks)")
+        _did(f"verified {_verified:,} files restore byte-identically (content, mode, symlinks)")
     
         # ---- Step 3 -- the sync record FIRST ----------------------------------
         # ABSENT-OK, and that is the interruption table talking, not laziness. A

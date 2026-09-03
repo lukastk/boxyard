@@ -1951,8 +1951,11 @@ than a silent wrong answer. The round-trip fixture now holds `.venv/` and
 Five green tests in this work proved nothing, each in a different way: a vacuous
 `in report["checks"]`, a test naming a machine it never built, counting node
 kinds, a slack window swallowing the property, and a fixture missing the
-feature. The pattern is that a passing test is evidence only about the path it
-actually took.
+feature. A sixth was not a test at all but a MEASUREMENT — a 54 s timing that
+never reproduced and moved the recommended crossover by an order of magnitude
+before it was retracted. The pattern is that a passing test, or a single
+timing, is evidence only about the path it actually took; **repeat a timing
+before it is allowed to decide anything.**
 
 **The polarity is the contract**, and it is stated in tests rather than in
 comments: the gate may only ever skip the check when NOTHING has been touched. A
@@ -1979,32 +1982,47 @@ then correctly reports the box unchanged. Slower, never wrong.
 
 ### Where restic beats plain — measured on the real remote
 
-The local figures an earlier draft gave for this were half wrong, and only the
-half that mattered. Measured by Lukas against the live remote, with both
-backends now gated on a local walk:
+**The crossover is ~15,000-20,000 syncable files, NOT ~2,000.** An earlier
+draft of this section said 2,000, and that number was retracted before it was
+ever acted on. It rested on a single plain measurement — 54 s at 13,659 files —
+that would not reproduce. Re-measured properly:
 
-| | plain | restic |
+| syncable files | plain | restic |
 |---|---|---|
-| no-op, every size | ~7-8 s | ~7-8 s |
-| one file edited, 1,000 files | 16 s | 18 s |
-| one file edited, 13,659 files | 54 s | **20 s** |
-| one file edited, 1,419,522 files | **HOURS** | seconds |
+| 1,000 | 16 s | 18 s |
+| 13,659 | — | 20 s |
+| 16,746 | 18-19 s (three runs) | — |
+| 29,330 | 23 s (two runs) | — |
+| 1,419,522 | hours | — |
 
-**The crossover is about 2,000 files**, and restic's changed-case cost is FLAT
-where plain's grows with the number of remote objects — which is the shape the
-local benchmark could not show, because a local-filesystem remote makes
-listing and reconciling remote objects free and so deletes plain's entire cost.
-The local numbers said restic lost the one-edit case at every size; on the real
-remote it wins above ~2,000 files and is within two seconds below it.
+Plain fits **15 s + 0.3 ms per syncable file**, and all three clean points land
+within a second of that line. Against restic's roughly flat ~20 s, the crossover
+is ~15,000-20,000 files, and **the gap stays in SECONDS well past it** — about
+40 s at 100,000 files on the fit. Plain only becomes hopeless at the scale where
+reconciling remote objects dominates everything.
 
-The no-op row is the one that changed the conclusion: the two are now equal at
-every size, because both short-circuit on a local walk. Before the gate, restic
-paid ~2.2 s for `restic snapshots` on every box regardless — which is how a
-42-file restic box lost to a 1.4-million-file plain one.
+The no-op row is unchanged and was never in doubt: **~7-8 s for both at every
+size**, since both now short-circuit on a local walk.
 
 All eleven change shapes in the audit table were verified through restic on real
-hardware, including both directions of `chmod` and a symlink retargeted in
-place.
+hardware, including both directions of `chmod` and a symlink retargeted in place.
+
+**So restic is NOT the default choice for a merely-large box.** The guidance
+Lukas has committed to `~/.pi/agent/AGENTS.md`: convert above **~100,000
+syncable files**, or for **>1 GB of REWRITTEN content** where deduplication
+pays, or when **encryption or history is wanted for its own sake**. A
+16,746-file box was deliberately NOT converted on these numbers — it sits at the
+crossover and would gain nothing.
+
+**AN UNREPEATED TIMING IS NOT A DATA POINT.** The 54 s never reproduced, and one
+number was enough to move the recommended crossover by an order of magnitude and
+to make "convert everything" look sensible. That is the sixth result in this
+work that looked like evidence and was not — the others being a vacuous
+`in report["checks"]`, a test naming a machine it never built, counting node
+kinds, a slack window swallowing the property, and a fixture missing the
+feature. This one was a measurement rather than a test, which is the point:
+**the same discipline applies to numbers. Repeat a timing before it is allowed
+to decide anything.**
 
 ### The route back: `boxyard convert --to-plain`
 
@@ -2118,6 +2136,35 @@ broken — because the bug was in a different function that no unit test connect
 to the first. It was caught by
 `test_a_chmod_only_change_pushes`, which does the whole round trip and asserts
 the mode on the OTHER machine.
+
+### The plain backend cannot see a pure deletion at all
+
+Found by Lukas while this work was in progress, and it belongs beside the audit
+table because it is the same shape of defect one layer over:
+`check_last_time_modified` takes mtimes from `entry.is_file()` only and uses
+directories purely to descend. A deletion is the one change that leaves nothing
+new to stat — only its parent directory's mtime moves — so the walk can never
+raise its answer.
+
+```
+add one file     -> 19 s   (pushed)
+delete one file  ->  8 s   (exactly no-op time; the file was still on the remote)
+```
+
+The same root cause has a second face: **any content change that does not
+advance mtime is equally invisible**, hit in practice with `cp -p` restoring a
+file from a backup.
+
+Pinned as a strict xfail under ticket `82e1b4c2` and deliberately NOT fixed:
+stat-ing directories reintroduces the `.DS_Store` false positive that the
+function's exclude filtering exists to prevent, so the fix is an architectural
+call rather than a patch.
+
+**`tree_touched_since` — the restic gate — already gets this right**, and for
+reasons written down at the time rather than by luck: it stats directories as
+well as their entries (a deletion leaves nothing else to look at) and takes
+`max(mtime, ctime)` (a `cp -p` preserves mtime but cannot preserve ctime). Both
+choices were made for the audit table's sake, and both happen to cover this.
 
 ### What this table does NOT cover
 
