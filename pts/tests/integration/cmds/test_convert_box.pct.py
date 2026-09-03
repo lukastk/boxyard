@@ -199,6 +199,56 @@ def test_a_full_conversion_leaves_the_expected_remote(two):
     assert fmt(two) is StorageFormat.RESTIC
 
 
+def test_a_file_written_during_the_conversion_is_not_declared_synced(two, monkeypatch):
+    """
+    `synced_at_unix` must predate the snapshot, not the end of the conversion.
+
+    The unit test in `test_change_detection` pins the MECHANISM -- that a late
+    stamp hides a mid-flight write. This one pins THE CALL SITE, which that test
+    cannot: removing `now_unix=` from `convert_box` leaves the mechanism test
+    passing and the bug back. So this asserts the argument actually arrives, and
+    that the value predates the push finishing.
+
+    The defect this guards was measured on a live box worked in during its
+    conversion: git wrote objects at 14:09:07, the stamp landed at 14:12:24, and
+    the next sync took exactly no-op time with 81 files missing from the
+    snapshot -- invisible for ever, because the snapshot predated the files and
+    the timestamp postdated them.
+    """
+    import time
+
+    import boxyard.cmds._convert_box as mod
+
+    seen = {}
+    real = mod.write_state
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        seen["positional"] = a
+        return real(*a, **kw)
+
+    monkeypatch.setattr(mod, "write_state", spy)
+
+    before = time.time()
+    result = run(convert_box(config_path=two["cpA"], box_index_name=two["idx"],
+                             verbose=False))
+    after = time.time()
+    assert result["snapshot_id"]
+
+    assert "now_unix" in seen, (
+        "convert_box called write_state without now_unix, so the state records "
+        "the moment the conversion ENDED -- anything written while the push was "
+        "reading the tree becomes permanently invisible"
+    )
+    stamp = seen["now_unix"]
+    assert before <= stamp <= after, f"stamp {stamp} outside the conversion window"
+    # It must be nearer the START than the end: the push is the slow part, and
+    # the whole point is that the stamp predates it.
+    assert stamp - before < (after - before) / 2 + 1.0, (
+        "the stamp looks like it was taken after the push rather than before it"
+    )
+
+
 def test_the_local_data_is_untouched_by_conversion(two):
     """Conversion changes where the box is STORED, never the box."""
     before = tree(two["dataA"])

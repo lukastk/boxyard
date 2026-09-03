@@ -790,6 +790,22 @@ try:
         await init_repo(_repo)
         _did("initialised the repository")
 
+    # Captured BEFORE the push, and that ordering is the whole point. This
+    # timestamp becomes `synced_at_unix`, which the change-detection gate reads
+    # as "the tree matched the snapshot at this moment". Stamping it AFTER the
+    # push claims agreement for a window in which the box was still being read,
+    # so anything written during the conversion is permanently invisible: the
+    # snapshot predates it, the timestamp postdates it, and the gate skips it
+    # for ever.
+    #
+    # MEASURED, on a live box being worked in during its conversion: git wrote
+    # objects at 14:09:07, `synced_at_unix` was stamped 14:12:24 -- 197s later --
+    # and the next sync took exactly no-op time while the snapshot was missing
+    # 81 files. Erring EARLY costs one extra comparison; erring late loses data.
+    import time as _time
+
+    _pre_push_unix = _time.time()
+
     _push = await push(
         _repo, _local_data, box_index_name=box_index_name, excludes=_excludes
     )
@@ -872,6 +888,7 @@ try:
 
     write_state(
         config.boxyard_data_path, box_index_name, _push.snapshot_id,
+        now_unix=_pre_push_unix,
         files=_push.files,
     )
     _did("recorded this machine's restic state")

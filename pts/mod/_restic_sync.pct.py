@@ -89,6 +89,7 @@ from nblite import nbl_export, show_doc; nbl_export();
 # %%
 #|export
 from pathlib import Path
+import time as _time
 
 import boxyard.config
 from boxyard import const
@@ -245,6 +246,15 @@ async def sync_data_restic(
 
             _say(f"Creating the repository for '{index_name}'.")
             await init_repo(repo)
+            # Captured BEFORE the push: this becomes `synced_at_unix`, which the
+            # change-detection gate reads as "the tree matched the snapshot at this
+            # moment". Stamping it AFTER the push claims agreement for the window in
+            # which the box was still being read, so anything written during the push
+            # is invisible for ever -- the snapshot predates it and the timestamp
+            # postdates it. Measured on a live box worked in during its conversion:
+            # 81 files stranded exactly that way, and the next sync took no-op time.
+            # Erring EARLY costs one comparison; erring late loses data.
+            _pre_push_unix = _time.time()
             result = await push(
                 repo, data_path, parent=None, excludes=excludes,
                 box_index_name=index_name,
@@ -255,6 +265,7 @@ async def sync_data_restic(
             )
             write_state(
                 config.boxyard_data_path, index_name, result.snapshot_id,
+                now_unix=_pre_push_unix,
                 files=result.files,
             )
             _say(f"Pushed '{index_name}' as {result.snapshot_id[:8]}.")
@@ -519,6 +530,15 @@ async def sync_data_restic(
                 f"asked for."
             )
 
+        # Captured BEFORE the push: this becomes `synced_at_unix`, which the
+        # change-detection gate reads as "the tree matched the snapshot at this
+        # moment". Stamping it AFTER the push claims agreement for the window in
+        # which the box was still being read, so anything written during the push
+        # is invisible for ever -- the snapshot predates it and the timestamp
+        # postdates it. Measured on a live box worked in during its conversion:
+        # 81 files stranded exactly that way, and the next sync took no-op time.
+        # Erring EARLY costs one comparison; erring late loses data.
+        _pre_push_unix = _time.time()
         result = await push(
             repo,
             data_path,
@@ -567,6 +587,7 @@ async def sync_data_restic(
         )
         write_state(
             config.boxyard_data_path, index_name, result.snapshot_id,
+            now_unix=_pre_push_unix,
             files=result.files,
         )
         _say(f"Pushed '{index_name}' as {result.snapshot_id[:8]}.")

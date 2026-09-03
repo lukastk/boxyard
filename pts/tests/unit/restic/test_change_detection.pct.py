@@ -717,3 +717,49 @@ def test_rclone_program_for_quotes_paths_it_cannot_control(tmp_path):
         f"a shell-style parser did not recover the config path: {parsed!r}"
     )
     assert len(parsed) == 3, f"expected binary, --config, path; got {parsed!r}"
+
+# %%
+#|export
+def test_synced_at_is_stamped_before_the_push_not_after(tmp_path, monkeypatch):
+    """
+    A file written DURING a push must not be declared already-synced.
+
+    `synced_at_unix` is what the gate reads as "the tree matched the snapshot at
+    this moment". If it is stamped when the push FINISHES, then everything
+    written while the push was reading the tree falls into a window where the
+    snapshot predates the file and the timestamp postdates it -- so
+    `tree_touched_since` says untouched and the file is invisible for ever, not
+    merely until the next pass.
+
+    MEASURED, which is why this test exists: a live box was worked in during its
+    conversion. git wrote objects at 14:09:07, `synced_at_unix` was stamped at
+    14:12:24 -- 197 seconds later -- and the following sync took exactly no-op
+    time while the snapshot was missing 81 files. Erring EARLY costs one extra
+    comparison; erring late loses data silently.
+    """
+    import time
+
+    from boxyard._restic import read_state, tree_touched_since, write_state
+
+    data = tmp_path / "box"
+    data.mkdir()
+    (data / "before.txt").write_text("before\n")
+
+    # what the fixed code does: capture the stamp, THEN do the slow push
+    pre_push = time.time()
+    time.sleep(0.2)
+    (data / "written_during_the_push.txt").write_text("mid-flight\n")
+
+    write_state(tmp_path / "state", "box", "snapshot-id", now_unix=pre_push)
+    synced_at = read_state(tmp_path / "state", "box")["synced_at_unix"]
+    assert tree_touched_since(data, float(synced_at)), (
+        "a file written during the push must still register as a change"
+    )
+
+    # and the bug: stamping when the push finished hides it
+    write_state(tmp_path / "state", "box", "snapshot-id", now_unix=time.time() + 5)
+    late = read_state(tmp_path / "state", "box")["synced_at_unix"]
+    assert not tree_touched_since(data, float(late)), (
+        "this documents the defect: a late stamp makes the mid-flight write "
+        "invisible, which is why the stamp is taken before the push"
+    )
