@@ -486,3 +486,46 @@ def test_every_part_is_present_in_the_result(pair):
     for part in (BoxPart.META, BoxPart.CONF, BoxPart.DATA):
         assert part in results
         assert len(results[part]) == 2
+
+# %% [markdown]
+# ## The ordinary push stamps agreement BEFORE the push
+#
+# 0.8.1 fixed the late `synced_at_unix` stamp at three push sites and
+# mutation-verified only `convert_box` — removing `now_unix=` from THIS site,
+# the one every ordinary restic sync goes through, left 186 tests green. Same
+# spy pattern as `test_convert_box`: the unit test pins the mechanism, this
+# pins the call site.
+
+# %%
+#|export
+def test_an_ordinary_push_stamps_agreement_before_the_push(pair, monkeypatch):
+    """
+    `synced_at_unix` must predate the push, or anything written while the push
+    reads the tree is permanently invisible to change detection — the snapshot
+    predates it, the stamp postdates it.
+    """
+    import time
+
+    import boxyard._restic_sync as mod
+
+    seen = {}
+    real = mod.write_state
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(mod, "write_state", spy)
+
+    (pair["dataA"] / "notes.md").write_text("second\n")
+    before = time.time()
+    results = sync(pair)
+    after = time.time()
+
+    assert data_condition(results) is SyncCondition.NEEDS_PUSH
+    assert "now_unix" in seen, (
+        "the ordinary push called write_state without now_unix, so the state "
+        "records the moment the push ENDED -- anything written while the push "
+        "was reading the tree becomes permanently invisible"
+    )
+    assert before <= seen["now_unix"] <= after
