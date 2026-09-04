@@ -1315,18 +1315,31 @@ async def local_is_modified(
         if parent_snapshot and not await parent_is_usable(
             repo, parent_snapshot, effective_path
         ):
-            # The parent snapshot is gone (retention pruned it) or unusable,
-            # so nothing can prove this tree clean. Assume changed -- the same
-            # direction the no-timestamp case below always took. This used to
-            # fall back to `tree_modified_since`, the files-only mtime test
-            # that sees two of ten change shapes, so a replica whose ONLY
-            # change since the pruned snapshot was a deletion, rename, chmod
-            # or symlink edit read "clean" and had that change silently
-            # reverted by the next full restore. The cost of assuming: an
-            # owner pays one parentless backup and converges; a non-owner
-            # reports WRITE_DENIED until a person looks -- rare (pruning), and
-            # honest, since the replica genuinely cannot be proven clean.
-            return True, None
+            if synced_at_unix is None:
+                # No timestamp either: a record written before this field
+                # existed. Now we genuinely cannot tell, and "assume changed"
+                # is the safe direction -- it costs a sync, never a wrong skip.
+                return True, None
+            # The parent snapshot is gone (retention pruned it), so the full
+            # comparison cannot run. Three candidate fallbacks, and the middle
+            # one is right:
+            #
+            # - `tree_modified_since` (what this used to be): files-only
+            #   mtimes, two of ten change shapes -- a replica whose only change
+            #   was a deletion, rename, chmod or symlink edit read "clean" and
+            #   had it silently reverted by the next full restore.
+            # - unconditional True: every replica that is merely BEHIND wedges
+            #   into CONFLICT after a retention run -- the false-conflict storm
+            #   `test_a_forgotten_base_does_not_become_a_false_conflict` pins,
+            #   and the same mass-effect-on-no-evidence the 0.8.0 migration
+            #   refused. (Tried during the 2026-09-03 review; the tests caught
+            #   it.)
+            # - `tree_touched_since`: the ctime-and-directories gate, which the
+            #   audit table proves sees every one of the ten shapes. Its false
+            #   positives (non-excluded churn since the stamp) cost a spurious
+            #   "modified" only in the rare retention window -- loud, bounded,
+            #   and in the safe direction.
+            return tree_touched_since(data_path, synced_at_unix, exclude_names), None
 
         _pre_check_unix = time.time()
 

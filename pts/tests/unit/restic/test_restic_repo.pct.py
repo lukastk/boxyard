@@ -489,7 +489,7 @@ def test_an_unchanged_box_is_not_reported_as_modified(repo, data):
             local_is_modified(
                 repo, data, result.snapshot_id, expected_files=result.files
             )
-        )
+        )[0]
         is False
     )
 
@@ -509,10 +509,10 @@ def test_a_missing_file_count_no_longer_forces_a_push(repo, data):
     matters and is asserted here rather than assumed.
     """
     result = run(push(repo, data))
-    assert run(local_is_modified(repo, data, result.snapshot_id)) is False
+    assert run(local_is_modified(repo, data, result.snapshot_id))[0] is False
 
     (data / "sub" / "doomed.txt").unlink()
-    assert run(local_is_modified(repo, data, result.snapshot_id)) is True, (
+    assert run(local_is_modified(repo, data, result.snapshot_id))[0] is True, (
         "a deletion must be seen even when no file count was recorded"
     )
 
@@ -525,7 +525,7 @@ def test_a_deletion_is_detected_by_the_file_count(repo, data):
             local_is_modified(
                 repo, data, result.snapshot_id, expected_files=result.files
             )
-        )
+        )[0]
         is True
     ), "a deletion-only change was invisible"
 
@@ -533,13 +533,13 @@ def test_a_deletion_is_detected_by_the_file_count(repo, data):
 def test_an_edited_box_is_reported_as_modified(repo, data):
     result = run(push(repo, data))
     (data / "notes.md").write_text("edited\n")
-    assert run(local_is_modified(repo, data, result.snapshot_id)) is True
+    assert run(local_is_modified(repo, data, result.snapshot_id))[0] is True
 
 
 def test_a_new_file_is_reported_as_modified(repo, data):
     result = run(push(repo, data))
     (data / "brand-new.txt").write_text("new\n")
-    assert run(local_is_modified(repo, data, result.snapshot_id)) is True
+    assert run(local_is_modified(repo, data, result.snapshot_id))[0] is True
 
 
 def test_a_touched_manifest_alone_is_not_a_change(repo, data):
@@ -557,7 +557,7 @@ def test_a_touched_manifest_alone_is_not_a_change(repo, data):
             local_is_modified(
                 repo, data, result.snapshot_id, expected_files=result.files
             )
-        )
+        )[0]
         is False
     )
 
@@ -591,7 +591,7 @@ def test_an_unmodified_replica_with_a_forgotten_base_is_not_modified(repo, data)
             local_is_modified(
                 repo, data, result.snapshot_id, synced_at_unix=synced_at
             )
-        )
+        )[0]
         is False
     )
 
@@ -610,7 +610,7 @@ def test_an_edited_replica_with_a_forgotten_base_is_still_modified(repo, data):
             local_is_modified(
                 repo, data, result.snapshot_id, synced_at_unix=synced_at
             )
-        )
+        )[0]
         is True
     )
 
@@ -622,7 +622,7 @@ def test_no_timestamp_and_a_forgotten_base_assumes_changed(repo, data):
     """
     result = run(push(repo, data))
     run(run_restic(repo, ["forget", result.snapshot_id]))
-    assert run(local_is_modified(repo, data, result.snapshot_id)) is True
+    assert run(local_is_modified(repo, data, result.snapshot_id))[0] is True
 
 
 def test_a_pull_with_a_forgotten_base_falls_back_and_converges(repo, data, tmp_path):
@@ -690,6 +690,11 @@ def test_status_is_needs_pull_when_only_the_remote_moved(repo, data, tmp_path):
     first = run(push(repo, data))
     dest = tmp_path / "dest"
     run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
+    # Load-bearing, not laziness: the replica was materialised moments ago, and
+    # the unusable-parent fallback is `tree_touched_since`, whose slack reads
+    # anything within ~2s of the stamp as touched. The scenario being modelled
+    # is a replica that has SAT there before the remote moved; make it true.
+    import time as _t; _t.sleep(2.3)
     write_state(tmp_path / "yard", "box", first.snapshot_id)
     state = read_state(tmp_path / "yard", "box")
 
@@ -718,6 +723,11 @@ def test_a_replica_at_a_different_path_is_not_falsely_modified(repo, data, tmp_p
     first = run(push(repo, data))
     dest = tmp_path / "dest"
     run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
+    # Load-bearing, not laziness: the replica was materialised moments ago, and
+    # the unusable-parent fallback is `tree_touched_since`, whose slack reads
+    # anything within ~2s of the stamp as touched. The scenario being modelled
+    # is a replica that has SAT there before the remote moved; make it true.
+    import time as _t; _t.sleep(2.3)
     write_state(tmp_path / "yard", "box", first.snapshot_id)
     state = read_state(tmp_path / "yard", "box")
 
@@ -731,7 +741,7 @@ def test_a_replica_at_a_different_path_is_not_falsely_modified(repo, data, tmp_p
                 synced_at_unix=state["synced_at_unix"],
                 expected_files=first.files,
             )
-        )
+        )[0]
         is False
     )
 
@@ -799,6 +809,11 @@ def test_a_forgotten_base_does_not_become_a_false_conflict(repo, data, tmp_path)
     first = run(push(repo, data))
     dest = tmp_path / "dest"
     run(pull(repo, dest, target_snapshot=first.snapshot_id, base_snapshot=None, excludes=[]))
+    # Load-bearing, not laziness: the replica was materialised moments ago, and
+    # the unusable-parent fallback is `tree_touched_since`, whose slack reads
+    # anything within ~2s of the stamp as touched. The scenario being modelled
+    # is a replica that has SAT there before the remote moved; make it true.
+    import time as _t; _t.sleep(2.3)
     synced_at = time.time() + 1
 
     (data / "notes.md").write_text("theirs\n")
@@ -1014,7 +1029,7 @@ def test_a_replica_on_another_checkout_root_is_not_falsely_modified(
                 repo, m2, first.snapshot_id, box_index_name=idx,
                 expected_files=first.files,
             )
-        )
+        )[0]
         is False
     )
 
@@ -1034,7 +1049,7 @@ def test_an_edit_on_the_replica_is_still_seen(repo, canon_root, two_machines):
                 repo, m2, first.snapshot_id, box_index_name=idx,
                 expected_files=first.files,
             )
-        )
+        )[0]
         is True
     )
 
