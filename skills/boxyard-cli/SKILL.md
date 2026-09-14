@@ -11,7 +11,7 @@ Boxyard is a Python CLI for managing and syncing folders ("boxes") across local 
 
 ## Where generated data should live
 
-Generated data — including large outputs — generally belongs **inside** the box it relates to, not in some sibling directory chosen to dodge syncing. Do not move heavy outputs out of a box to keep it "small". The whole point of Boxyard is that syncing makes large boxes comfortable to live with: anything you don't want pushed can be excluded from sync via the box's `conf/.rclone_exclude` / `conf/.rclone_filters` (see "Per-box sync configuration"), or the box itself can be excluded locally with `boxyard exclude`. Keep data colocated with its box and control sync with filters — don't fragment it to avoid sync.
+Generated data — including large outputs — generally belongs **inside** the box it relates to, not in some sibling directory chosen to dodge syncing. Do not move heavy outputs out of a box to keep it "small". The whole point of Boxyard is that syncing makes large boxes comfortable to live with: anything you don't want pushed can be excluded from sync via the box's `conf/.rclone_exclude` (see "Per-box sync configuration"), or the box itself can be excluded locally with `boxyard exclude`. Keep data colocated with its box and control sync with filters — don't fragment it to avoid sync.
 
 ## Before running commands
 
@@ -23,8 +23,8 @@ Generated data — including large outputs — generally belongs **inside** the 
 
   If Boxyard is already installed in the environment, `boxyard ...` is also fine.
 
-- Read-only commands are safe to run without confirmation: `--help`, `list`, `tree`, `path`, `which`, `box-status`, `yard-status`, `list-groups`, `owner`, `doctor`.
-- Ask before running commands that can modify local or remote state: `init`, `new`, `sync`, `multi-sync`, `sync-missing-meta`, `include`, `exclude`, `delete`, `rename`, `sync-name`, `add-to-group`, `remove-from-group`, `add-parent`, `remove-parent`, `create-user-symlinks`, `copy`, `force-push`, `claim`, `release`, `discard-local`.
+- Read-only commands are safe to run without confirmation: `--help`, `list`, `tree`, `path`, `which`, `box-status`, `yard-status`, `list-groups`, `owner`, `doctor`, `convert --dry-run`.
+- Ask before running commands that can modify local or remote state: `init`, `new`, `sync`, `multi-sync`, `sync-missing-meta`, `include`, `exclude`, `delete`, `rename`, `sync-name`, `add-to-group`, `remove-from-group`, `add-parent`, `remove-parent`, `create-user-symlinks`, `copy`, `force-push`, `claim`, `release`, `discard-local`, `convert`.
 - Be especially careful with:
   - `boxyard new --from PATH` / `-f PATH`: moves `PATH` into Boxyard unless `--copy` is supplied.
   - `boxyard exclude`: syncs first by default, then removes the local data copy.
@@ -91,7 +91,9 @@ For a box with index name `<box_id>__<name>`:
 Remote/rclone stores use this layout under the storage location's `store_path`:
 
 ```text
-boxes/<index>/data/
+boxes/<index>/data/          # plain boxes
+boxes/<index>/data.restic/   # restic boxes: per-box repository (see "Storage format")
+boxes/<index>/data.snapshot  # restic boxes: pointer to the current snapshot
 boxes/<index>/boxmeta.toml
 boxes/<index>/conf/
 sync_records/<index>/<data|meta|conf>.rec
@@ -254,7 +256,12 @@ boxyard new --box-name NAME --storage-location STORAGE
 boxyard new --box-name NAME --group GROUP --group OTHER_GROUP
 boxyard new --box-name NAME --parent PARENT_BOX
 boxyard new --box-name NAME --no-initialise-git
+boxyard new --box-name NAME --no-claim   # don't make THIS machine the write owner
 ```
+
+`new` claims the box for the creating machine by default (see "Write ownership"). Pass `--no-claim` when creating a box here that will be worked on elsewhere, or the other machine's pushes will be refused.
+
+A new box's storage format (`plain` or `restic`) is fixed at creation from the resolved sync policy — see "Storage format (plain vs restic) and `convert`".
 
 Select local placement independently of remote storage:
 
@@ -302,6 +309,10 @@ Other sync commands:
 boxyard multi-sync
 boxyard multi-sync --storage-location STORAGE --max-concurrent 3
 boxyard multi-sync --box INDEX_NAME --box OTHER_INDEX_NAME
+boxyard multi-sync --due-only              # only boxes whose DATA cadence is due, most overdue first
+boxyard multi-sync --skip-unchanged-meta   # one bulk remote listing; skip boxes whose boxmeta moved on neither side
+boxyard multi-sync --skip-unchanged        # same, for META and (restic boxes only) DATA; a plain box's DATA is never skipped
+boxyard sync --box-name NAME --sync-children   # also sync every descendant box afterwards
 boxyard sync-missing-meta
 boxyard box-status --box-name NAME
 boxyard yard-status
@@ -309,11 +320,48 @@ boxyard yard-status
 
 Soft interruption is enabled by default for long operations: interrupt once or twice to stop after the current operation; repeated interrupts exit immediately.
 
+### Sync policies (cadence)
+
+`[sync_policies.NAME]` tables in `config.toml` set, per box group, how often a box is due and what storage format new boxes get. Every field is optional; an unset field means "not stated here", not "off".
+
+```toml
+[sync_policies.default]        # the floor every box falls back to (its `groups` are ignored)
+storage_format = "plain"
+
+[sync_policies.cold]
+groups = ["archived"]          # applies to boxes in any of these groups
+data_interval = "7d"           # whole number + s|m|h|d|w
+meta_interval = "1d"
+```
+
+Resolution is per setting: the box's own `conf/sync.toml` (may set only `data_interval`, `meta_interval`, `storage_format`) beats matching group policies, which beat `default`. Two matching policies stating different values for one setting is a conflict (`doctor`: `sync-policy-conflict`); an unparseable `conf/sync.toml` is `unusable-box-sync-conf`. With no policies at all every box is always due, so `--due-only` changes nothing. `--due-only` selects on `data_interval`, measured from the last successful check that `multi-sync` records machine-locally under `<boxyard_data_path>/sync_checks/<index>/<part>.json`.
+
+## Storage format (plain vs restic) and `convert`
+
+A box's DATA is stored either as a **plain** rclone tree (`boxes/<index>/data/`) or as a per-box **restic** repository (`boxes/<index>/data.restic/`, plus a `boxes/<index>/data.snapshot` pointer naming the current snapshot). META and CONF are always plain. The format is recorded in the boxmeta as `storage_format` and is a fact about the box: it is stamped once at `new` from the resolved sync policy, and afterwards only `boxyard convert` changes it — a config edit never reformats existing boxes.
+
+When no policy states a format, the **package default is `restic`** for rclone storage locations (`plain` for `local` ones). Lukas's rig pins `[sync_policies.default] storage_format = "plain"`, so his new boxes are plain; a config without that pin creates restic boxes, and `new` refuses to create one when no restic password is configured.
+
+**Plain is right for almost every box.** Follow the global AGENTS.md "Box storage format" guidance: convert only for more than ~5,000 **directories** (directory count, not file count, drives plain sync cost), for >~1 GB of large files that get rewritten or re-snapshotted, or when encryption at rest / snapshot history is wanted.
+
+```bash
+boxyard convert -r INDEX_NAME --dry-run                   # read-only: local shape (counts excluded paths too)
+boxyard convert -r INDEX_NAME --dry-run --estimate-size   # also measure what restic would store (reads the whole box, writes nothing remote)
+boxyard convert -r INDEX_NAME                             # plain -> restic (prompts; -y skips)
+boxyard convert -r INDEX_NAME --to-plain                  # restic -> plain
+```
+
+`convert` verifies a byte-identical restore (content, mode, symlinks) before the old copy is removed, and is resumable after an interruption. It refuses — before writing anything — for a box in a `local` storage location, a box not checked out on this machine, a box whose sync lock is held, or one with an interrupted DATA sync. **A machine on boxyard older than 0.7.0 cannot read a restic box**, so check `ssh-target <machine> boxyard --version` across the fleet first.
+
+Restic boxes need, on every machine: the `restic` binary (`BOXYARD_RESTIC` points at an explicit one), and the repository password from `$BOXYARD_RESTIC_PASSWORD` or the config's `restic_password_command` (the rig uses `secret get BOXYARD_RESTIC_PASSWORD`). Machine-local state lives in `<boxyard_data_path>/restic_state/` (never synced), and backups go through the fixed symlink root `/tmp/boxyard-restic` so every machine records the same snapshot path. `doctor` reports `storage-format-mismatch` and `orphaned-snapshot`.
+
 ## Write ownership (`owner`, `claim`, `release`, `discard-local`)
 
-A box can have a **write owner**: the single machine allowed to push its DATA. A box with
-**no owner is unrestricted**, exactly as before this feature existed — so most boxes are
-unowned and nothing about them changed. Ownership is recorded per box as `write_owner`
+A box can have a **write owner**: the single machine allowed to push its DATA/CONF. A box with
+**no owner is unrestricted**, exactly as before this feature existed. **`boxyard new` claims
+the box for the creating machine by default** — pass `--no-claim` when the box will be worked
+on elsewhere; `boxyard include --read-only` includes a box without the nudge to claim it.
+Ownership is recorded per box as `write_owner`
 and compared against this machine's configured `machine_name` (configured, never derived
 from the hostname, because hostnames are unreliable — one machine reports both
 `lukas-pocket4` and `pocket4`).
@@ -350,12 +398,21 @@ otherwise write to the remote unchecked: `force-push`, `rename --scope remote|bo
 
 ```bash
 boxyard doctor                       # full check, including remote storage
-boxyard doctor --no-remote           # offline: skip remote checks (stale-meta-mirror)
+boxyard doctor --no-remote           # offline: skip remote checks (stale-meta-mirror, tombstoned-box, diverged-box, write-denied, orphaned-snapshot, orphaned-remote-sync-backups)
 boxyard doctor -o json               # machine-readable report
 boxyard doctor -s STORAGE            # restrict the remote check to one storage location
 ```
 
-Checks: `unregistered-folder` (dirs in `user_boxes_path` not registered as boxes — the classic symptom of hand-creating folders instead of using `boxyard new`), `malformed-name` (names that don't parse as `<timestamp>_<subid>__<name>`; legacy formats are accepted), `broken-registration` (missing/invalid `boxmeta.toml` in the local store), `duplicate-box-id`, `stale-cache` (`boxyard_meta.json` disagrees with a fresh scan), `dangling-symlinks` (group symlinks with missing targets), `group-tree-debris` (real files in the group tree, which break `create-user-symlinks` and thereby most mutating commands), `orphaned-sync-records`, `interrupted-sync` (sync records left incomplete — the local copy may be incomplete; re-sync to recover), `unknown-storage-location` (leftovers from removed/renamed storage locations), `rclone-config` (missing rclone binary/remote sections/default exclude file), `stale-meta-mirror` (remote boxmetas not mirrored locally — what `sync-missing-meta` would fetch; a machine where that never runs silently hides newer boxes from `boxyard list`), `tombstoned-box` (boxes deleted from another machine but still registered here), and `tree-orphans` (parents referencing unknown box ids).
+Checks (33; `--no-remote` skips the six marked *remote*):
+
+- **Registration and cache:** `unregistered-folder` (dirs — or stray files — in any checkout root not registered as boxes; the classic symptom of hand-creating folders instead of using `boxyard new`), `malformed-name` (names that don't parse as `<timestamp>_<subid>__<name>`; legacy formats are accepted), `broken-registration` (missing/invalid `boxmeta.toml` in the local store), `duplicate-box-id`, `stale-cache` (`boxyard_meta.json` disagrees with a fresh scan), `unknown-storage-location` (leftovers from removed/renamed storage locations), `tree-orphans` (parents referencing unknown box ids).
+- **Group tree:** `dangling-symlinks` (group symlinks with missing targets), `group-tree-debris` (real files in the group tree, which break `create-user-symlinks` and thereby most mutating commands).
+- **Sync state:** `orphaned-sync-records`, `interrupted-sync` (sync records left incomplete — the local copy may be incomplete; re-sync to recover), `diverged-box` (*remote*; both sides moved on independently, or a push never completed — sync refuses until resolved), `stale-meta-mirror` (*remote*; remote boxmetas not mirrored locally — what `sync-missing-meta` would fetch; a machine where that never runs silently hides newer boxes from `boxyard list`), `tombstoned-box` (*remote*; boxes deleted from another machine but still registered here), `orphaned-sync-backups` and `orphaned-remote-sync-backups` (the latter *remote*; backup dirs no sync record claims — may be a `discard-local` keepsake, never assume disposable).
+- **Config and version skew:** `rclone-config` (missing rclone binary/remote sections/default exclude file), `unknown-config-keys` (typo, or config written for a newer boxyard), `unknown-boxmeta-keys` (box written by a newer boxyard; upgrade here), `machine-name-unset`.
+- **Ownership:** `write-denied` (*remote*; another machine owns a box that has local changes here that can never be pushed), `stale-owner` (owner lacks a complete checkout, or looks renamed/retired), `unowned-box` (included here, unclaimed), `unpushed-meta-edit` (local `groups`/`parents`/`write_owner` edits not yet pushed).
+- **Sync policies:** `sync-policy-conflict`, `unusable-box-sync-conf` (see "Sync policies").
+- **Checkout roots:** `checkout-root-config` (overlapping/duplicate root paths), `checkout-root-unavailable`, `checkout-placement` (placement record missing/unloadable/contradicting what is on disk), `duplicate-checkout` (copies of one box in several roots), `interrupted-relocation` (recover with `boxyard relocate`).
+- **Storage format:** `storage-format-mismatch` (box's actual format differs from what policy asks for; nothing converts automatically), `orphaned-snapshot` (*remote*; restic snapshots the pointer does not reach — usually a push that raced another machine; nothing is lost).
 
 ## Include, exclude, copy
 
@@ -440,10 +497,11 @@ Each box can have a `conf/` folder. Boxyard syncs `conf/` before `data/`, so fil
 Special files:
 
 ```text
-conf/.rclone_include  # only sync matching files
-conf/.rclone_exclude  # exclude matching files
-conf/.rclone_filters  # combined rclone filter rules
+conf/.rclone_exclude  # exclude matching files (REPLACES the default list)
+conf/sync.toml        # per-box sync policy override (see "Sync policies")
 ```
+
+`conf/.rclone_include` and `conf/.rclone_filters` are recognised but currently **REFUSED**: an exclude file always applies, and boxyard will not combine rclone filter families (rclone applies them in an indeterminate order). A box that has either file fails its DATA sync until boxyard merges the three into one ordered filter list (ticket 43f05498). Express a box's scope in `conf/.rclone_exclude` alone.
 
 If `conf/.rclone_exclude` is absent, Boxyard uses:
 
@@ -451,7 +509,7 @@ If `conf/.rclone_exclude` is absent, Boxyard uses:
 ~/.config/boxyard/default.rclone_exclude
 ```
 
-Default excludes include `.venv/`, `.pixi/`, `.trunk/`, `node_modules/`, `__pycache__/`, and `.DS_Store`.
+If `conf/.rclone_exclude` exists it **REPLACES** `~/.config/boxyard/default.rclone_exclude` entirely — it does not extend it. So copy the default file's contents in and append to it; a one-line `.rclone_exclude` would start syncing `.venv/`, `node_modules/` and the like. The package default (written by `init`) is `.venv/`, `.pixi/`, `.trunk/`, `node_modules/`, `__pycache__/`, and `.DS_Store`; Lukas's rig deploys a longer list (36 entries).
 
 ## Shell helper
 

@@ -18,14 +18,11 @@ nbl clean                # Clean notebook outputs
 pytest src/tests/            # Run all tests
 pytest src/tests/unit/config/test_config_loading.py -v  # Run specific test file
 nbl test                 # Test notebooks execute without errors
-
-# Building
-uv build                 # Create distribution in dist/
-
-# Publishing
-uv build                 # Create distribution in dist/
-uv publish               # Upload to PyPI
 ```
+
+### Deployment and releases
+
+Lukas's machines install boxyard from git, not PyPI: myrig's `python_tools` target runs `uv tool install --upgrade git+https://github.com/lukastk/boxyard.git`, so **pushing `main` IS the release to the fleet**. PyPI releases are tag-driven: `dev_scripts/publish-new` bumps the version in `pyproject.toml`, commits, and pushes a `v*` tag, which triggers `.github/workflows/release.yml` to build and publish via `pypa/gh-action-pypi-publish`. Never `uv publish` by hand. (Tags stopped at `v0.3.1` while the package moved on to 0.8.x — the fleet does not use PyPI.)
 
 ## Architecture
 
@@ -117,6 +114,10 @@ result;
 - **`src/boxyard/_ownership.py`** - Single-writer ownership gate: `may_push`,
   `owner_gate`, `require_machine_name`, `OwnershipRefused`, and the shared
   write-denied message/hint used by sync, multi-sync and doctor
+- **`src/boxyard/_sync_policy.py`** - Sync policies: per-dimension resolution (`resolve_policy`: box `conf/sync.toml` → matching `[sync_policies.*]` → `default`), `PolicyConflict`, cadence (`due_boxes`) and the machine-local `sync_checks/` records behind `multi-sync --due-only` / `--skip-unchanged[-meta]`, and `DEFAULT_STORAGE_FORMAT`
+- **`src/boxyard/_restic.py`** - restic wrapper for restic-backed DATA: binary/password resolution, per-box repo URL, push/pull, snapshot pointer (`data.snapshot`) and machine-local `restic_state/`, the `/tmp/boxyard-restic` canonical root
+- **`src/boxyard/_restic_sync.py`** - `sync_data_restic`: the DATA sync path for boxes whose `storage_format` is `restic`
+- **`src/boxyard/cmds/_convert_box.py`** - `boxyard convert`: plain → restic (and `--to-plain`), verified byte-identical restore before removing the old copy, resumable
 - **`src/boxyard/_shell_helper.py`** - Backing for the shell integration
 - **`src/boxyard/_utils/`** - Utilities (rclone wrapper, sync helpers, async locking, logical-expression group filters)
 
@@ -138,6 +139,23 @@ result;
   `config.machine_name`, which is **configured, never derived from the hostname**.
   Commands: `claim`, `release`, `owner`, and `discard-local`; enforcement is
   `may_push()` plus `owner_gate()`, and refusal raises `OwnershipRefused`.
+- **Storage format (v0.7.0+)**: a box's DATA is either a plain rclone tree
+  (`boxes/<index>/data/`) or a per-box restic repository
+  (`boxes/<index>/data.restic/` + `data.snapshot` pointer); META/CONF are always
+  plain. `BoxMeta.storage_format` records what a box HAS and is stamped once by
+  `new` from the resolved policy; only `boxyard convert` changes it, and `doctor`
+  reports `storage-format-mismatch` / `orphaned-snapshot`. The PACKAGE default for
+  rclone storage is `restic` (`_sync_policy.DEFAULT_STORAGE_FORMAT`; `local` →
+  plain), and Lukas's rig pins `[sync_policies.default] storage_format = "plain"`.
+  Needs the `restic` binary (`BOXYARD_RESTIC`) and a password from
+  `BOXYARD_RESTIC_PASSWORD` or config `restic_password_command`. Design:
+  `_dev/RESTIC-DATA-STORAGE-DESIGN-NOTE.md`.
+- **Sync policies**: `[sync_policies.NAME]` (`data_interval`, `meta_interval`,
+  `storage_format`, `groups`) resolved per dimension — a box's own
+  `conf/sync.toml` beats group policies, which beat `default`; two matching
+  policies with different values raise `PolicyConflict` (`doctor`:
+  `sync-policy-conflict`, `unusable-box-sync-conf`). With no policies every box
+  is always due, keeping un-opted-in configs unchanged.
 - **Checkout roots**: machine-local DATA placement, independent of remote storage. `user_boxes_path` is permanently the root named `default`; additional roots are `[checkout_roots.NAME]`. Placement records live under `~/.boxyard/placements/` and must never be added to synced `boxmeta.toml`. See `docs/checkout-roots.md`.
 - **Exec-bit manifest**: `.boxyard-perms.json` at a box's DATA root records which
   files are executable, so `+x` survives sync over backends that drop Unix mode
