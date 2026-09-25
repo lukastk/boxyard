@@ -59,12 +59,11 @@ from boxyard._checkout import (
 from boxyard._enums import BoxPart, StorageFormat
 from boxyard._fingerprint import base_path_for
 from boxyard._models import BoxMeta, SyncCondition, SyncRecord, get_boxyard_meta
-from boxyard._remote_identity import read_remote_identity, remote_identity_path
+from boxyard._remote_identity import read_remote_identity, remote_identity_path, write_remote_identity
 from boxyard._sync_policy import (
     RemoteBoxView,
     boxes_needing_sync_full,
     data_boxes_needing_sync,
-    write_check_record,
 )
 from boxyard._tombstones import create_tombstone
 from boxyard._utils import get_rclone_binary
@@ -133,14 +132,31 @@ def remote_boxes(remote_root: Path, sl: str):
             if not d.is_dir():
                 continue
             pointer = d / const.BOX_SNAPSHOT_POINTER_REL_PATH
+            anomalies = [
+                f"{n} is a file"
+                for n in (const.BOX_CONF_REL_PATH, const.BOX_DATA_REL_PATH, const.BOX_RESTIC_REL_PATH)
+                if (d / n).is_file()
+            ]
             out[_key(sl, d.name)] = RemoteBoxView(
                 index_name=d.name,
                 boxmeta=(d / const.BOX_METAFILE_REL_PATH).is_file(),
                 conf_dir=(d / const.BOX_CONF_REL_PATH).is_dir(),
-                pointer=(
-                    (None, pointer.stat().st_size) if pointer.is_file() else None
-                ),
+                data_dir=(d / const.BOX_DATA_REL_PATH).is_dir(),
+                restic_dir=(d / const.BOX_RESTIC_REL_PATH).is_dir(),
+                pointer=pointer.is_file(),
+                anomalies=anomalies,
             )
+    return out
+
+
+def remote_pointer_snapshots(remote_root: Path):
+    boxes = _store(remote_root) / const.REMOTE_BOXES_REL_PATH
+    out = {}
+    if boxes.is_dir():
+        for d in boxes.iterdir():
+            pointer = d / const.BOX_SNAPSHOT_POINTER_REL_PATH
+            if pointer.is_file():
+                out[d.name] = json.loads(pointer.read_text()).get("snapshot")
     return out
 
 
@@ -158,25 +174,21 @@ def verdict(
     tombstoned: set[str] | None = None,
     records=None,
     boxes=None,
-    pointer_override=None,
+    pointer_snapshots=None,
 ):
     config = get_config(config_path)
     metas = get_boxyard_meta(config).box_metas
     sl = metas[0].storage_location if metas else "test_remote"
-    _boxes = remote_boxes(remote_root, sl) if boxes is None else boxes
-    if pointer_override is not None:
-        for view in _boxes.values():
-            if view.index_name in pointer_override:
-                view.pointer = pointer_override[view.index_name]
     return boxes_needing_sync_full(
         config,
         metas,
         requested_parts=list(BoxPart) if requested is None else requested,
         records=remote_records(remote_root, sl) if records is None else records,
-        boxes=_boxes,
+        boxes=remote_boxes(remote_root, sl) if boxes is None else boxes,
         tombstoned=tombstoned or set(),
         skip_meta=skip_meta,
         skip_data=skip_data,
+        pointer_snapshots=remote_pointer_snapshots(remote_root) if pointer_snapshots is None else pointer_snapshots,
     )
 
 
@@ -430,6 +442,38 @@ def test_two_remote_directories_with_the_same_id_are_needed(yard):
     assert v.reasons.get(yard["idx"]) == "remote-box-absent"
 
 
+def test_a_matching_but_incomplete_sidecar_is_never_proof(yard):
+    """Direct: the sidecar's md5 matches the listing, but it says the record
+    was incomplete. Every other guard passes; only completeness refuses."""
+    for part in (BoxPart.META, BoxPart.DATA):
+        p = local_record_path(yard, part)
+        ident = read_remote_identity(p)
+        write_remote_identity(p, md5=ident["md5"], ulid=ident["ulid"], sync_complete=False)
+        assert verdict(yard["config_path"], yard["remote_root"]).reasons.get(yard["idx"]) == part.value
+        write_remote_identity(p, md5=ident["md5"], ulid=ident["ulid"], sync_complete=True)
+    assert verdict(yard["config_path"], yard["remote_root"]).skippable == [yard["idx"]]
+
+    # ...and the unheld rule refuses it too.
+    run(exclude_box(config_path=yard["config_path"], box_index_name=yard["idx"]))
+    run(sync_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
+    p = local_record_path(yard, BoxPart.DATA)
+    ident = read_remote_identity(p)
+    assert verdict(yard["config_path"], yard["remote_root"]).skippable == [yard["idx"]]
+    write_remote_identity(p, md5=ident["md5"], ulid=ident["ulid"], sync_complete=False)
+    assert verdict(yard["config_path"], yard["remote_root"]).reasons.get(yard["idx"]) == "data"
+
+
+def test_a_file_where_a_directory_belongs_is_needed(yard):
+    """A FILE at `<box>/conf` is not a directory, but it is not absence
+    either: the real path transfers it. The listing reports the wrong kind."""
+    remote_conf = _store(yard["remote_root"]) / const.REMOTE_BOXES_REL_PATH / yard["idx"] / const.BOX_CONF_REL_PATH
+    if remote_conf.is_dir():
+        shutil.rmtree(remote_conf)
+    remote_conf.write_text("a file named conf\n")
+    v = verdict(yard["config_path"], yard["remote_root"])
+    assert v.reasons.get(yard["idx"], "").startswith("remote-anomaly")
+
+
 def test_a_box_whose_id_the_remote_no_longer_lists_is_needed(yard):
     """Deleted remotely without a tombstone, or a store the listing did not
     cover: no `boxmeta.toml` under this id anywhere, so the real path decides."""
@@ -617,6 +661,25 @@ def test_an_excluded_box_with_an_incomplete_remote_push_is_needed(yard):
         run(sync_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     # ...and the raise wrote no sidecar for it.
     assert verdict(yard["config_path"], yard["remote_root"]).reasons[yard["idx"]] == "data"
+
+
+def test_an_excluded_box_whose_remote_data_lost_its_record_is_needed(yard):
+    """The state `convert` deliberately passes through (record deleted, plain
+    tree not yet purged) and can be left in by a failed purge: the real path
+    raises "remote path exists, but remote sync record does not exist" on
+    every machine, and an excluded replica must not put that aside."""
+    run(exclude_box(config_path=yard["config_path"], box_index_name=yard["idx"]))
+    run(sync_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
+    assert verdict(yard["config_path"], yard["remote_root"]).skippable == [yard["idx"]]
+
+    (remote_record_dir(yard["remote_root"], yard["idx"]) / "data.rec").unlink()
+    assert verdict(yard["config_path"], yard["remote_root"]).reasons[yard["idx"]] == "data"
+    with pytest.raises(Exception, match="remote sync record does not exist"):
+        run(sync_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
+
+    # With the tree gone as well, there is nothing left to refuse about.
+    shutil.rmtree(_store(yard["remote_root"]) / const.REMOTE_BOXES_REL_PATH / yard["idx"] / const.BOX_DATA_REL_PATH)
+    assert verdict(yard["config_path"], yard["remote_root"]).skippable == [yard["idx"]]
 
 
 def _make_missing(yard):
@@ -828,6 +891,44 @@ def test_a_remote_conf_directory_of_any_shape_is_needed(fleet, shape):
     assert fleet["idx"] in result.output
 
 
+def test_a_deletion_racing_a_conf_pull_is_never_blessed_later(fleet, monkeypatch):
+    """The pull refuses the baseline (correctly). The next verdict comes off
+    the mtime fallback, which cannot see a deletion, and v0.8.3 blessed CONF
+    on that verdict alone -- the divergent tree became agreed and the box
+    skippable while the remote still held the file. Every part now verifies
+    before it blesses."""
+    import boxyard._utils as utils_module
+
+    cfgA = get_config(fleet["cpA"])
+    confA = get_boxyard_meta(cfgA).by_index_name[fleet["idx"]].get_local_part_path(cfgA, BoxPart.CONF)
+    confA.mkdir(parents=True, exist_ok=True)
+    (confA / "settings.txt").write_text("s\n")
+    run(sync_box(config_path=fleet["cpA"], box_index_name=fleet["idx"], verbose=False))
+
+    cfgB = get_config(fleet["cpB"])
+    confB = get_boxyard_meta(cfgB).by_index_name[fleet["idx"]].get_local_part_path(cfgB, BoxPart.CONF)
+    real = utils_module.rclone_sync
+    fired = []
+
+    async def _racing_deletion(**kwargs):
+        res = await real(**kwargs)
+        if str(kwargs.get("dest_path", "")).endswith(const.BOX_CONF_REL_PATH) and not fired:
+            fired.append(True)
+            (confB / "settings.txt").unlink()
+        return res
+
+    monkeypatch.setattr(utils_module, "rclone_sync", _racing_deletion)
+    run(sync_box(config_path=fleet["cpB"], box_index_name=fleet["idx"], verbose=False))
+    monkeypatch.setattr(utils_module, "rclone_sync", real)
+    assert fired and not (confB / "settings.txt").exists()
+
+    # Pass after pass: never provable, and the real path keeps warning.
+    for _ in range(2):
+        run(sync_box(config_path=fleet["cpB"], box_index_name=fleet["idx"], verbose=False))
+        assert verdict(fleet["cpB"], fleet["remote_root"]).reasons.get(fleet["idx"]) == "conf"
+    assert not (confB / "settings.txt").exists(), "nothing silently undid the deletion"
+
+
 def test_a_foreign_meta_push_after_b_synced_the_box_is_needed_next_pass(fleet, monkeypatch):
     (fleet["dataB"] / "from-b.md").write_text("b\n")
 
@@ -1005,52 +1106,21 @@ def test_an_edit_landing_after_a_clean_probe_is_not_blessed(fleet, monkeypatch):
 
 
 # %% [markdown]
-# ## Restic DATA: the pointer-stamp filter, behind the placement gate
+# ## Restic DATA: the pointer's content is the identity, behind the placement gate
 
 # %%
 #|export
-def pointer_entry(yard):
-    """(ModTime, Size) of the box's pointer, as the bulk listing would report."""
-    config = get_config(yard["config_path"])
-    out = subprocess.run(
-        [
-            get_rclone_binary(), "lsjson", "--config", str(config.rclone_config_path),
-            "--files-only", "--recursive", "--max-depth", "2",
-            "--filter", f"+ /*/{const.BOX_SNAPSHOT_POINTER_REL_PATH}",
-            "--filter", "- **",
-            f"{yard['remote_name']}:"
-            f"{config.storage_locations[yard['remote_name']].store_path}/"
-            f"{const.REMOTE_BOXES_REL_PATH}",
-        ],
-        capture_output=True, text=True,
-    )
-    result = {}
-    for e in json.loads(out.stdout or "[]"):
-        result[Path(e["Path"]).parts[0]] = (e.get("ModTime"), e.get("Size"))
-    return result
-
-
-def _stamp_pointer(yard):
-    config = get_config(yard["config_path"])
-    listing = pointer_entry(yard)
-    modtime, size = listing[yard["idx"]]
-    write_check_record(config, yard["idx"], BoxPart.DATA, 1000.0,
-                       remote_modtime=modtime, remote_size=size)
-    return listing
+def pointer_snapshot(yard):
+    return remote_pointer_snapshots(yard["remote_root"]).get(yard["idx"])
 
 
 def test_a_plain_box_handed_to_the_restic_filter_is_always_needed(yard):
     from boxyard._restic import write_state
 
     config = get_config(yard["config_path"])
-    listing = {yard["idx"]: ("2026-01-01T00:00:00Z", 42)}
-    write_check_record(config, yard["idx"], BoxPart.DATA, 1000.0,
-                       remote_modtime="2026-01-01T00:00:00Z", remote_size=42)
-    write_state(config.boxyard_data_path, yard["idx"], "deadbeef",
-                now_unix=4102444800.0, files=1)
+    write_state(config.boxyard_data_path, yard["idx"], "deadbeef", now_unix=4102444800.0, files=1)
     assert box_meta(yard).storage_format is StorageFormat.PLAIN
-
-    needed, skippable = data_boxes_needing_sync(config, metas(yard), listing)
+    needed, skippable = data_boxes_needing_sync(config, metas(yard), {yard["idx"]: "deadbeef"})
     assert skippable == []
     assert yard["idx"] in needed
 
@@ -1059,42 +1129,40 @@ def test_a_plain_box_handed_to_the_restic_filter_is_always_needed(yard):
 def test_a_converted_unchanged_box_is_skippable(yard):
     run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     config = get_config(yard["config_path"])
-    listing = _stamp_pointer(yard)
-    needed, skippable = data_boxes_needing_sync(config, metas(yard), listing)
+    snapshot = pointer_snapshot(yard)
+    assert snapshot
+    needed, skippable = data_boxes_needing_sync(config, metas(yard), {yard["idx"]: snapshot})
     assert skippable == [yard["idx"]]
     assert needed == []
-    # ...and through the full-pass verdict, which delegates restic DATA here.
-    v = verdict(yard["config_path"], yard["remote_root"], pointer_override=listing)
-    assert v.skippable == [yard["idx"]], v.reasons
-
-
-@needs_restic
-def test_a_relocating_restic_box_is_needed(yard):
-    """The placement gate applies before the storage-format dispatch: a
-    RELOCATING restic box with an untouched tree and a settled pointer was
-    dropped while the real path raises 'run boxyard relocate'."""
-    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
-    listing = _stamp_pointer(yard)
-    assert verdict(yard["config_path"], yard["remote_root"], pointer_override=listing).skippable == [yard["idx"]]
-    _make_relocating(yard)
-    v = verdict(yard["config_path"], yard["remote_root"], pointer_override=listing)
-    assert v.reasons.get(yard["idx"]) == "data"
-
-
-@needs_restic
-def test_an_excluded_restic_box_is_provable(yard):
-    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
-    run(exclude_box(config_path=yard["config_path"], box_index_name=yard["idx"]))
     assert verdict(yard["config_path"], yard["remote_root"]).skippable == [yard["idx"]]
 
 
 @needs_restic
-def test_a_moved_pointer_is_never_skipped(yard):
+def test_a_relocating_restic_box_is_needed(yard):
+    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
+    assert verdict(yard["config_path"], yard["remote_root"]).skippable == [yard["idx"]]
+    _make_relocating(yard)
+    assert verdict(yard["config_path"], yard["remote_root"]).reasons.get(yard["idx"]) == "data"
+
+
+@needs_restic
+def test_an_excluded_restic_box_is_provable_only_with_a_pointer_or_no_repo(yard):
+    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
+    run(exclude_box(config_path=yard["config_path"], box_index_name=yard["idx"]))
+    assert verdict(yard["config_path"], yard["remote_root"]).skippable == [yard["idx"]]
+
+    # A repository without a pointer (an interrupted first push, or a
+    # `convert --to-plain` interrupted) is an ERROR on the real path.
+    pointer = _store(yard["remote_root"]) / const.REMOTE_BOXES_REL_PATH / yard["idx"] / const.BOX_SNAPSHOT_POINTER_REL_PATH
+    pointer.unlink()
+    assert verdict(yard["config_path"], yard["remote_root"]).reasons.get(yard["idx"]) == "data"
+
+
+@needs_restic
+def test_a_pointer_naming_another_snapshot_is_never_skipped(yard):
     run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     config = get_config(yard["config_path"])
-    listing = _stamp_pointer(yard)
-    moved = {yard["idx"]: ("2099-01-01T00:00:00Z", listing[yard["idx"]][1])}
-    needed, skippable = data_boxes_needing_sync(config, metas(yard), moved)
+    needed, skippable = data_boxes_needing_sync(config, metas(yard), {yard["idx"]: "0" * 64})
     assert needed == [yard["idx"]]
     assert skippable == []
 
@@ -1103,9 +1171,8 @@ def test_a_moved_pointer_is_never_skipped(yard):
 def test_a_locally_modified_restic_box_is_never_skipped(yard):
     run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     config = get_config(yard["config_path"])
-    listing = _stamp_pointer(yard)
     (yard["data"] / "notes.md").write_text("edited after the last sync\n")
-    needed, _ = data_boxes_needing_sync(config, metas(yard), listing)
+    needed, _ = data_boxes_needing_sync(config, metas(yard), {yard["idx"]: pointer_snapshot(yard)})
     assert needed == [yard["idx"]]
 
 
@@ -1113,18 +1180,20 @@ def test_a_locally_modified_restic_box_is_never_skipped(yard):
 def test_a_lone_deletion_in_a_restic_box_is_never_skipped(yard):
     run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     config = get_config(yard["config_path"])
-    listing = _stamp_pointer(yard)
     (yard["data"] / "notes.md").unlink()  # the ONLY change: no mtime survives it
-    needed, skippable = data_boxes_needing_sync(config, metas(yard), listing)
+    needed, skippable = data_boxes_needing_sync(config, metas(yard), {yard["idx"]: pointer_snapshot(yard)})
     assert needed == [yard["idx"]]
     assert skippable == []
 
 
 @needs_restic
-def test_a_restic_box_with_no_check_record_is_never_skipped(yard):
+def test_a_restic_box_with_no_local_state_is_never_skipped(yard):
+    from boxyard._restic import clear_state
+
     run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     config = get_config(yard["config_path"])
-    needed, _ = data_boxes_needing_sync(config, metas(yard), pointer_entry(yard))
+    clear_state(config.boxyard_data_path, yard["idx"])
+    needed, _ = data_boxes_needing_sync(config, metas(yard), {yard["idx"]: pointer_snapshot(yard)})
     assert needed == [yard["idx"]]
 
 
@@ -1134,35 +1203,42 @@ def test_an_interrupted_restore_is_never_skipped(yard):
 
     run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     config = get_config(yard["config_path"])
-    listing = _stamp_pointer(yard)
     mark_pull_started(config.boxyard_data_path, yard["idx"], "0" * 64)
-    needed, _ = data_boxes_needing_sync(config, metas(yard), listing)
+    needed, _ = data_boxes_needing_sync(config, metas(yard), {yard["idx"]: pointer_snapshot(yard)})
     assert needed == [yard["idx"]]
 
 
 @needs_restic
-def test_a_restic_box_missing_from_the_listing_is_never_skipped(yard):
+def test_a_restic_box_without_a_readable_pointer_is_never_skipped(yard):
     run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     config = get_config(yard["config_path"])
-    write_check_record(config, yard["idx"], BoxPart.DATA, 1000.0,
-                       remote_modtime="T", remote_size=1)
+    needed, _ = data_boxes_needing_sync(config, metas(yard), {yard["idx"]: None})
+    assert needed == [yard["idx"]]
     needed, _ = data_boxes_needing_sync(config, metas(yard), {})
     assert needed == [yard["idx"]]
 
 
 @needs_restic
-def test_the_real_filter_admits_the_pointer(yard):
+def test_the_real_filter_reads_the_pointer(yard):
+    """Through the real CLI: a converted box whose local state names the
+    remote pointer's snapshot is dropped; a local edit makes it needed; the
+    push that follows makes it droppable again."""
     run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     first = _multi_sync(yard["config_path"], "-c", "data", "--skip-unchanged", "--print-skipped")
-    assert yard["idx"] in first.output, "the first pass must sync the box and stamp it"
+    assert yard["idx"] not in first.output, first.output
+
+    (yard["data"] / "notes.md").write_text("edited\n")
     second = _multi_sync(yard["config_path"], "-c", "data", "--skip-unchanged", "--print-skipped")
-    assert yard["idx"] not in second.output
+    assert yard["idx"] in second.output, "a local edit must reach the real path"
+
+    third = _multi_sync(yard["config_path"], "-c", "data", "--skip-unchanged", "--print-skipped")
+    assert yard["idx"] not in third.output, third.output
 
 
 @needs_restic
 def test_a_pointer_moved_after_the_box_was_synced_is_needed_next_pass(yard, monkeypatch):
-    """The stamp is taken from the PRE-pass listing; a pass-end listing adopts
-    a foreign push that lands after the box's own sync."""
+    """The pointer is read at pass START; a foreign push landing after the
+    box's own sync writes a new snapshot id, which the NEXT pass reads."""
     run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     _multi_sync(yard["config_path"], "--skip-unchanged")
     modify_boxmeta(config_path=yard["config_path"], box_index_name=yard["idx"],
@@ -1173,8 +1249,9 @@ def test_a_pointer_moved_after_the_box_was_synced_is_needed_next_pass(yard, monk
 
     async def _then_foreign_push(**kwargs):
         result = await real(**kwargs)
-        pointer.write_text(pointer.read_text() + "\n")
-        os.utime(pointer, (4102444800, 4102444800))
+        data = json.loads(pointer.read_text())
+        data["snapshot"] = "f" * 64
+        pointer.write_text(json.dumps(data))
         return result
 
     monkeypatch.setattr(cmds_module, "sync_box", _then_foreign_push)
@@ -1182,7 +1259,7 @@ def test_a_pointer_moved_after_the_box_was_synced_is_needed_next_pass(yard, monk
     monkeypatch.setattr(cmds_module, "sync_box", real)
 
     nxt = _multi_sync(yard["config_path"], "--skip-unchanged", "--print-skipped")
-    assert yard["idx"] in nxt.output, "the moved pointer was adopted as agreed"
+    assert yard["idx"] in nxt.output, "the moved pointer was not seen"
 
 
 @needs_restic

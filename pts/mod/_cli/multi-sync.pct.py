@@ -115,6 +115,15 @@ def cli_multi_sync(
     print_skipped: bool = Option(
         False, help="Print boxes for which no syncs happened."
     ),
+    explain_skip: bool = Option(
+        False,
+        "--explain-skip",
+        help=(
+            "With --skip-unchanged[-meta]: print one line per box on stderr, "
+            "`<box>: skipped` or `<box>: needed (<first gate that failed>)`, "
+            "so a pass can be diffed against `boxyard doctor` and the oracle."
+        ),
+    ),
     soft_interruption_enabled: bool = Option(True, help="Enable soft interruption."),
 ):
     """
@@ -158,6 +167,7 @@ print_skipped = False
 due_only = False
 skip_unchanged_meta = False
 skip_unchanged = False
+explain_skip = False
 soft_interruption_enabled = True
 
 # %% [markdown]
@@ -322,6 +332,10 @@ if skip_unchanged_meta or skip_unchanged:
                     f"+ /*/{const.BOX_METAFILE_REL_PATH}",
                     f"+ /*/{const.BOX_SNAPSHOT_POINTER_REL_PATH}",
                     f"+ /*/{const.BOX_CONF_REL_PATH}/",
+                    f"+ /*/{const.BOX_CONF_REL_PATH}",
+                    f"+ /*/{const.BOX_DATA_REL_PATH}/",
+                    f"+ /*/{const.BOX_DATA_REL_PATH}",
+                    f"+ /*/{const.BOX_RESTIC_REL_PATH}/",
                     "- **",
                 ],
                 max_depth=2,
@@ -329,12 +343,24 @@ if skip_unchanged_meta or skip_unchanged:
             view.update(project_box_listing(_sl_name, _entries))
         return view
 
-    async def _records_listing():
-        """{(store, index name): {part: md5}} from ONE hashed `lsjson` over
+    async def _records_listing(only_names):
+        """
+        {(store, index name): {part: md5}} from ONE hashed `lsjson` over
         `sync_records/` per store. Depth-limited and anchored for the same
-        reasons as above; exact keying is in `project_record_listing`."""
+        reasons as above; exact keying is in `project_record_listing`.
+
+        `only_names` restricts the walk to those record directories: a pass
+        over a named handful of boxes (`--box`) must not hash every record
+        the yard ever had to decide them. Its own, longer timeout: the walk
+        grows with every box ever created, and growth must degrade to "slow",
+        never to "silently off".
+        """
         from boxyard import const
 
+        if only_names is not None:
+            _filters = [f"+ /{_n}/*.rec" for _n in sorted(only_names)] + ["- **"]
+        else:
+            _filters = ["+ /*/*.rec", "- **"]
         view = {}
         for _sl_name in _rclone_storage_locations():
             _sl_conf = config.storage_locations[_sl_name]
@@ -344,12 +370,41 @@ if skip_unchanged_meta or skip_unchanged:
                 source_path=_sl_conf.store_path / const.SYNC_RECORDS_REL_PATH,
                 files_only=True,
                 recursive=True,
-                filter=["+ /*/*.rec", "- **"],
+                filter=_filters,
                 max_depth=2,
                 md5=True,
+                timeout=const.RCLONE_HASHED_LISTING_TIMEOUT,
             )
             view.update(project_record_listing(_sl_name, _entries))
         return view
+
+    async def _pointer_snapshots(views):
+        """{index name: snapshot id or None} for the restic boxes in the pass:
+        the pointer's CONTENT, read per box, is the DATA identity."""
+        from boxyard._enums import StorageFormat
+        from boxyard._restic import read_pointer
+        from boxyard._sync_policy import remote_view_for
+
+        async def _one(_bm):
+            _view = remote_view_for(views, _bm.storage_location, _bm.box_id)
+            if _view is None or not _view.pointer:
+                return _bm.index_name, None
+            _pointer = await read_pointer(
+                config.rclone_config_path,
+                _bm.storage_location,
+                config.storage_locations[_bm.storage_location].store_path,
+                _view.index_name,
+            )
+            return _bm.index_name, (_pointer or {}).get("snapshot")
+
+        _restic = [bm for bm in box_metas if bm.storage_format is StorageFormat.RESTIC]
+        _sem = _aio.Semaphore(max_concurrent_rclone_ops)
+
+        async def _guarded(_bm):
+            async with _sem:
+                return await _one(_bm)
+
+        return dict(await _aio.gather(*(_guarded(bm) for bm in _restic)))
 
     from boxyard._sync_policy import boxes_needing_sync_full
 
@@ -368,7 +423,19 @@ if skip_unchanged_meta or skip_unchanged:
     # resurrected -- and keeps raising.)
     try:
         _boxes_view = _aio.run(_boxes_listing())
-        _records_view = _aio.run(_records_listing())
+        # A named selection hashes only its own record directories, under the
+        # names the remote actually has for those boxes.
+        _only_names = None
+        if box_index_names is not None:
+            from boxyard._sync_policy import remote_view_for as _rvf
+
+            _only_names = {
+                _v.index_name
+                for _v in (_rvf(_boxes_view, bm.storage_location, bm.box_id) for bm in box_metas)
+                if _v is not None
+            }
+        _records_view = _aio.run(_records_listing(_only_names))
+        _pointers = _aio.run(_pointer_snapshots(_boxes_view))
     except (_RcloneFailed, _CommandTimeout) as _e:
         typer.echo(
             f"--skip-unchanged: a bulk listing failed, syncing every box this "
@@ -392,8 +459,32 @@ if skip_unchanged_meta or skip_unchanged:
             tombstoned=_tombstoned_names,
             skip_meta=skip_unchanged or skip_unchanged_meta,
             skip_data=skip_unchanged,
+            pointer_snapshots=_pointers,
         )
         _skippable = set(_verdicts.skippable)
+        if explain_skip:
+            for _bm in box_metas:
+                if _bm.index_name in _skippable:
+                    typer.echo(f"{_bm.index_name}: skipped", err=True)
+                else:
+                    typer.echo(
+                        f"{_bm.index_name}: needed ({_verdicts.reasons.get(_bm.index_name, '?')})",
+                        err=True,
+                    )
+        # A proven-unchanged box WAS checked: its cadence clock restarts too,
+        # or `--due-only` would sort it first for ever (it never reaches the
+        # real path's own check record).
+        import time as _check_time
+
+        from boxyard._sync_policy import SCHEDULABLE_PARTS as _SCHEDULABLE
+        from boxyard._sync_policy import write_check_record as _write_check
+
+        _checked_at = _check_time.time()
+        for _bm in box_metas:
+            if _bm.index_name in _skippable:
+                for _part in sync_choices:
+                    if _part in _SCHEDULABLE:
+                        _write_check(config, _bm.index_name, _part, _checked_at)
         box_metas = [bm for bm in box_metas if bm.index_name not in _skippable]
         typer.echo(
             f"--skip-unchanged: {len(_skippable)} box(es) provably unchanged, "
@@ -704,35 +795,6 @@ from boxyard._utils import is_in_event_loop
 
 if not is_in_event_loop():
     asyncio.run(_runner())
-
-# The one piece of bookkeeping after a filtered pass: the restic pointer
-# stamp, the one remaining `(ModTime, Size)` filter, written from the PRE-pass
-# listing (L0) and only for boxes that actually went through `sync_box`. Never
-# from a post-sync listing: a listing taken at pass end adopts any foreign push
-# that landed after the box's own sync, and two independent reviews reproduced
-# the wrong skip that produces. From L0, a remote that moved after we looked
-# mismatches next pass and the box is needed -- the loud direction. Every other
-# part's identity is remembered by the real path itself (`_remote_identity`),
-# at the moment it reads the record, so nothing here can race it.
-if skip_unchanged and BoxPart.DATA in sync_choices and not is_in_event_loop() and _boxes_view is not None:
-    import time as _stamp_time
-
-    from boxyard._enums import StorageFormat as _StorageFormat
-    from boxyard._sync_policy import remote_view_for, write_check_record as _write_check_record
-
-    _now_unix = _stamp_time.time()
-    for _bm in box_metas:
-        if _bm.storage_format is not _StorageFormat.RESTIC:
-            continue
-        _stat = sync_stats.get(_bm.index_name)
-        if _stat is None or _stat[1] not in ("Success", "Read-only", "Local"):
-            continue
-        _view = remote_view_for(_boxes_view, _bm.storage_location, _bm.box_id)
-        _modtime, _size = (_view.pointer if _view is not None and _view.pointer else (None, None))
-        _write_check_record(
-            config, _bm.index_name, BoxPart.DATA, _now_unix,
-            remote_modtime=_modtime, remote_size=_size,
-        )
 
 final_sync_stat_board = get_sync_stat_board(finished=True)
 console = Console()

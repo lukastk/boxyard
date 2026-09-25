@@ -101,6 +101,7 @@ async def push_would_transfer(
     include_path: Path | None = None,
     exclude_path: Path | None = None,
     filters_path: Path | None = None,
+    single_file: bool = False,
 ) -> bool:
     """
     Would pushing `local_path` to `remote:remote_path` actually change anything?
@@ -129,6 +130,7 @@ async def push_would_transfer(
         include_file=include_path.as_posix() if include_path else None,
         exclude_file=exclude_path.as_posix() if exclude_path else None,
         filters_file=filters_path.as_posix() if filters_path else None,
+        single_file=single_file,
     )
     if not answered:
         return True

@@ -35,7 +35,7 @@ import os
 
 import pytest
 
-from boxyard._utils import rclone_check, rclone_would_transfer
+from boxyard._utils import rclone_would_transfer
 
 
 def run(coro):
@@ -54,9 +54,9 @@ def pair(tmp_path):
     return conf, src, dst
 
 
-def check(conf, src, **kwargs):
+def _unused_check(conf, src, **kwargs):
     return run(
-        rclone_check(
+        rclone_would_transfer(
             rclone_config_path=conf,
             source="",
             source_path=str(src),
@@ -65,80 +65,6 @@ def check(conf, src, **kwargs):
             **kwargs,
         )
     )
-
-
-# %%
-#|export
-class TestRcloneCheck:
-    def test_both_sides_empty_is_answerable_and_clean(self, pair):
-        conf, src, _ = pair
-        assert check(conf, src) == (True, [])
-
-    def test_identical_content_is_clean(self, pair):
-        conf, src, dst = pair
-        (src / "f.txt").write_text("a")
-        (dst / "f.txt").write_text("a")
-        assert check(conf, src) == (True, [])
-
-    def test_identical_content_with_a_different_mtime_is_clean(self, pair):
-        """
-        The case that rules out parsing `sync --dry-run`. If this ever starts
-        reporting a difference, every read-only machine gains a permanent,
-        false "you have local changes".
-        """
-        conf, src, dst = pair
-        (src / "f.txt").write_text("a")
-        (dst / "f.txt").write_text("a")
-        os.utime(dst / "f.txt", (0, 0))
-        assert check(conf, src) == (True, [])
-
-    def test_a_file_only_on_the_source_is_a_difference(self, pair):
-        conf, src, _ = pair
-        (src / "new.txt").write_text("n")
-        assert check(conf, src) == (True, ["new.txt"])
-
-    def test_a_file_only_on_the_destination_is_a_difference(self, pair):
-        """A sync would DELETE it, which is a change to the remote."""
-        conf, src, dst = pair
-        (dst / "extra.txt").write_text("e")
-        assert check(conf, src) == (True, ["extra.txt"])
-
-    def test_differing_content_is_a_difference(self, pair):
-        conf, src, dst = pair
-        (src / "f.txt").write_text("a")
-        (dst / "f.txt").write_text("b")
-        assert check(conf, src) == (True, ["f.txt"])
-
-    def test_an_exclude_file_is_honoured(self, pair):
-        conf, src, dst = pair
-        (src / "keep.txt").write_text("k")
-        (dst / "keep.txt").write_text("k")
-        (src / "scratch.tmp").write_text("junk")
-        exclude = src.parent / "exclude"
-        exclude.write_text("*.tmp\n")
-        assert check(conf, src, exclude_file=str(exclude)) == (True, [])
-        # ...and without it, the same file IS a difference.
-        assert check(conf, src) == (True, ["scratch.tmp"])
-
-    def test_an_unreachable_remote_is_not_answerable(self, pair):
-        """
-        Must not come back as "no differences". rclone exits 1 both for
-        "found differences" and for "could not look", so a caller that trusted
-        the exit code alone would call an unreachable box clean.
-        """
-        conf, src, _ = pair
-        (src / "f.txt").write_text("a")
-        answered, differing = run(
-            rclone_check(
-                rclone_config_path=conf,
-                source="",
-                source_path=str(src),
-                dest="no_such_remote",
-                dest_path="",
-            )
-        )
-        assert answered is False
-        assert differing == []
 
 
 # %%
@@ -231,41 +157,6 @@ class _ConfigWithRcloneConf:
 
     def __getattr__(self, name):
         return getattr(self._config, name)
-
-# %% [markdown]
-# ## A partial comparison is not an equality certificate
-#
-# rclone exits 6 with "N errors while checking" when part of the tree could
-# not be enumerated, and still prints `= ` lines for the files it could read.
-# The old rule (`ret_code != 0 and not lines`) read that as answered-and-equal;
-# the pull-baseline bless now rests on this answer.
-
-# %%
-#|export
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
-def test_an_unreadable_remote_directory_is_not_answered(pair):
-    conf, src, dst = pair
-    (src / "common.txt").write_text("same")
-    (dst / "common.txt").write_text("same")
-    (dst / "locked").mkdir()
-    (dst / "locked" / "remote-only.txt").write_text("hidden from the check")
-    os.chmod(dst / "locked", 0o000)
-    try:
-        answered, differing = check(conf, src)
-    finally:
-        os.chmod(dst / "locked", 0o755)
-    assert answered is False, (answered, differing)
-
-
-def test_a_complete_comparison_with_differences_is_answered(pair):
-    conf, src, dst = pair
-    (src / "a.txt").write_text("a")
-    (dst / "a.txt").write_text("b")
-    (dst / "only-remote.txt").write_text("r")
-    answered, differing = check(conf, src)
-    assert answered is True
-    assert set(differing) == {"a.txt", "only-remote.txt"}
-
 
 # %% [markdown]
 # ## `rclone_would_transfer`: the dry-run comparison the blesses rest on
@@ -363,3 +254,68 @@ def test_the_filters_apply(pair):
     exclude.write_text("*.tmp\n")
     assert would(conf, src, exclude_file=str(exclude)) == (True, [])
     assert would(conf, src) == (True, ["scratch.tmp"])
+
+
+def _equal_pair(pair):
+    conf, src, dst = pair
+    for d in (src, dst):
+        (d / "a.txt").write_text("same")
+        os.utime(d / "a.txt", (1_600_000_000, 1_600_000_000))
+    return conf, src, dst
+
+
+@pytest.mark.parametrize(
+    "var,value",
+    [
+        ("RCLONE_LOG_LEVEL", "ERROR"),
+        ("RCLONE_QUIET", "true"),
+        ("RCLONE_LOG_FILE", "{tmp}/rclone.log"),
+        ("RCLONE_USE_JSON_LOG", "false"),
+        ("RCLONE_STATS_LOG_LEVEL", "DEBUG"),
+    ],
+)
+def test_a_persons_rclone_logging_settings_cannot_hide_a_difference(pair, monkeypatch, tmp_path, var, value):
+    """Each of these removed the notices the answer rests on and turned a
+    divergent dry run into "nothing would move" (reproduced by the
+    implementation review). The flags pin every logging setting."""
+    conf, src, dst = _equal_pair(pair)
+    (dst / "extra.txt").write_text("x")
+    monkeypatch.setenv(var, value.format(tmp=tmp_path))
+    assert would(conf, src) == (True, ["extra.txt"])
+
+
+def test_no_statistics_line_is_no_answer(pair, monkeypatch):
+    """The final statistics line is the positive evidence that the output
+    channel was intact. A run that produced none is not an answer."""
+    import boxyard._utils.rclone as rclone_module
+
+    conf, src, dst = _equal_pair(pair)
+    real = rclone_module.run_cmd_async
+
+    async def _muted(cmd, **kwargs):
+        code, out, err = await real(cmd, **kwargs)
+        return code, out, ""
+
+    monkeypatch.setattr(rclone_module, "run_cmd_async", _muted)
+    assert would(conf, src)[0] is False
+
+
+def test_a_single_file_is_compared_with_copyto(pair):
+    conf, src, dst = pair
+    (src / "boxmeta.toml").write_text('name = "one"\n')
+    (dst / "boxmeta.toml").write_text('name = "one"\n')
+    os.utime(src / "boxmeta.toml", (1_600_000_000, 1_600_000_000))
+    os.utime(dst / "boxmeta.toml", (1_600_000_000, 1_600_000_000))
+
+    def would_file(**kw):
+        return run(rclone_would_transfer(
+            rclone_config_path=conf, source="", source_path=str(src / "boxmeta.toml"),
+            dest="dst", dest_path="boxmeta.toml", single_file=True, **kw,
+        ))
+
+    assert would_file() == (True, [])
+    (src / "boxmeta.toml").write_text('name = "one, longer"\n')
+    os.utime(src / "boxmeta.toml", (1_600_000_000, 1_600_000_000))  # size differs, mtime kept
+    assert would_file() == (True, ["boxmeta.toml"])
+    (src / "boxmeta.toml").unlink()
+    assert would_file()[0] is False

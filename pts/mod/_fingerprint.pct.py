@@ -481,3 +481,90 @@ def local_tree_differs(
         # modification one, and the caller's existence logic already answers it.
         return None
     return current != base["fingerprint"]
+
+
+# %% [markdown]
+# ## Verify, then bless
+#
+# The D1 convergence decision (2026-09-03) gives a part that reads SYNCED off
+# the mtime fallback a baseline -- but only after the remote is asked whether
+# a push would move anything. v0.8.3 verified DATA only and blessed META and
+# CONF on the verdict alone; the full-pass-skip review reproduced why that is
+# not enough: a deletion racing a pull is refused a baseline (correctly), the
+# next verdict comes off the fallback (which cannot see a deletion), and an
+# unverified bless records the divergent tree as agreed. Verification is a
+# dry-run comparison at listing cost, so every part gets it.
+
+# %%
+#|export
+async def verify_then_bless(
+    *,
+    rclone_config_path,
+    local_path: "str | Path",
+    local_sync_record_path: "str | Path",
+    sync_record_ulid,
+    remote: str,
+    remote_path: "str | Path",
+    include_path=None,
+    exclude_path=None,
+    filters_path=None,
+    single_file: bool,
+    label: str,
+) -> "bool | None":
+    """
+    Bless the CURRENT local tree as `sync_record_ulid`'s baseline only after
+    a dry-run push proves nothing would move under the part's real filters.
+
+    Returns True when a baseline was written, None when there was nothing to
+    do (a usable baseline already exists, no tree, or the remote could not be
+    asked -- a transient failure is not a divergence), and False when the
+    comparison found differences: then nothing is written and a WARNING names
+    the part, every pass, until a person resolves it. Fingerprinted BEFORE the
+    comparison, as everywhere: anything that changes after the walk mismatches
+    the baseline next time, the loud direction.
+    """
+    from boxyard._utils import rclone_would_transfer
+
+    sig = filter_signature(exclude_path)
+    if has_usable_base(local_sync_record_path, sync_record_ulid=sync_record_ulid, filter_sig=sig):
+        return None
+    fp = tree_fingerprint(
+        local_path,
+        rclone_config_path=rclone_config_path,
+        exclude_file=exclude_path,
+        filter_sig=sig,
+    )
+    if fp is None:
+        return None
+    answered, moving = await rclone_would_transfer(
+        rclone_config_path=str(rclone_config_path),
+        source="",
+        source_path=str(local_path),
+        dest=remote,
+        dest_path=str(remote_path),
+        include_file=str(include_path) if include_path else None,
+        exclude_file=str(exclude_path) if exclude_path else None,
+        filters_file=str(filters_path) if filters_path else None,
+        single_file=single_file,
+    )
+    if not answered:
+        return None
+    if not moving:
+        write_base(
+            local_sync_record_path,
+            sync_record_ulid=str(sync_record_ulid),
+            fingerprint=fp,
+            filter_sig=sig,
+        )
+        return True
+    # Not gated on `verbose`: a divergence the fallback verdict cannot see,
+    # surfaced on every pass until it is resolved.
+    print(
+        f"WARNING: {label} reads SYNCED but its local and remote copies "
+        f"actually differ ({len(moving)} path(s) would move: "
+        f"{', '.join(moving[:5])}{', ...' if len(moving) > 5 else ''}). No "
+        f"baseline was recorded. Inspect with `boxyard box-status`, compare "
+        f"with `boxyard copy -d <tmp>`, then resolve with an explicit "
+        f"`--sync-direction` and `--sync-setting force`."
+    )
+    return False

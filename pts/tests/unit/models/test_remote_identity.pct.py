@@ -40,7 +40,11 @@ from boxyard import const
 from boxyard._enums import BoxPart
 from boxyard._models import SyncCondition, SyncRecord, SyncStatus, get_sync_status
 from boxyard._remote_identity import (
+    clear_inflight_push,
     clear_remote_identity,
+    inflight_push_path,
+    read_inflight_push,
+    write_inflight_push,
     note_agreement,
     read_remote_identity,
     record_md5,
@@ -258,7 +262,7 @@ def test_residue_sidecars_and_other_depths_are_not_records():
     assert view == {}
 
 
-def test_the_box_listing_sees_boxmeta_conf_dir_and_pointer():
+def test_the_box_listing_sees_every_entry_and_its_kind():
     view = project_box_listing("sl", _entries(
         ("boxA", {"IsDir": True}),
         "boxA/boxmeta.toml",
@@ -267,12 +271,14 @@ def test_the_box_listing_sees_boxmeta_conf_dir_and_pointer():
         ("boxB", {"IsDir": True}),
         "boxB/boxmeta.toml",
         ("boxB/data.snapshot", {"ModTime": "T", "Size": 9}),
+        ("boxB/data.restic", {"IsDir": True}),
         ("boxC", {"IsDir": True}),
-        "boxC/conf",  # a FILE named conf is not a conf directory
+        "boxC/conf",  # a FILE named conf: the wrong kind, never "absent"
+        "boxC/data",
     ))
-    assert view[("sl", "boxA")] == RemoteBoxView("boxA", boxmeta=True, conf_dir=True, pointer=None)
-    assert view[("sl", "boxB")] == RemoteBoxView("boxB", boxmeta=True, conf_dir=False, pointer=("T", 9))
-    assert view[("sl", "boxC")] == RemoteBoxView("boxC", boxmeta=False, conf_dir=False, pointer=None)
+    assert view[("sl", "boxA")] == RemoteBoxView("boxA", boxmeta=True, conf_dir=True, data_dir=True)
+    assert view[("sl", "boxB")] == RemoteBoxView("boxB", boxmeta=True, restic_dir=True, pointer=True)
+    assert view[("sl", "boxC")] == RemoteBoxView("boxC", anomalies=["conf is a file", "data is a file"])
 
 
 def test_two_stores_never_share_a_key():
@@ -377,3 +383,24 @@ def test_a_remote_record_write_touches_nothing_else(alias_remote):
     run(rec.rclone_save(str(conf), "rem", "sync_records/box/data.rec"))
     run(rec.rclone_save(str(conf), "rem", "sync_records/box/meta.rec"))
     assert {p.name for p in (root / "sync_records" / "box").iterdir()} == {"data.rec", "meta.rec"}
+
+
+# %% [markdown]
+# ## The in-flight push sidecar
+
+# %%
+#|export
+def test_the_inflight_sidecar_round_trips_and_degrades_to_none(tmp_path):
+    rec_path = tmp_path / "sync_records" / "box" / "data.rec"
+    assert read_inflight_push(rec_path) is None
+    u = str(ULID())
+    write_inflight_push(rec_path, ulid=u)
+    assert inflight_push_path(rec_path) == rec_path.parent / f"data{const.BOX_INFLIGHT_PUSH_SUFFIX}"
+    assert read_inflight_push(rec_path) == u
+    inflight_push_path(rec_path).write_text("{")
+    assert read_inflight_push(rec_path) is None
+    inflight_push_path(rec_path).write_text('{"version": 2, "ulid": "x"}')
+    assert read_inflight_push(rec_path) is None
+    clear_inflight_push(rec_path)
+    clear_inflight_push(rec_path)
+    assert read_inflight_push(rec_path) is None

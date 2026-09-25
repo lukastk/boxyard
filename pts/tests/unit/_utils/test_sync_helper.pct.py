@@ -44,6 +44,9 @@ def _no_remote_identity_sidecars():
     with (
         patch("boxyard._utils.sync_helper.write_remote_identity", new=lambda *a, **k: None),
         patch("boxyard._utils.sync_helper.note_agreement", new=lambda *a, **k: False),
+        patch("boxyard._utils.sync_helper.write_inflight_push", new=lambda *a, **k: None),
+        patch("boxyard._utils.sync_helper.clear_inflight_push", new=lambda *a, **k: None),
+        patch("boxyard._utils.sync_helper.read_inflight_push", new=lambda *a, **k: None),
     ):
         yield
 

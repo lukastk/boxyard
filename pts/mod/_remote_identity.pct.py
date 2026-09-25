@@ -143,3 +143,51 @@ def note_agreement(local_sync_record_path: "str | Path", status) -> bool:
         sync_complete=rec.sync_complete,
     )
     return True
+
+
+# %% [markdown]
+# ## The in-flight push sidecar
+#
+# A push writes its INCOMPLETE record to the remote first, then locally. If
+# the remote write raises, rclone may still have landed it (an SFTP session
+# dropped after the upload), and the next status then reads
+# "remote incomplete, local complete, different ULIDs": an interrupted push
+# from ANOTHER machine, which only `--sync-setting force` clears. Writing the
+# local record first instead is worse: a local-only incomplete record reads as
+# an interrupted PULL, and the automatic retry pulls the remote over the
+# unpushed work (reproduced by the implementation review). So the ULID is
+# remembered HERE, machine-locally, before the remote write: a remote
+# incomplete record whose ULID this sidecar names is this machine's own, and
+# the push may be retried safely. Cleared when the push completes.
+
+# %%
+#|export
+def inflight_push_path(local_sync_record_path: "str | Path") -> Path:
+    p = Path(local_sync_record_path)
+    return p.with_name(p.name.removesuffix(".rec") + const.BOX_INFLIGHT_PUSH_SUFFIX)
+
+
+def write_inflight_push(local_sync_record_path: "str | Path", *, ulid: str) -> Path:
+    p = inflight_push_path(local_sync_record_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps({"version": 1, "ulid": str(ulid)}), encoding="utf-8")
+    os.replace(tmp, p)
+    return p
+
+
+def read_inflight_push(local_sync_record_path: "str | Path") -> "str | None":
+    """The ULID of the push this machine last started here, or None."""
+    p = inflight_push_path(local_sync_record_path)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("version") != 1:
+        return None
+    ulid = data.get("ulid")
+    return ulid if isinstance(ulid, str) and ulid else None
+
+
+def clear_inflight_push(local_sync_record_path: "str | Path") -> None:
+    inflight_push_path(local_sync_record_path).unlink(missing_ok=True)

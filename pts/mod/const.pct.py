@@ -48,6 +48,11 @@ BOX_REMOTE_IDENTITY_SUFFIX = ".remote.json"
 remembers the md5 of the REMOTE record this machine last read and agreed with
 (see `_remote_identity`). Like the fingerprint sidecar below it is never synced
 and is invisible to every `*.rec` scan."""
+BOX_INFLIGHT_PUSH_SUFFIX = ".inflight.json"
+"""Suffix of the machine-local sidecar that names the ULID of a push's
+incomplete record BEFORE that record is written to the remote, so a remote
+write that raised but landed is still recognised as this machine's own
+interrupted push (see `_remote_identity`)."""
 BOX_SYNC_BASE_SUFFIX = ".base.json"
 """Suffix of the machine-local fingerprint sidecar that sits beside a part's
 `.rec` sync record. Deliberately NOT `.rec`: doctor's interrupted-record scan
@@ -133,6 +138,11 @@ SUSPEND_DETECT_THRESHOLD = 60.0
 # is normal, a listing that runs for ten minutes is not. Transfers are NOT
 # bounded by this; see `_utils.base.run_cmd_async`.
 RCLONE_LISTING_TIMEOUT = 600.0
+# The hashed `sync_records/` listing the skip filter takes: measured 142-173 s
+# for 1,867 records on the storage box, and it grows with every box ever
+# created (record directories outlive their boxes). Three times the ordinary
+# listing timeout, so growth degrades to "slow" long before "silently off".
+RCLONE_HASHED_LISTING_TIMEOUT = 1800.0
 
 DEFAULT_FAKE_STORE_REL_PATH = "fake_store"
 

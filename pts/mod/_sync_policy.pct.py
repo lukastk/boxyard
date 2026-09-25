@@ -350,54 +350,35 @@ def write_check_record(
     box_index_name: str,
     part: BoxPart,
     now_unix: float,
-    remote_modtime: str | None = None,
-    remote_size: int | None = None,
 ) -> Path:
     """
     Record that this (box, part) was successfully checked at `now_unix`.
 
-    `remote_modtime`/`remote_size` are what the bulk listing reported for the
-    remote object at that moment. The META skip filter compares them against a
-    later listing to decide whether anything moved -- see
-    `remote_looks_unchanged`.
-
     Written via a temp file in the same directory then renamed, so a crash
     mid-write leaves either the old record or the new one, never a truncated
     file that reads as "never checked" and silently costs a full pass.
+
+    (Until v0.8.4 this also carried a `(ModTime, Size)` stamp of the remote
+    object for the skip filters. Two independent reviews showed a stamp is
+    not an identity; every skip decision now rests on content -- the record's
+    md5, or the restic pointer's snapshot id -- and nothing is stamped.)
     """
     import os
     import tempfile
 
     path = check_record_path(config, box_index_name, part)
     path.parent.mkdir(parents=True, exist_ok=True)
-
-    # A caller with no stamp to offer must not ERASE the one already recorded.
-    # An ordinary `multi-sync` pass records only a timestamp, and wiping the
-    # stamp would disarm the skip filter every time an unfiltered pass ran --
-    # so the filter could never take effect on a machine that also runs the
-    # normal DATA pass, which is every machine.
-    #
-    # Carrying an older stamp forward is the SAFE direction: if the remote moved
-    # since, the next listing reports a different ModTime/Size and the box is
-    # synced. A stale stamp can only ever cause extra work, never a wrong skip.
-    if remote_modtime is None and remote_size is None:
-        previous = read_check_record(config, box_index_name, part)
-        if previous is not None:
-            remote_modtime = previous.get("remote_modtime")
-            remote_size = previous.get("remote_size")
-
-    record = {
-        "last_checked_unix": now_unix,
-        "remote_modtime": remote_modtime,
-        "remote_size": remote_size,
-    }
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
+    record = {"last_checked_unix": now_unix}
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            f.write(json.dumps(record))
-        os.replace(tmp, path)
+            json.dump(record, f)
+        os.replace(tmp_name, path)
     except BaseException:
-        Path(tmp).unlink(missing_ok=True)
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
         raise
     return path
 
@@ -479,83 +460,44 @@ def due_boxes(
     result.due.sort(key=lambda name: (-overdue_by[name], name))
     return result
 
-
-def remote_looks_unchanged(
-    record: dict[str, Any] | None, remote_modtime: str | None, remote_size: int | None
-) -> bool:
-    """
-    Whether the remote object matches what was recorded at the last check.
-
-    Both fields must be present and equal. A record that never captured them
-    (an older boxyard wrote it) returns False -- "assume changed" -- so an
-    upgrade costs one full pass rather than silently skipping every box.
-
-    This is only ever an optimisation: see the note at the top of this module
-    for why a false "changed" is harmless and a false "unchanged" cannot arise.
-    """
-    if record is None:
-        return False
-    recorded_modtime = record.get("remote_modtime")
-    recorded_size = record.get("remote_size")
-    if recorded_modtime is None or recorded_size is None:
-        return False
-    if remote_modtime is None or remote_size is None:
-        return False
-    return recorded_modtime == remote_modtime and recorded_size == remote_size
-
 # %% [markdown]
 # ## The restic DATA skip filter
 #
-# The one remaining `(ModTime, Size)` filter: a restic box's remote signal is
-# its snapshot POINTER, listed in bulk beside the boxmetas. The stamp it is
-# compared against is written from the PRE-pass listing (see `multi-sync`), so a
-# push that lands after the listing mismatches next pass -- the loud direction.
-# META, CONF and plain DATA are proven by record identity instead, below.
+# A restic box's remote signal is its snapshot POINTER, `boxes/<box>/data.snapshot`,
+# which names the snapshot the remote considers current. Its CONTENT is the
+# identity: snapshot ids are content-addressed, so "the pointer names the
+# snapshot this machine last agreed with" is exact. (Until v0.8.4 the pointer's
+# `(ModTime, Size)` from a listing was compared against a stamp; its Size is
+# constant and its ModTime is one SFTP second from the pusher's clock -- the
+# very argument that retired stamps for every other part. Six pointers are six
+# `rclone cat`s per pass, against the 1,867-record hashed listing the pass
+# already takes; if restic boxes become many, hash the pointers in bulk.)
 
 # %%
 #|export
 def data_boxes_needing_sync(
     config: boxyard.config.Config,
     box_metas: list[BoxMeta],
-    remote_listing: dict[str, tuple[str | None, int | None]],
+    pointer_snapshots: dict[str, str | None],
 ) -> tuple[list[str], list[str]]:
     """
     Split boxes into (needs a DATA sync, provably does not).
 
-    Rides the bulk `boxes/` listing: `boxes/<box>/data.snapshot` sits at depth
-    2 beside `boxmeta.toml`, so the listing `multi-sync` already takes answers
-    this too.
+    `pointer_snapshots` maps index name -> the snapshot id the remote pointer
+    names (None: no pointer, or unreadable). Only RESTIC boxes are judged
+    here; a plain box is always reported as needed (its DATA is proven by
+    record identity in `data_provably_unchanged`).
 
-    Only RESTIC boxes are judged here: a plain box's DATA is proven by record
-    identity plus fingerprint in `plain_data_provably_unchanged`, and
-    `boxes_needing_sync_full` routes each format to its own predicate. A plain
-    box handed to this function is always reported as needed.
+    Two conditions:
 
-    Two conditions, both cheap:
-
-    - the remote pointer has not moved, by (ModTime, Size) against what was
-      recorded at the last check;
-    - the local tree has not been TOUCHED since this machine last agreed, by
-      `tree_touched_since` -- the same gate the restic backend uses to decide
-      whether to talk to the repository at all.
+    - the remote pointer names the snapshot this machine's `restic_state`
+      records as last agreed with, and no restore is in flight;
+    - the local tree has not been TOUCHED since -- `tree_touched_since`, the
+      ctime-and-directories gate the restic backend itself uses (it sees all
+      ten change shapes; `tree_modified_since` saw two).
 
     Skipping is ONLY ever an optimisation. A wrong "changed" costs a sync. A
     wrong "unchanged" LOSES DATA, silently, until something else moves.
-
-    IT USED TO USE `tree_modified_since`, AND THAT WAS TWO BUGS ON ONE LINE:
-
-    1. That helper is the plain backend's newest-mtime walk, which sees two of
-       ten change shapes. A restic box whose only change was a lone deletion, a
-       rename, a chmod or a symlink edit was declared "provably unchanged" and
-       skipped -- so it was never backed up, while this docstring claimed a
-       wrong "unchanged" was prevented. `tree_touched_since` stats directories
-       and uses max(mtime, ctime), which catches all of them; its false
-       positives cost the real path one local check, which is precisely the
-       trade a gate is allowed to make.
-    2. It was called with NO exclude names, so any `.DS_Store` counted as a
-       change. On a fleet with Macs in it that likely meant the filter never
-       skipped anything at all -- the optimisation silently defeating itself,
-       in the harmless direction, which is why nobody noticed.
     """
     from boxyard._enums import StorageFormat
     from boxyard._restic import read_state, tree_touched_since
@@ -570,16 +512,12 @@ def data_boxes_needing_sync(
             needed.append(index_name)
             continue
 
-        remote_modtime, remote_size = remote_listing.get(index_name, (None, None))
-        record = read_check_record(config, index_name, BoxPart.DATA)
-        if not remote_looks_unchanged(record, remote_modtime, remote_size):
+        remote_snapshot = pointer_snapshots.get(index_name)
+        state = read_state(config.boxyard_data_path, index_name)
+        if remote_snapshot is None or state is None or state.get("pulling_from"):
             needed.append(index_name)
             continue
-
-        state = read_state(config.boxyard_data_path, index_name)
-        if state is None or state.get("pulling_from"):
-            # No local state, or a restore that was interrupted. Both mean the
-            # real path has work to do and must not be skipped.
+        if state.get("snapshot") != remote_snapshot:
             needed.append(index_name)
             continue
 
@@ -588,15 +526,7 @@ def data_boxes_needing_sync(
         if synced_at is None or not data_path.is_dir():
             needed.append(index_name)
             continue
-        _conf_exclude = (
-            box_meta.get_local_part_path(config, BoxPart.CONF)
-            / const.RCLONE_EXCLUDE_FILENAME
-        )
-        _exclude_names = literal_exclude_names(
-            _conf_exclude
-            if _conf_exclude.exists()
-            else config.default_rclone_exclude_path
-        )
+        _exclude_names = literal_exclude_names(box_meta.get_effective_exclude_path(config))
         if tree_touched_since(data_path, float(synced_at), _exclude_names):
             needed.append(index_name)
             continue
@@ -671,14 +601,21 @@ def project_record_listing(
 
 @dataclass
 class RemoteBoxView:
-    """What the `boxes/` listing says about one box: its boxmeta is present,
-    a `conf/` DIRECTORY exists (however deep its contents), and the restic
-    pointer's `(ModTime, Size)` if it has one."""
+    """
+    What the `boxes/` listing says about one box: its boxmeta is present; a
+    `conf/`, `data/` or `data.restic/` DIRECTORY exists (however deep its
+    contents); it has a restic pointer; and any entry that is the WRONG kind
+    (a FILE named `conf` or `data`), which the real path transfers or trips
+    over and the filter must therefore never call absent.
+    """
 
     index_name: str = ""
     boxmeta: bool = False
     conf_dir: bool = False
-    pointer: "tuple[str | None, int | None] | None" = None
+    data_dir: bool = False
+    restic_dir: bool = False
+    pointer: bool = False
+    anomalies: list[str] = field(default_factory=list)
 
 
 def project_box_listing(
@@ -687,13 +624,17 @@ def project_box_listing(
     """
     From ONE `rclone lsjson --recursive --max-depth 2` over `<store>/boxes/`
     that lists files AND directories under filters
-    `+ /*/boxmeta.toml`, `+ /*/data.snapshot`, `+ /*/conf/`, `- **`.
+    `+ /*/boxmeta.toml`, `+ /*/data.snapshot`, `+ /*/conf/`, `+ /*/conf`,
+    `+ /*/data/`, `+ /*/data`, `+ /*/data.restic/`, `- **`.
 
-    The directory entry is the point: a files-only listing at any depth
+    The directory entries are the point: a files-only listing at any depth
     cannot prove a directory ABSENT (reproduced by the implementation review
     with `conf/nested/settings.txt` at depth 4), whereas `<box>/conf` appears
     as a directory entry in its parent's listing whether it holds one file,
-    a nested tree, or nothing at all.
+    a nested tree, or nothing at all. `data/` is listed for the same reason:
+    a plain tree whose record was deleted (a conversion interrupted before
+    its purge) is a loud ERROR on the real path, and record absence alone
+    would have called it proven. The listing never descends into them.
     """
     view: dict[BoxKey, RemoteBoxView] = {}
     for entry in entries or []:
@@ -705,10 +646,18 @@ def project_box_listing(
         if entry.get("IsDir"):
             if name == const.BOX_CONF_REL_PATH:
                 v.conf_dir = True
+            elif name == const.BOX_DATA_REL_PATH:
+                v.data_dir = True
+            elif name == const.BOX_RESTIC_REL_PATH:
+                v.restic_dir = True
+            elif name == const.BOX_METAFILE_REL_PATH:
+                v.anomalies.append(f"{name}/ is a directory")
         elif name == const.BOX_METAFILE_REL_PATH:
             v.boxmeta = True
         elif name == const.BOX_SNAPSHOT_POINTER_REL_PATH:
-            v.pointer = (entry.get("ModTime"), entry.get("Size"))
+            v.pointer = True
+        elif name in (const.BOX_CONF_REL_PATH, const.BOX_DATA_REL_PATH, const.BOX_RESTIC_REL_PATH):
+            v.anomalies.append(f"{name} is a file")
     return view
 
 
@@ -823,7 +772,7 @@ def conf_provably_unchanged(
     config: boxyard.config.Config,
     box_meta: BoxMeta,
     records: "dict[str, str | None] | None",
-    remote_conf_dir_present: bool,
+    view: RemoteBoxView,
 ) -> bool:
     """
     Local record and local directory both absent: provable only when the
@@ -840,7 +789,7 @@ def conf_provably_unchanged(
     conf_dir = box_meta.get_local_part_path(config, BoxPart.CONF)
     local_record, local_dir = rec_path.exists(), conf_dir.exists()
     if not local_record and not local_dir:
-        if remote_conf_dir_present:
+        if view.conf_dir:
             return False
         return _unheld_part_unchanged(config, box_meta, BoxPart.CONF, records)
     if not (local_record and local_dir):
@@ -854,7 +803,8 @@ def data_provably_unchanged(
     config: boxyard.config.Config,
     box_meta: BoxMeta,
     records: "dict[str, str | None] | None",
-    pointer: "tuple[str | None, int | None] | None",
+    view: RemoteBoxView,
+    pointer_snapshot: "str | None",
 ) -> bool:
     """
     Placement decides first, by EXACT state and for BOTH storage formats:
@@ -862,11 +812,17 @@ def data_provably_unchanged(
     have skipped an unplugged removable root where the real path raises, and
     the restic filter on its own knows nothing about placement (the
     implementation review reproduced a RELOCATING restic box being skipped).
-    EXCLUDED with nothing on disk is provable when the remote record, if any,
-    is complete and agreed (plain) or trivially (restic keeps no record and
-    the real path answers EXCLUDED without touching the repository); EXCLUDED
-    with a tree at the path is the real path's to report; every other state
-    keeps raising loudly through the real path.
+
+    EXCLUDED with nothing on disk is provable only when the remote's shape is
+    one the real path answers EXCLUDED for without a word:
+    - plain: a complete, agreed record -- or NO record and NO `data/` tree
+      (a tree without its record is the loud ERROR an interrupted conversion
+      leaves, and record absence alone had called it proven);
+    - restic: a pointer -- or NO pointer and NO repository (a repository
+      without a pointer is an ERROR on the real path, which reads both
+      before it looks at placement).
+    EXCLUDED with a tree at the local path is the real path's to report;
+    every other state keeps raising loudly through the real path.
     """
     from boxyard._checkout import LocalCheckoutState
     from boxyard._enums import StorageFormat
@@ -876,13 +832,15 @@ def data_provably_unchanged(
         if box_meta.get_local_part_path(config, BoxPart.DATA).exists():
             return False
         if box_meta.storage_format is StorageFormat.RESTIC:
-            return True
+            return view.pointer or not view.restic_dir
+        if records is None or "data" not in records:
+            return not view.data_dir
         return _unheld_part_unchanged(config, box_meta, BoxPart.DATA, records)
     if state is not LocalCheckoutState.INCLUDED:
         return False
     if box_meta.storage_format is StorageFormat.RESTIC:
         _, provable = data_boxes_needing_sync(
-            config, [box_meta], {box_meta.index_name: pointer} if pointer else {}
+            config, [box_meta], {box_meta.index_name: pointer_snapshot}
         )
         return box_meta.index_name in provable
     if records is None or "data" not in records:
@@ -914,6 +872,7 @@ def boxes_needing_sync_full(
     tombstoned: set[str],
     skip_meta: bool,
     skip_data: bool,
+    pointer_snapshots: "dict[str, str | None] | None" = None,
 ) -> SkipVerdicts:
     """
     Split boxes into (needed, provably unchanged) for a pass that will execute
@@ -921,7 +880,9 @@ def boxes_needing_sync_full(
 
     `records` comes from the hashed `sync_records/` listing and `boxes` from
     the `boxes/` listing, both keyed by (storage location, listed directory
-    name); a box is matched to them by id, then by the name that match has. Each
+    name); a box is matched to them by id, then by the name that match has.
+    `pointer_snapshots` maps a restic box's index name to the snapshot its
+    remote pointer names (read per box; there are few). Each
     part is gated on its own flag -- `--skip-unchanged` for the whole box,
     `--skip-unchanged-meta` for META alone -- and a part without its flag is
     never provable.
@@ -956,6 +917,8 @@ def boxes_needing_sync_full(
                 view = remote_view_for(boxes, box_meta.storage_location, box_meta.box_id)
                 if view is None:
                     failed = "remote-box-absent"
+                elif view.anomalies:
+                    failed = "remote-anomaly: " + "; ".join(view.anomalies)
             if failed is None:
                 recs = records.get((box_meta.storage_location, view.index_name))
                 for part in (BoxPart.META, BoxPart.CONF, BoxPart.DATA):
@@ -964,12 +927,11 @@ def boxes_needing_sync_full(
                     if part is BoxPart.META:
                         ok = skip_meta and meta_provably_unchanged(config, box_meta, recs)
                     elif part is BoxPart.CONF:
-                        ok = skip_data and conf_provably_unchanged(
-                            config, box_meta, recs, view.conf_dir
-                        )
+                        ok = skip_data and conf_provably_unchanged(config, box_meta, recs, view)
                     else:
                         ok = skip_data and data_provably_unchanged(
-                            config, box_meta, recs, view.pointer
+                            config, box_meta, recs, view,
+                            (pointer_snapshots or {}).get(index_name),
                         )
                     if not ok:
                         failed = part.value

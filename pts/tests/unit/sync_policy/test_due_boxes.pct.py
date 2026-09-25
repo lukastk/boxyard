@@ -35,7 +35,6 @@ from boxyard._sync_policy import (
     check_record_path,
     due_boxes,
     read_check_record,
-    remote_looks_unchanged,
     write_check_record,
 )
 
@@ -227,12 +226,9 @@ def test_check_record_round_trips(tmp_path):
     box = make_box()
     write_check_record(
         config, box.index_name, BoxPart.META, NOW,
-        remote_modtime="2026-08-27T21:44:32Z", remote_size=139,
     )
     record = read_check_record(config, box.index_name, BoxPart.META)
     assert record["last_checked_unix"] == NOW
-    assert record["remote_modtime"] == "2026-08-27T21:44:32Z"
-    assert record["remote_size"] == 139
 
 
 def test_write_leaves_no_temp_files_behind(tmp_path):
@@ -242,51 +238,6 @@ def test_write_leaves_no_temp_files_behind(tmp_path):
         write_check_record(config, box.index_name, BoxPart.DATA, NOW + i)
     directory = check_record_path(config, box.index_name, BoxPart.DATA).parent
     assert [p.name for p in directory.iterdir()] == ["data.json"]
-
-
-# %% [markdown]
-# ## The skip filter's comparison
-#
-# `remote_looks_unchanged` is the half of B-prime that decides whether a box
-# can be skipped. Its ONLY unsafe answer is a false "unchanged".
-
-# %%
-#|export
-def test_remote_unchanged_requires_both_fields_to_match():
-    record = {"last_checked_unix": NOW, "remote_modtime": "T1", "remote_size": 10}
-    assert remote_looks_unchanged(record, "T1", 10) is True
-    assert remote_looks_unchanged(record, "T2", 10) is False
-    assert remote_looks_unchanged(record, "T1", 11) is False
-
-
-@pytest.mark.parametrize(
-    "record",
-    [
-        None,                                                        # never checked
-        {"last_checked_unix": NOW},                                  # older boxyard
-        {"last_checked_unix": NOW, "remote_modtime": "T1", "remote_size": None},
-        {"last_checked_unix": NOW, "remote_modtime": None, "remote_size": 10},
-    ],
-)
-def test_a_record_without_both_fields_is_assumed_changed(record):
-    """An upgrade costs one full pass; it must never silently skip everything."""
-    assert remote_looks_unchanged(record, "T1", 10) is False
-
-
-def test_an_unlisted_remote_is_assumed_changed():
-    record = {"last_checked_unix": NOW, "remote_modtime": "T1", "remote_size": 10}
-    assert remote_looks_unchanged(record, None, 10) is False
-    assert remote_looks_unchanged(record, "T1", None) is False
-
-
-def test_a_preserved_modtime_with_a_different_size_is_still_changed():
-    """
-    The case that broke the design note's first safety argument: rclone DOES
-    preserve ModTime across a push, so ModTime alone cannot be trusted. Size is
-    compared for exactly this reason.
-    """
-    record = {"last_checked_unix": NOW, "remote_modtime": "T1", "remote_size": 139}
-    assert remote_looks_unchanged(record, "T1", 140) is False
 
 
 # %% [markdown]

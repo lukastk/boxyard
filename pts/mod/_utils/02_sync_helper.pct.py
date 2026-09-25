@@ -32,7 +32,14 @@ from nblite import nbl_export, show_doc; nbl_export();
 from pathlib import Path
 import textwrap
 from boxyard._utils import check_interrupted, SoftInterruption
-from boxyard._remote_identity import note_agreement, write_remote_identity
+from boxyard._remote_identity import (
+    clear_inflight_push,
+    note_agreement,
+    read_inflight_push,
+    write_inflight_push,
+    write_remote_identity,
+)
+from boxyard._fingerprint import verify_then_bless
 from boxyard._enums import SyncSetting, SyncDirection
 
 from boxyard import const
@@ -226,6 +233,12 @@ def _can_safely_retry_incomplete(sync_cond, sync_dir, local_rec, remote_rec):
             local_rec.ulid == remote_rec.ulid):
             # Matching incomplete ULIDs = this machine started it
             return sync_dir in (SyncDirection.PUSH, None)
+        # ...or if this machine's in-flight sidecar names the remote's
+        # incomplete ULID: the push's first remote write RAISED but landed,
+        # so the local record was never written (see `_remote_identity`).
+        if (remote_rec and not remote_rec.sync_complete
+                and read_inflight_push(local_sync_record_path) == str(remote_rec.ulid)):
+            return sync_dir in (SyncDirection.PUSH, None)
 
     return False
 
@@ -258,32 +271,25 @@ if sync_setting != SyncSetting.FORCE and sync_condition == SyncCondition.SYNCED:
     # remote probe in `sync_box` (verify-then-bless), because DATA divergence
     # is where real work hides.
     if bless_on_synced and local_sync_record is not None and local_sync_record.sync_complete:
-        from boxyard._fingerprint import (
-            filter_signature as _bs_sig_of,
-            has_usable_base as _bs_has_usable,
-            tree_fingerprint as _bs_fp_of,
-            write_base as _bs_write_base,
-        )
-
-        _bs_sig = _bs_sig_of(exclude_path)
-        if not _bs_has_usable(
-            local_sync_record_path,
+        # VERIFIED, for every part: v0.8.3 blessed META and CONF on the
+        # verdict alone, and the full-pass-skip review reproduced the hole --
+        # a deletion racing a pull is refused a baseline, the next verdict
+        # comes off the mtime fallback (which cannot see a deletion), and an
+        # unverified bless recorded the divergent tree as agreed. The
+        # verification is a dry-run comparison at listing cost.
+        await verify_then_bless(
+            rclone_config_path=rclone_config_path,
+            local_path=local_path,
+            local_sync_record_path=local_sync_record_path,
             sync_record_ulid=local_sync_record.ulid,
-            filter_sig=_bs_sig,
-        ):
-            _bs_fp = _bs_fp_of(
-                local_path,
-                rclone_config_path=rclone_config_path,
-                exclude_file=exclude_path,
-                filter_sig=_bs_sig,
-            )
-            if _bs_fp is not None:
-                _bs_write_base(
-                    local_sync_record_path,
-                    sync_record_ulid=str(local_sync_record.ulid),
-                    fingerprint=_bs_fp,
-                    filter_sig=_bs_sig,
-                )
+            remote=remote,
+            remote_path=remote_path,
+            include_path=include_path,
+            exclude_path=exclude_path,
+            filters_path=filters_path,
+            single_file=not sync_path_is_dir,
+            label=f"'{local_path}'",
+        )
     # SYNCED is an agreement with the remote record as read: remember its
     # identity for the full-pass skip (`_remote_identity`). Unconditional --
     # unlike the baseline above this needs no local record, and the filter
@@ -468,7 +474,7 @@ async def _sync(
 from datetime import datetime, timezone
 
 from boxyard._models import SyncRecord
-from boxyard._utils import check_last_time_modified, literal_exclude_names, rclone_would_transfer
+from boxyard._utils import rclone_would_transfer
 from boxyard._fingerprint import filter_signature, tree_fingerprint, write_base
 
 if check_interrupted():
@@ -502,12 +508,6 @@ rec = SyncRecord.create(syncer_hostname=syncer_hostname, sync_complete=False)
 backup_name = str(rec.ulid)
 
 if sync_direction == SyncDirection.PULL:
-    # Taken BEFORE the transfer starts, for the single-file guard below: a
-    # pulled file carries the PUSHER's (older) mtime, so a file newer than this
-    # moment was written locally while the transfer ran -- and is therefore
-    # not known to be on the remote.
-    _pull_started_at = datetime.now(timezone.utc)
-
     # Save the sync record on local to signify an ongoing sync
     await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
 
@@ -577,11 +577,8 @@ if sync_direction == SyncDirection.PULL:
         # Not answered (unreachable remote, a partial enumeration) is not
         # proof, so no baseline.
         #
-        # For a single FILE (META's boxmeta.toml) the file's own mtime against
-        # the pull's start is exact enough: an edit moves it, a deletion leaves
-        # nothing to fingerprint. A pusher with a fast clock can trip this
-        # spuriously; that costs staying on the old test for this file, never a
-        # wrong answer.
+        # For a single FILE (META's boxmeta.toml) the same question is asked
+        # with `copyto --dry-run`.
         #
         # THE FINGERPRINT IS TAKEN FIRST, THEN THE GUARD RUNS, THEN THAT SAME
         # FINGERPRINT IS BLESSED. The other order -- guard, then fingerprint --
@@ -621,10 +618,21 @@ if sync_direction == SyncDirection.PULL:
             )
             _tree_is_what_the_remote_holds = _answered and not _moving
         else:
-            _newest = check_last_time_modified(
-                local_path, literal_exclude_names(exclude_path)
+            # A single file has no directory to sync; `copyto --dry-run`
+            # answers the same question. Not the file's mtime against the
+            # pull's start: an mtime-preserving replacement (a restore, a
+            # `cp -p`) with different content passed that guard (reproduced
+            # by the implementation review) while its size differs -- which
+            # the dry run sees.
+            _answered, _moving = await rclone_would_transfer(
+                rclone_config_path=rclone_config_path,
+                source=remote,
+                source_path=remote_path,
+                dest="",
+                dest_path=local_path,
+                single_file=True,
             )
-            _tree_is_what_the_remote_holds = _newest is None or _newest <= _pull_started_at
+            _tree_is_what_the_remote_holds = _answered and not _moving
         if not _tree_is_what_the_remote_holds:
             if verbose:
                 print(
@@ -673,15 +681,17 @@ elif sync_direction == SyncDirection.PUSH:
     # This creates a "sync session" marker - if interrupted, both sides have the same incomplete ULID,
     # proving this machine owns the interrupted sync and can safely retry.
     #
-    # LOCAL FIRST. `rclone_save` raises on a failed remote write, and a write
-    # rclone reports as failed can still have landed (an SFTP session dropped
-    # after the upload). With the remote written first and the local not yet,
-    # that leaves remote-incomplete-U beside local-complete-U_old: "incomplete
-    # sync from another machine", for this machine too -- a wedge only `force`
-    # clears (found by the implementation review). Local first, the retry
-    # reads matching incomplete records and is safe.
-    await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
+    # REMOTE FIRST, with the in-flight sidecar written before either. A
+    # local-only incomplete record reads as an interrupted PULL and the next
+    # sync would pull the remote over the unpushed work (reproduced by the
+    # implementation review of the local-first order), so the local record is
+    # written only once the remote write returned. `rclone_save` raises on a
+    # failed remote write, and a write rclone reports as failed can still have
+    # landed; the sidecar names this ULID so that the retry recognises the
+    # remote's incomplete record as its own (`_can_safely_retry_incomplete`).
+    write_inflight_push(local_sync_record_path, ulid=str(rec.ulid))
     await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
+    await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
 
     backup_remote = remote
     backup_path = Path(remote_sync_backups_path) / backup_name
@@ -710,6 +720,7 @@ elif sync_direction == SyncDirection.PUSH:
             ulid=str(rec.ulid),
             sync_complete=True,
         )
+        clear_inflight_push(local_sync_record_path)
 
 else:
     raise ValueError(f"Unknown sync direction: {sync_direction}")

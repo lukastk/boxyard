@@ -35,7 +35,7 @@ from boxyard._models import (
     record_meta_base,
 )
 from boxyard._enums import StorageFormat
-from boxyard._fingerprint import filter_signature, has_usable_base, tree_fingerprint, write_base
+from boxyard._fingerprint import filter_signature, has_usable_base, tree_fingerprint, verify_then_bless, write_base
 from boxyard._remote_identity import note_agreement
 from boxyard._utils import literal_exclude_names
 from boxyard._ownership import may_push, push_would_transfer, write_denied_message
@@ -602,66 +602,37 @@ try:
         local_sync_record_path,
         remote,
         remote_path,
+        part: BoxPart = BoxPart.DATA,
     ) -> None:
         """
-        The DATA half of the D1 convergence decision (2026-09-03): a box that
-        reads SYNCED off the mtime fallback gets a baseline only after a
-        remote probe PROVES local and remote equal under the box's real
-        filters -- and a probe that finds differences surfaces the historical
-        divergence instead of blessing it. This is what retires the fallback
-        deliberately rather than by assumption; META/CONF take the cheaper
-        bless-on-synced path in `sync_helper`, where divergence stakes are
-        lower. A clean box pays one probe ever -- the baseline it writes ends
-        the probing. A DIVERGED box warns and probes again every pass until a
-        person resolves it: sustained pressure on a real divergence is the
-        point, and the historical backlog is measured in single digits.
+        The D1 convergence decision (2026-09-03): a part that reads SYNCED
+        off the mtime fallback gets a baseline only after a remote comparison
+        PROVES nothing would move under the part's real filters -- and a
+        comparison that finds differences surfaces the divergence instead of
+        blessing it (`_fingerprint.verify_then_bless`). A clean part pays one
+        comparison ever; a DIVERGED one warns and compares again every pass
+        until a person resolves it. Since the full-pass-skip review this
+        applies to CONF as well as DATA (META's owner path verifies inside
+        `sync_helper`): an unverified bless on a fallback verdict recorded a
+        deletion racing a pull as agreed.
         """
         if status.sync_condition != SyncCondition.SYNCED:
             return
         _rec = status.local_sync_record
         if _rec is None or not _rec.sync_complete:
             return
-        _sig = filter_signature(probe_exclude_path)
-        if has_usable_base(
-            local_sync_record_path, sync_record_ulid=_rec.ulid, filter_sig=_sig
-        ):
-            return
-        # Fingerprint BEFORE the probe (the usual rule: anything changed after
-        # this walk mismatches next pass, the loud direction).
-        _fp = tree_fingerprint(
-            Path(local_path),
+        await verify_then_bless(
             rclone_config_path=config.rclone_config_path,
-            exclude_file=probe_exclude_path,
-            filter_sig=_sig,
-        )
-        if _fp is None:
-            return
-        _clean = not await push_would_transfer(
-            config,
-            local_path=Path(local_path),
+            local_path=local_path,
+            local_sync_record_path=local_sync_record_path,
+            sync_record_ulid=_rec.ulid,
             remote=remote,
-            remote_path=Path(remote_path),
+            remote_path=remote_path,
             include_path=probe_include_path,
             exclude_path=probe_exclude_path,
             filters_path=probe_filters_path,
-        )
-        if _clean:
-            write_base(
-                local_sync_record_path,
-                sync_record_ulid=str(_rec.ulid),
-                fingerprint=_fp,
-                filter_sig=_sig,
-            )
-            return
-        # Not gated on `verbose`: this is the historical backlog the mtime
-        # test blessed as SYNCED for years, surfacing exactly once per box.
-        print(
-            f"WARNING: '{box_index_name}' reads SYNCED but its local and "
-            f"remote DATA actually differ -- an old divergence the mtime test "
-            f"could not see. No baseline was recorded. Inspect with `boxyard "
-            f"box-status -r '{box_index_name}'` and compare with `boxyard "
-            f"copy -r '{box_index_name}' -d <tmp>`, then resolve with an "
-            f"explicit `--sync-direction` and `--sync-setting force`."
+            single_file=False,
+            label=f"'{box_index_name}' {part.value}",
         )
 
     async def _sync_part(
@@ -730,26 +701,18 @@ try:
                     remote=helper_kwargs["remote"],
                     remote_path=helper_kwargs["remote_path"],
                 )
-            elif helper_kwargs.get("bless_on_synced") and _status.local_sync_record is not None and _status.local_sync_record.sync_complete:
-                _bs_sig = filter_signature(probe_exclude_path)
-                if not has_usable_base(
-                    helper_kwargs["local_sync_record_path"],
-                    sync_record_ulid=_status.local_sync_record.ulid,
-                    filter_sig=_bs_sig,
-                ):
-                    _bs_fp = tree_fingerprint(
-                        Path(helper_kwargs["local_path"]),
-                        rclone_config_path=config.rclone_config_path,
-                        exclude_file=probe_exclude_path,
-                        filter_sig=_bs_sig,
-                    )
-                    if _bs_fp is not None:
-                        write_base(
-                            helper_kwargs["local_sync_record_path"],
-                            sync_record_ulid=str(_status.local_sync_record.ulid),
-                            fingerprint=_bs_fp,
-                            filter_sig=_bs_sig,
-                        )
+            elif helper_kwargs.get("bless_on_synced"):
+                await _verify_then_bless_data(
+                    _status,
+                    probe_include_path=probe_include_path,
+                    probe_exclude_path=probe_exclude_path,
+                    probe_filters_path=probe_filters_path,
+                    local_path=helper_kwargs["local_path"],
+                    local_sync_record_path=helper_kwargs["local_sync_record_path"],
+                    remote=helper_kwargs["remote"],
+                    remote_path=helper_kwargs["remote_path"],
+                    part=BoxPart.CONF,
+                )
             # A non-owner's SYNCED verdict is an agreement with the remote
             # record it just read: remember its identity for the full-pass
             # skip, as `sync_helper`'s own SYNCED return does for an owner.

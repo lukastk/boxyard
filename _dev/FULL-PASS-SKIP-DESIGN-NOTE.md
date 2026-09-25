@@ -1,6 +1,10 @@
 # Making a full `multi-sync` pass skippable — design note (v5)
 
-Status: **v5 implemented (unreleased), second review pending.** Written
+Status: **v5 implemented and reviewed twice (unreleased).** The second
+implementation review (both reviewers, on `94b7b00`) accepted the hash
+mechanism -- neither could construct a wrong skip in the identity half -- and
+reproduced eight defects around it, all fixed in the commit after
+(see "Round-2 corrections" below). Written
 2026-09-25; v2 the same day after the first adversarial design review (claude);
 v3 after the second (pi); v4 during implementation; **v5 after the
 implementation review of v4 (pi, "do not ship")**, which withdrew the marker
@@ -111,10 +115,11 @@ plus a crash) have no analogue here.
 | box in the bulk tombstone list (loaded BEFORE the filter) | needed — `sync_box` prints the tombstone warning, even when the delete's purge failed |
 | box on a `local` storage location | needed — no listing covers it |
 | `boxes/<index>/boxmeta.toml` absent from the listing under the name this machine knows | needed — a rename whose record move failed, a deletion, or an uncovered store; the real path resolves by id and raises or warns |
-| DATA, placement EXCLUDED (exact `LocalCheckoutState.EXCLUDED`; `check_included()` is false for MISSING/UNAVAILABLE too) AND no directory at the DATA path | provable iff the remote `data.rec` is absent or complete-and-agreed (plain) / trivially (restic keeps no record) — an incomplete remote push (`sync_box` raises INCOMPLETE before EXCLUDED) is needed |
+| DATA, placement EXCLUDED (exact `LocalCheckoutState.EXCLUDED`; `check_included()` is false for MISSING/UNAVAILABLE too) AND no directory at the DATA path | provable iff the remote's shape is one the real path answers EXCLUDED for without a word: plain — a complete, agreed `data.rec`, or no record AND no `data/` directory (a tree without its record is the loud ERROR an interrupted conversion leaves; both round-2 reviews reproduced record absence alone calling it proven); restic — a pointer, or no pointer AND no `data.restic/` (a repository without a pointer is an ERROR on the real path). An incomplete remote push (`sync_box` raises INCOMPLETE before EXCLUDED) is needed |
+| any part, a FILE where `conf`, `data` or `data.restic` should be a directory (the listing reports the kind) | needed — "not a directory" is not "absent"; the real path transfers or trips over it |
 | DATA, placement EXCLUDED but a directory exists | needed — the real path reports it |
 | DATA, placement MISSING / UNAVAILABLE / RELOCATING, either format | needed — the gate sits BEFORE the storage-format dispatch (v4 let a RELOCATING restic box through) |
-| DATA, restic, INCLUDED | existing pointer `(ModTime, Size)` stamp + `tree_touched_since`, stamped from the pre-pass listing |
+| DATA, restic, INCLUDED | the remote pointer's CONTENT (the snapshot id, read per restic box at pass start — there are six) equals the snapshot this machine's `restic_state` last agreed with, no restore is in flight, and `tree_touched_since` is quiet. Nothing is stamped: the last `(ModTime, Size)` stamp went with round 2 (the pointer's size is constant, so that identity was one SFTP second from the pusher's clock) |
 | CONF, no local record and no local dir | provable iff no remote `conf/` DIRECTORY (from the directory entry — a files-only listing at any depth cannot prove a directory absent: `conf/nested/x` sits at depth 4) AND the remote record is absent or complete-and-agreed. This is every box as seen from every machine but its creator: `new_box` pushes an empty `conf/` that rclone records but never creates |
 | CONF, any other asymmetry (local dir without record, record without dir) | needed |
 | any part, evaluating the box raised | needed, exception printed to stderr; the pass continues |
@@ -127,29 +132,80 @@ Unchanged from v3: `closure(DATA) = {META, CONF, DATA}`, `closure(CONF) =
 {CONF}`, `closure(META) = {META}`. `--skip-unchanged` covers the whole box;
 `--skip-unchanged-meta` is the META-only form.
 
-### Baseline production (v5)
+### Baseline production (v5, after round 2)
 
-1. **Pull bless**: the post-transfer tree is FINGERPRINTED FIRST, then
-   `rclone check` (directory) or the file's mtime against the pull start
-   (single file) validates it, then that same fingerprint is blessed. v4 ran
-   the check first and blessed a fingerprint taken after it; a write landing
-   between the two was blessed, read SYNCED, and was deleted by the next
-   ordinary pull (reproduced by the review).
-2. **`rclone_check` is strict**: rclone counts every difference as an "error
-   while checking", so an "errors" count EXCEEDING "differences found", or a
-   `! ` line, means part of the tree was never enumerated and the answer is
-   not an equality certificate. The old rule read "0 differences, 1 error,
-   one `= ` line" as answered-and-equal.
-3. The non-owner probe-clean baseline is fingerprinted before the probe
-   (unchanged from v4); the pull adopts the pre-transfer record (unchanged).
+Every comparison that certifies a tree goes through
+`_utils.rclone_would_transfer`: a `--dry-run` sync (or `copyto` for a
+single file) with `--use-json-log` and every logging setting pinned on the
+command line, reading rclone's structured `skipped` field and requiring the
+run's final statistics line as evidence the channel was intact. It answers
+"would a transfer move bytes" by rclone's own size-and-modtime comparison at
+listing cost; a same-size file whose modtime differs costs rclone one hash of
+THAT file (on SFTP, one remote exec), and a modtime-only difference with
+equal content is not a transfer. `rclone check` is gone from production: it
+hashed every file, one remote exec each on the storage box.
+
+1. **Pull bless**: the post-transfer tree is FINGERPRINTED FIRST, then a
+   dry-run pull (directory) or dry-run `copyto` (single file) validates it,
+   then that same fingerprint is blessed. v4 ran the check first and blessed
+   a fingerprint taken after it; a write landing between the two was blessed
+   and later deleted (reproduced). The single-file guard used to be the
+   file's mtime against the pull start, which an mtime-preserving replacement
+   with a different size passed (reproduced); the dry run sees the size.
+2. **Every SYNCED bless verifies** (`_fingerprint.verify_then_bless`): v0.8.3
+   blessed META and CONF on the fallback verdict alone, and round 2
+   reproduced why that is not enough — a deletion racing a pull is refused a
+   baseline (correctly), the next verdict comes off the mtime fallback (which
+   cannot see a deletion), and an unverified bless recorded the divergent
+   tree as agreed. Now DATA, CONF and META all pay one dry-run comparison
+   before their first baseline, and a divergence WARNS on every pass instead.
+3. The non-owner probe-clean baseline is fingerprinted before the probe; the
+   pull adopts the pre-transfer record; `sync_missing_boxmetas` reads each
+   META record before its transfer.
+
+### The push's incomplete record (round 2)
+
+A push writes its incomplete record to the remote FIRST, then locally. Round
+1 asked for the reverse (a remote write that raised but had landed left
+"incomplete sync from another machine", a wedge); round 2 reproduced that the
+reverse is worse: a local-only incomplete record reads as an interrupted
+PULL, and the automatic retry pulled the remote over unpushed work and purged
+the backup. So the order stays remote-first and the machine-local sidecar
+`<part>.inflight.json` names the ULID BEFORE the remote write; a remote
+incomplete record whose ULID the sidecar names is this machine's own, and
+`_can_safely_retry_incomplete` lets the push retry. Both prefixes (landed /
+not landed) are tested end to end.
+
+### Stated limits
+
+- **rclone's comparison is the transport's comparison.** A same-size edit
+  whose modtime stays within the backend's precision window of the remote
+  copy (one second on SFTP) is invisible to the dry run — and to `rclone
+  sync` itself: a push could not carry it either. The fingerprint (local,
+  nanosecond) may see it and read NEEDS_PUSH; the push then transfers nothing
+  and re-records the baseline. Round 2 reproduced this with a deterministic
+  half-second mtime on a temporary SFTP server; it is not something boxyard
+  can see without hashing every file, which is the cost this design removes.
+- **The oracle synthesizes each sidecar from the record it has just read**,
+  so by construction the two agree; it is evidence for the placement gate,
+  the directory signals, the record gates and baseline coverage against 632
+  real boxes, and says nothing about agreement semantics or races — those are
+  the injected-race tests' job.
 
 ### What it costs
 
-Idle pass: `boxes/` ~13 s + hashed `sync_records/` ~142 s + tombstones, plus
-a local fingerprint per included part. **≈ 3 min is the hypothesis to measure
-on the first rollout pass, not to quote before it.** Per pushed part nothing
-is added on the remote (the md5 is computed from the bytes written); per
-pulled directory part one `rclone check`. A needed box fingerprints twice.
+Idle pass: `boxes/` ~13–33 s + hashed `sync_records/` ~142–173 s + tombstones
++ one `rclone cat` per restic box, plus a local fingerprint per included
+part. **≈ 3 min is the hypothesis to measure on the first rollout pass, not
+to quote before it.** Per pushed part nothing is added on the remote (the
+md5 is computed from the bytes written); per pulled part one dry-run
+comparison (two listings, plus one hash per same-size file whose modtime
+differs). A needed box fingerprints twice. A pass over a named selection
+(`--box`) hashes only those boxes' record directories. The hashed listing
+has its own timeout (`RCLONE_HASHED_LISTING_TIMEOUT`, 30 min): record
+directories outlive their boxes, so the set only grows, and growth must
+degrade to "slow" before "silently off"; a listing that fails or times out
+syncs everything and says so. `--explain-skip` prints every box's verdict.
 
 ### Upgrade
 
@@ -189,7 +245,19 @@ machines, no interaction with machines on older versions.
    The listing's conf-dir signal agreed with `remote_path_exists` on all 632;
    the real path raised on none. Listings measured during the run, with the
    test suite competing: `boxes/` 33 s, hashed `sync_records/` 172 s.
-3. **Second adversarial code review** of v5 by both reviewers.
+3. **Second adversarial code review** of v5 by both reviewers — DONE
+   2026-09-25 on `94b7b00`. Neither found a wrong skip in the identity half.
+   Reproduced and fixed in the following commit ("round-2 corrections"):
+   the local-first incomplete record turning an interrupted push into a
+   destructive pull (both); rclone's logging environment silencing the dry
+   run (pi); excluded DATA with a remote tree but no record, plain and restic
+   (both); the unverified META/CONF bless after a refused pull baseline (pi);
+   the single-file mtime guard (pi); a FILE at a directory's path (pi); the
+   restic pointer still identified by `(ModTime, Size)` (claude); plus
+   `--explain-skip`, cadence records for proven boxes, a selection-scoped
+   hashed listing, its own timeout, and the removal of the now-dead
+   `rclone_check`. Accepted as a stated limit: the backend precision window
+   (pi F4, above).
 4. **Staged rollout**: every machine gets the same version (no version
    barrier is needed, but the first filtered pass on each is a full pass);
    mymain first, two passes watched, then the fleet.

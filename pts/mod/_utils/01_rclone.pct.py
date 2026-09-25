@@ -524,82 +524,6 @@ show_doc(this_module.rclone_sync)
 
 # %%
 #|export
-async def rclone_check(
-    rclone_config_path: str,
-    source: str,
-    source_path: str,
-    dest: str,
-    dest_path: str,
-    include: list[str] = [],
-    exclude: list[str] = [],
-    filter: list[str] = [],
-    include_file: str | None = None,
-    exclude_file: str | None = None,
-    filters_file: str | None = None,
-) -> tuple[bool, list[str]]:
-    """
-    Compare `source` against `dest` under the given filters.
-
-    Returns `(answered, differing_paths)`. `answered` is False when the check
-    could not be performed at all (an unreachable remote, a bad config) — the
-    caller must not read that as "no differences", because rclone exits
-    non-zero both for "found differences" and for "could not look".
-    """
-    cmd = _rclone_cmd_helper(
-        "check",
-        rclone_config_path,
-        source,
-        source_path,
-        dest,
-        dest_path,
-        include,
-        exclude,
-        filter,
-        include_file,
-        exclude_file,
-        filters_file,
-        False,  # dry_run is meaningless for a read-only comparison
-        False,  # progress
-    )
-    cmd += ["--combined", "-"]
-    ret_code, stdout, stderr = await run_cmd_async(cmd)
-
-    lines = [line for line in stdout.splitlines() if line.strip()]
-    differing = [line[2:] for line in lines if not line.startswith("= ")]
-
-    # A positive answer needs a COMPLETE comparison, not merely some output.
-    # Measured (rclone v1.75.1):
-    #
-    #   identical            exit 0, `= ` lines (none when both sides are empty)
-    #   differences only     exit 1, `- * +` lines, "2 differences found",
-    #                        "2 errors while checking"  <- each difference IS
-    #                        counted as an error
-    #   partial enumeration  exit 1, some lines, "2 differences found",
-    #                        "3 errors while checking"  <- one more than the
-    #                        differences: the unreadable directory
-    #   could not look       exit 1, no lines, no "differences found" notice
-    #
-    # So "errors while checking" exceeding "differences found" -- or a `! `
-    # line, a file that could not be compared -- means part of the tree was
-    # never enumerated, and the answer is NOT an equality certificate. The old
-    # rule (`ret_code != 0 and not lines`) read the reviewer's case ("0
-    # differences found, 1 errors while checking", one `= ` line) as
-    # answered-and-equal; the pull-baseline bless now rests on this answer.
-    import re as _re
-
-    if ret_code == 0:
-        return True, differing
-    _diffs = _re.search(r"(\d+) differences found", stderr)
-    _errors = _re.search(r"(\d+) errors while checking", stderr)
-    if not lines and _diffs is None:
-        return False, differing
-    if any(line.startswith("! ") for line in lines):
-        return False, differing
-    if _errors is not None and (_diffs is None or int(_errors.group(1)) > int(_diffs.group(1))):
-        return False, differing
-    return True, differing
-
-
 async def rclone_would_transfer(
     rclone_config_path: str,
     source: str,
@@ -612,6 +536,7 @@ async def rclone_would_transfer(
     include_file: str | None = None,
     exclude_file: str | None = None,
     filters_file: str | None = None,
+    single_file: bool = False,
 ) -> tuple[bool, list[str]]:
     """
     Would `rclone sync source dest` move anything? -- by rclone's OWN
@@ -642,9 +567,23 @@ async def rclone_would_transfer(
     holds. That is the content-based answer `rclone check` gave, at listing
     cost plus one hash per touched file instead of one per file. Directory
     notices are ignored for the same reason: the fingerprint is over files.
+
+    `single_file=True` asks `copyto` instead of `sync`: a part that is one
+    file (META's boxmeta.toml) has no directory to sync, and rclone refuses a
+    file as a sync source.
+
+    The answer must not depend on how a person configured rclone's LOGGING:
+    `RCLONE_LOG_LEVEL=ERROR`, `RCLONE_QUIET`, or `RCLONE_LOG_FILE` in the
+    environment each removed the notices this relies on and turned a
+    divergent dry run into "nothing would move" (reproduced by the
+    implementation review). Every logging setting is therefore pinned on the
+    command line, which overrides the environment (measured), the structured
+    `skipped` field is read rather than English text, and the run's final
+    statistics line is required as positive evidence that the output channel
+    was intact -- no statistics, no answer.
     """
     cmd = _rclone_cmd_helper(
-        "sync",
+        "copyto" if single_file else "sync",
         rclone_config_path,
         source,
         source_path,
@@ -659,26 +598,37 @@ async def rclone_would_transfer(
         True,  # dry_run
         False,  # progress
     )
-    cmd += ["--use-json-log"]
+    cmd += [
+        "--use-json-log",
+        "--log-level", "NOTICE",
+        "--stats-log-level", "NOTICE",
+        "--log-file", "",
+        "--quiet=false",
+    ]
     ret_code, stdout, stderr = await run_cmd_async(cmd)
 
     moving: list[str] = []
+    saw_stats = False
     for line in stderr.splitlines():
         try:
             entry = json.loads(line)
         except ValueError:
             continue
         msg = entry.get("msg", "")
+        if "Elapsed time" in msg:
+            saw_stats = True
+        kind = entry.get("skipped")
+        if not isinstance(kind, str):
+            # Older rclone: the kind is only in the text.
+            if msg.startswith("Skipped ") and "as --dry-run is set" in msg:
+                kind = msg[len("Skipped "):].split(" as --dry-run")[0]
+            else:
+                continue
         obj = entry.get("object")
-        if (
-            msg.startswith("Skipped ")
-            and "as --dry-run is set" in msg
-            and "modification time" not in msg
-            and "directory" not in msg
-            and obj
-        ):
-            moving.append(obj)
-    if ret_code != 0:
+        if "modification time" in kind or "directory" in kind or not obj:
+            continue
+        moving.append(obj)
+    if ret_code != 0 or not saw_stats:
         return False, moving
     return True, moving
 

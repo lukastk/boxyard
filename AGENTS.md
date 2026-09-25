@@ -148,9 +148,18 @@ result;
   after an upgrade is a full pass that writes the sidecars. Design and its
   review history (v3/v4 markers withdrawn): `_dev/FULL-PASS-SKIP-DESIGN-NOTE.md`.
 - **Dry-run comparison, never `rclone check`**: "would a push/pull move
-  anything" is answered by `_utils.rclone_would_transfer` (a `--dry-run` sync
-  with `--use-json-log`; modtime-only differences do not count). `rclone check`
-  hashes every file, and on the SFTP box that is one remote exec per file.
+  anything" is answered by `_utils.rclone_would_transfer` (a `--dry-run` sync,
+  or `copyto` for a single file, with `--use-json-log` and every logging flag
+  pinned on the command line; modtime-only differences do not count). Every
+  first baseline for DATA, CONF and META is blessed only after it says nothing
+  would move (`_fingerprint.verify_then_bless`). `rclone check` was removed:
+  it hashed every file, one remote exec each on the SFTP box.
+- **In-flight push sidecar**: a push writes `<part>.inflight.json` (the
+  incomplete record's ULID) BEFORE its remote record write, remote first, then
+  local. A remote incomplete record whose ULID the sidecar names is this
+  machine's own interrupted push and is retried; never write the local
+  incomplete record first — a local-only incomplete record reads as an
+  interrupted pull and the retry pulls over unpushed work.
 - **Pull blessing**: a directory pull fingerprints the post-transfer tree, then
   records that fingerprint as the baseline only if a dry-run pull would move
   nothing (a racing local write, deletion or rename during the transfer must not
