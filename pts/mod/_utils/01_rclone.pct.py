@@ -1170,6 +1170,42 @@ async def rclone_delete_absent_ok(
         raise RcloneFailed(cmd, ret_code, stdout, stderr)
     return True
 
+
+async def rclone_delete_matching(
+    rclone_config_path: str,
+    dest: str,
+    dest_dir: str,
+    filter_rules: list[str],
+) -> None:
+    """
+    Delete the files DIRECTLY under `dest_dir` that ONE ordered filter list
+    selects -- `rclone delete --max-depth 1` with `--filter` rules only.
+
+    A single `--filter` list on purpose: `--include X --exclude Y` is
+    order-indeterminate (rclone logs an ERROR saying so), and measured on
+    v1.75.0 it deleted the file the `--exclude` named. First match wins in a
+    filter list, so "- keep-this / + name.* / - **" is exact. Used to retire
+    the previous generation markers beside a sync record. Raises on failure --
+    a leftover marker reads as "identity unknown" to the skip filter, so a
+    failed cleanup must be visible, never a silent extra file.
+
+    A `dest_dir` that does not exist is "nothing to delete", not a failure:
+    the first record write of a box sweeps a directory that is about to be
+    created. `rclone delete` reports it through `RCLONE_ABSENT_EXIT_CODES`
+    (measured: exit 3, "directory not found"), the same convention
+    `rclone_delete_absent_ok` reads.
+    """
+    dest_str = f"{dest}:{dest_dir}" if dest else dest_dir
+    cmd = [get_rclone_binary(), "delete", "--config", rclone_config_path, "--max-depth", "1"]
+    for rule in filter_rules:
+        cmd += ["--filter", rule]
+    cmd.append(dest_str)
+    ret_code, stdout, stderr = await run_cmd_async(cmd)
+    if ret_code in RCLONE_ABSENT_EXIT_CODES:
+        return
+    if ret_code != 0:
+        raise RcloneFailed(cmd, ret_code, stdout, stderr)
+
 # %%
 _path = setup_test_folder("delete")
 (_path / "my_remote" / "to_delete.txt").write_text("delete me")

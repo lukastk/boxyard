@@ -456,7 +456,7 @@ async def _sync(
 from datetime import datetime, timezone
 
 from boxyard._models import SyncRecord
-from boxyard._utils import check_last_time_modified, literal_exclude_names
+from boxyard._utils import check_last_time_modified, literal_exclude_names, rclone_check
 from boxyard._fingerprint import filter_signature, tree_fingerprint, write_base
 
 if check_interrupted():
@@ -490,11 +490,10 @@ rec = SyncRecord.create(syncer_hostname=syncer_hostname, sync_complete=False)
 backup_name = str(rec.ulid)
 
 if sync_direction == SyncDirection.PULL:
-    # Taken BEFORE the transfer starts. Files the pull writes carry the
-    # PUSHER's (older) mtimes, so anything under the box newer than this
+    # Taken BEFORE the transfer starts, for the single-file guard below: a
+    # pulled file carries the PUSHER's (older) mtime, so a file newer than this
     # moment was written locally while the transfer ran -- and is therefore
-    # not known to be on the remote. The baseline write below refuses to
-    # bless such a tree.
+    # not known to be on the remote.
     _pull_started_at = datetime.now(timezone.utc)
 
     # Save the sync record on local to signify an ongoing sync
@@ -519,23 +518,24 @@ if sync_direction == SyncDirection.PULL:
         if preserve_exec_perms and sync_path_is_dir:
             apply_exec_manifest(local_path)
 
-        # Retrieve the remote sync record and save it locally
-        rec = await SyncRecord.rclone_read(
-            rclone_config_path, remote, remote_sync_record_path
-        )
+        # Adopt the remote record the PRE-transfer status read -- never one
+        # re-read after the transfer. An owner push landing between the
+        # transfer and a post-transfer read would be adopted with the
+        # PREVIOUS revision's downloaded tree: local record U2, tree U1,
+        # baseline blessing U1 as U2 -- a lying baseline (found by the
+        # full-pass-skip design review). With the pre-transfer record, a
+        # remote that moved meanwhile simply reads NEEDS_PULL again next pass
+        # and pulls once more, transferring nothing -- the loud direction.
+        rec = remote_sync_record
         if rec is None:
-            # Reachable if the remote record is deleted between the status
-            # probe and here -- another machine running `delete`, say. Without
-            # this guard the next line raises `AttributeError: 'NoneType'
-            # object has no attribute 'rclone_save'`, which tells the user
-            # nothing about what actually happened.
-            #
-            # The local sync record is deliberately left INCOMPLETE, so the
+            # NEEDS_PULL implies the remote record existed at status time;
+            # a forced pull of a recordless remote is the one way here. The
+            # local sync record is deliberately left INCOMPLETE, so the
             # condition is SYNC_FROM_REMOTE_INCOMPLETE next time and this
             # machine can safely retry the pull.
             raise SyncFailed(
-                f"Pull succeeded but the remote sync record at "
-                f"'{remote_sync_record_path}' has disappeared. The local sync "
+                f"Pull succeeded but there was no remote sync record at "
+                f"'{remote_sync_record_path}' to adopt. The local sync "
                 f"record is left incomplete; retry the pull."
             )
         # Baseline BEFORE the record, so a crash between the two leaves no
@@ -543,27 +543,61 @@ if sync_direction == SyncDirection.PULL:
         # The tree has already been rewritten by the pull and by
         # `apply_exec_manifest`, so this describes what is actually on disk.
         #
-        # -- UNLESS something was written into the box while the pull ran.
-        # Such a write is on disk but NOT on the remote; blessing it into the
-        # baseline reads SYNCED on the next check, and the pull after that
+        # -- UNLESS something changed inside the box while the pull ran.
+        # Such a change is on disk but NOT on the remote; blessing it into the
+        # baseline reads SYNCED on the next check, and under a skip filter the
+        # box is then put aside for ever with local and remote disagreeing. A
+        # racing WRITE is worse still: the pull after the next remote advance
         # SILENTLY DELETES it (rclone sync removes extraneous local files, and
-        # the sync backup that momentarily holds it is purged on success). The
-        # old mtime test caught exactly this case -- the racing write's mtime
-        # exceeded the adopted record's timestamp -- so blessing it would be a
-        # regression, not just a gap. Refusing to write leaves "no usable
-        # baseline", i.e. the old test, which keeps the box loud until the
-        # write is pushed. A pusher with a fast clock can trip this refusal
-        # spuriously; that costs staying on the old test for this box, never
-        # a wrong answer.
+        # the sync backup that momentarily holds it is purged on success).
+        #
+        # For a DIRECTORY the guard is a remote comparison, not a clock: bless
+        # only when `rclone check` proves local and remote equal under the same
+        # filters the transfer used -- the standard `_verify_then_bless_data`
+        # already applies. No timestamp gate can do this job: the newest FILE
+        # mtime misses a racing deletion, rename, chmod or symlink edit (found
+        # by the full-pass-skip design review), and a ctime/directory-mtime
+        # gate is tripped by the pull's OWN writes, so it refuses every pull
+        # (measured: not one pull recorded a baseline). The check is one
+        # listing of a box that just transferred, which is rare -- and cheaper
+        # than the alternative, where the box sits on the mtime fallback and
+        # `_verify_then_bless_data` pays that listing on the next pass anyway.
+        # Not answered (unreachable remote) is not proof, so no baseline.
+        #
+        # For a single FILE (META's boxmeta.toml) the file's own mtime against
+        # the pull's start is exact enough: an edit moves it, a deletion leaves
+        # nothing to fingerprint. A pusher with a fast clock can trip this
+        # spuriously; that costs staying on the old test for this file, never a
+        # wrong answer.
+        #
+        # What neither guard sees, stated rather than hidden: an exec-bit-only
+        # change racing a directory pull is blessed with the bit as it landed.
         _sig = filter_signature(exclude_path)
-        _newest = check_last_time_modified(
-            local_path, exclude_names=literal_exclude_names(exclude_path)
-        )
-        if _newest is not None and _newest > _pull_started_at:
+        if sync_path_is_dir:
+            _answered, _differing = await rclone_check(
+                rclone_config_path=rclone_config_path,
+                source="",
+                source_path=local_path,
+                dest=remote,
+                dest_path=remote_path,
+                include=include or [],
+                exclude=exclude or [],
+                filter=filter or [],
+                include_file=include_path,
+                exclude_file=exclude_path,
+                filters_file=filters_path,
+            )
+            _tree_is_what_the_remote_holds = _answered and not _differing
+        else:
+            _newest = check_last_time_modified(
+                local_path, literal_exclude_names(exclude_path)
+            )
+            _tree_is_what_the_remote_holds = _newest is None or _newest <= _pull_started_at
+        if not _tree_is_what_the_remote_holds:
             if verbose:
                 print(
-                    "Not recording a sync baseline: files under the box "
-                    "changed while the pull ran; the next sync reconciles them."
+                    "Not recording a sync baseline: the box changed while the "
+                    "pull ran; the next sync reconciles it."
                 )
         else:
             _record_baseline(

@@ -295,84 +295,23 @@ def test_a_meta_only_pass_still_skips(two_machines):
 
 
 # %% [markdown]
-# ## multi-sync's own listing has the same defect
+# ## multi-sync's own listing keys by (box, filename)
 #
-# Its listing keys by BOX, so a second file at depth 2 does not merely come back
-# — it OVERWRITES the boxmeta's entry. The META check record is then stamped with
-# the stray's `(ModTime, Size)`, and the box can never match on a later pass:
-# the optimisation silently switches itself off.
+# A second depth-2 file beside the boxmeta must not disturb the skip filter.
+# The META verdict comes from the `sync_records/` listing (record identity)
+# and the fingerprint baseline, and the `boxes/` listing is projected per
+# filename, so a stray `data.snapshot` on a plain box is simply ignored.
 
 # %%
 #|export
-def test_the_meta_stamp_describes_the_boxmeta_not_a_stray(two_machines):
-    """
-    Observed through the check record, which is what the next pass compares.
-    The stray is given a deliberately different size so the two are
-    distinguishable.
-    """
-    from boxyard._sync_policy import read_check_record
-
-    stray = two_machines["box_root"] / "data.snapshot"
-    stray.write_text("x" * 500 + "\n")
-    boxmeta_size = (
-        two_machines["box_root"] / const.BOX_METAFILE_REL_PATH
-    ).stat().st_size
-    assert stray.stat().st_size != boxmeta_size, "precondition: sizes differ"
-
-    cpB = two_machines["cpB"]
-    run(sync_missing_boxmetas(config_path=cpB, verbose=False))
-    _multi_sync(cpB, "-c", "meta")
-    _multi_sync(cpB, "-c", "meta", "--skip-unchanged-meta")
-
-    record = read_check_record(
-        get_config(cpB), two_machines["idx"], BoxPart.META
-    )
-    assert record is not None
-    assert record["remote_size"] == boxmeta_size, (
-        f"the META stamp was taken from the stray file "
-        f"({record['remote_size']} vs the boxmeta's {boxmeta_size})"
-    )
-
-
 def test_a_box_with_a_stray_is_still_skippable_for_meta(two_machines):
-    """
-    The consequence that matters: with the stamp taken from the right file, the
-    box is provably unchanged on the next pass. With it taken from the stray,
-    it never is.
-    """
-    from boxyard._sync_policy import meta_boxes_needing_sync
-    from boxyard._models import get_boxyard_meta as _meta
-
+    """Through the real CLI: with the stray in place, a settled box is dropped
+    from a `-c meta --skip-unchanged-meta` pass."""
     (two_machines["box_root"] / "data.snapshot").write_text("x" * 500 + "\n")
 
     cpB = two_machines["cpB"]
     run(sync_missing_boxmetas(config_path=cpB, verbose=False))
     _multi_sync(cpB, "-c", "meta")
-    _multi_sync(cpB, "-c", "meta", "--skip-unchanged-meta")
-
-    config = get_config(cpB)
-    import json
-    import subprocess
-
-    from boxyard._utils import get_rclone_binary
-
-    out = subprocess.run(
-        [
-            get_rclone_binary(), "lsjson", "--config",
-            str(config.rclone_config_path), "--files-only", "--recursive",
-            "--max-depth", "2",
-            "--filter", f"+ /*/{const.BOX_METAFILE_REL_PATH}", "--filter", "- **",
-            f"{two_machines['remote_name']}:"
-            f"{config.storage_locations[two_machines['remote_name']].store_path}/"
-            f"{const.REMOTE_BOXES_REL_PATH}",
-        ],
-        capture_output=True, text=True,
-    )
-    listing = {
-        Path(e["Path"]).parts[0]: (e.get("ModTime"), e.get("Size"))
-        for e in json.loads(out.stdout or "[]")
-    }
-    _, skippable = meta_boxes_needing_sync(
-        config, _meta(config).box_metas, listing
-    )
-    assert two_machines["idx"] in skippable
+    result = _multi_sync(cpB, "-c", "meta", "--skip-unchanged-meta", "--print-skipped")
+    assert two_machines["idx"] not in result.output, result.output
+    assert "no box was skipped" not in result.output

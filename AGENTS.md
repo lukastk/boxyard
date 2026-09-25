@@ -132,6 +132,23 @@ result;
 - **index_name**: `{box_id}__{name}` - unique identifier for each box
 - **Storage locations**: local filesystem or rclone remotes (S3, SFTP, etc.)
 - **Sync records**: Track sync state between local/remote in `~/.boxyard/sync_records/`
+- **Sync-record markers (v0.8.4)**: every REMOTE record write also publishes a
+  zero-byte `<part>.rec.<ULID>` beside `<part>.rec`, so one bulk listing of
+  `sync_records/` names each part's current record identity. Written by
+  `SyncRecord.rclone_save` in the order sweep-old-markers, record, marker (a
+  crash at any point leaves no marker, never a stale one); parsed strictly by
+  `_models.parse_record_marker`; projected by `_sync_policy.project_record_listing`.
+  `multi-sync --skip-unchanged` (`_sync_policy.boxes_needing_sync_full`) drops a
+  box from a pass only when every part in the closure of what it would execute
+  (`closure(DATA) = {META, CONF, DATA}`) has remote identity == this machine's
+  complete local record AND the local tree matches the fingerprint baseline bound
+  to it. Nothing is stamped except the restic pointer check. Design and its
+  review history: `_dev/FULL-PASS-SKIP-DESIGN-NOTE.md`.
+- **Pull blessing**: a directory pull records its fingerprint baseline only after
+  `rclone check` proves local == remote (a racing local write, deletion or rename
+  during the transfer must not be blessed); a single-file pull uses the file's
+  mtime against the pull start. A timestamp/ctime gate cannot do this job — the
+  pull's own writes trip it.
 - **Write ownership (single-writer, v0.5.2)**: `BoxMeta.write_owner` names the one
   machine allowed to push a box's DATA/CONF. `write_owner is None` means UNOWNED and is
   fully unrestricted — exactly the pre-feature behaviour — so ownership is opt-in per box

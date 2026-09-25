@@ -758,6 +758,20 @@ try:
             )
 
         if _condition == SyncCondition.NEEDS_PUSH:
+            # Fingerprint BEFORE the probe (the same rule as
+            # `_verify_then_bless_data`): the baseline written on a clean probe
+            # must describe the tree the probe judged, not a tree edited while
+            # the remote check ran -- an edit landing in that window would
+            # otherwise be blessed as already on the remote and never surface as
+            # WRITE_DENIED (found by the full-pass-skip design review).
+            _bl_exclude = probe_exclude_path
+            _bl_sig = filter_signature(_bl_exclude)
+            _bl_fp = tree_fingerprint(
+                Path(helper_kwargs["local_path"]),
+                rclone_config_path=config.rclone_config_path,
+                exclude_file=_bl_exclude,
+                filter_sig=_bl_sig,
+            )
             # `needs_push` is not evidence of a real change: it comes from a
             # tree walk, so a single `.DS_Store` sets it even though the file
             # can never be transferred. Ask what a push would ACTUALLY move.
@@ -799,14 +813,6 @@ try:
                 # for ever -- the exact non-convergence this write exists to
                 # prevent. A default here (this line used to fall back to
                 # `config.default_rclone_exclude_path`) was that bug for CONF.
-                _bl_exclude = probe_exclude_path
-                _bl_sig = filter_signature(_bl_exclude)
-                _bl_fp = tree_fingerprint(
-                    Path(helper_kwargs["local_path"]),
-                    rclone_config_path=config.rclone_config_path,
-                    exclude_file=_bl_exclude,
-                    filter_sig=_bl_sig,
-                )
                 if _bl_fp is not None and _status.local_sync_record is not None:
                     write_base(
                         helper_kwargs["local_sync_record_path"],

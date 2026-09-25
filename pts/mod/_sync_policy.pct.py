@@ -504,67 +504,16 @@ def remote_looks_unchanged(
     return recorded_modtime == remote_modtime and recorded_size == remote_size
 
 # %% [markdown]
-# ## The META skip filter ("B-prime")
+# ## The restic DATA skip filter
 #
-# The fast META loop's cost is dominated by asking the remote about each box:
-# the status probe is 2 remote calls per box per part, measured at 0.67s each,
-# so 590 boxes is ~6.6 min at concurrency 2. One BULK listing answers the same
-# question for every box at once and already runs in about a minute.
-#
-# So: ask once, in bulk, which boxes could possibly need work, and put the rest
-# aside. Everything that survives goes through the existing `sync_box` META
-# path unchanged -- nothing here reimplements a sync.
-#
-# The two sides are tested differently ON PURPOSE:
-#
-# - **Remote**: `ModTime` + `Size` from the listing, against what was recorded
-#   at the last check. Size matters as much as ModTime, because rclone DOES
-#   preserve modification times across a push.
-# - **Local**: the on-disk boxmeta compared by CONTENT against `meta.base.toml`,
-#   the copy the two sides last agreed on. Content rather than mtime, because
-#   the question is "is there an edit to push", and a file rewritten with
-#   identical content is not one.
+# The one remaining `(ModTime, Size)` filter: a restic box's remote signal is
+# its snapshot POINTER, listed in bulk beside the boxmetas. The stamp it is
+# compared against is written from the PRE-pass listing (see `multi-sync`), so a
+# push that lands after the listing mismatches next pass -- the loud direction.
+# META, CONF and plain DATA are proven by record identity instead, below.
 
 # %%
 #|export
-def local_meta_differs_from_base(
-    config: boxyard.config.Config, box_meta: BoxMeta
-) -> bool:
-    """
-    Whether this machine holds a boxmeta edit the remote has not seen.
-
-    No base means "cannot tell", which is reported as DIFFERS -- the direction
-    that costs a sync rather than skipping one. A box that has not synced since
-    `meta.base.toml` was introduced simply has no base yet.
-    """
-    from boxyard._models import read_meta_base
-
-    base = read_meta_base(config, box_meta)
-    if base is None:
-        return True
-
-    on_disk_path = box_meta.get_local_part_path(config, BoxPart.META)
-    if not on_disk_path.exists():
-        return True
-    try:
-        # The identity fields are not IN boxmeta.toml -- they are encoded in the
-        # index name -- so they are supplied from the registry entry, which is
-        # where the index name came from in the first place.
-        on_disk = BoxMeta.load_from_path(
-            on_disk_path,
-            creation_timestamp_utc=box_meta.creation_timestamp_utc,
-            box_subid=box_meta.box_subid,
-            name=box_meta.name,
-            storage_location=box_meta.storage_location,
-        )
-    except Exception:
-        # Unreadable local boxmeta: let the real sync path deal with it and
-        # report properly, rather than silently skipping the box here.
-        return True
-
-    return base.model_dump() != on_disk.model_dump()
-
-
 def data_boxes_needing_sync(
     config: boxyard.config.Config,
     box_metas: list[BoxMeta],
@@ -573,14 +522,14 @@ def data_boxes_needing_sync(
     """
     Split boxes into (needs a DATA sync, provably does not).
 
-    The DATA sibling of `meta_boxes_needing_sync`, and it rides the SAME bulk
-    listing: `boxes/<box>/data.snapshot` sits at depth 2 beside `boxmeta.toml`,
-    so one `rclone lsjson` answers both questions and the DATA half costs no
-    additional remote calls at all.
+    Rides the bulk `boxes/` listing: `boxes/<box>/data.snapshot` sits at depth
+    2 beside `boxmeta.toml`, so the listing `multi-sync` already takes answers
+    this too.
 
-    Only RESTIC boxes can be skipped. A plain box's DATA has no cheap remote
-    signal -- that is the whole reason its no-op sync costs 30 s -- so it always
-    goes through the real path, exactly as today.
+    Only RESTIC boxes are judged here: a plain box's DATA is proven by record
+    identity plus fingerprint in `plain_data_provably_unchanged`, and
+    `boxes_needing_sync_full` routes each format to its own predicate. A plain
+    box handed to this function is always reported as needed.
 
     Two conditions, both cheap:
 
@@ -656,38 +605,278 @@ def data_boxes_needing_sync(
 
     return needed, skippable
 
+# %% [markdown]
+# ## The full-pass skip: every part provable from bulk listings
+#
+# `_dev/FULL-PASS-SKIP-DESIGN-NOTE.md` is the design; this is its code. A box
+# may be put aside for a pass only when EVERY part in the closure of what the
+# pass would execute is provably unchanged, and "provable" means:
+#
+# - the remote record's identity is known from a GENERATION MARKER in the
+#   listing and equals this machine's complete local record's ULID (see
+#   `_models.parse_record_marker`), and
+# - the local tree matches the fingerprint baseline bound to that same ULID
+#   (`local_tree_differs(...) is False` -- `None`, UNKNOWN, is never proof).
+#
+# Nothing is stamped. The comparison is recomputed from a live listing and live
+# local state on every pass, which is what makes it immune to the pass-end race
+# that two independent reviews reproduced in the stamp-based filters above.
 
-def meta_boxes_needing_sync(
+# %%
+#|export
+from boxyard._models import parse_record_marker
+
+
+# What a bulk listing of `sync_records/` tells us about one box.
+@dataclass
+class RemoteRecordView:
+    """Per box: which `<part>.rec` files exist, and each part's marker ULIDs."""
+
+    records: set[str] = field(default_factory=set)
+    markers: dict[str, list[str]] = field(default_factory=dict)
+
+    def identity(self, part: BoxPart) -> str | None:
+        """The remote record ULID for `part`, or None when it is not KNOWN --
+        no marker, or more than one (a crash between marker and sweep)."""
+        ulids = self.markers.get(part.value, [])
+        return ulids[0] if len(ulids) == 1 else None
+
+
+def project_record_listing(entries: list[dict[str, Any]] | None) -> dict[str, RemoteRecordView]:
+    """
+    {index_name: RemoteRecordView} from ONE `rclone lsjson` over
+    `<store>/sync_records/`, depth 2, files only.
+
+    Exact keying: a path must have exactly two components, and the filename
+    must be either `<part>.rec` or a well-formed marker. rclone's
+    `<name>.<hash>.partial` upload residue, sidecars copied by hand, and
+    anything deeper all fall through -- never keyed as a part.
+    """
+    view: dict[str, RemoteRecordView] = {}
+    for entry in entries or []:
+        parts = Path(entry["Path"]).parts
+        if len(parts) != 2:
+            continue
+        box, name = parts
+        if name.endswith(".rec") and name.count(".") == 1:
+            view.setdefault(box, RemoteRecordView()).records.add(name[: -len(".rec")])
+            continue
+        parsed = parse_record_marker(name)
+        if parsed is not None:
+            part, ulid = parsed
+            view.setdefault(box, RemoteRecordView()).markers.setdefault(part, []).append(ulid)
+    return view
+
+
+def closure_of(parts: "list[BoxPart]") -> "set[BoxPart]":
+    """
+    The parts `sync_box` actually executes for a request. DATA drags META
+    (ownership is read from it) and CONF (its filters decide what DATA syncs)
+    along, so a `-c data` pass must prove all three before skipping a box --
+    a remote CONF edit would otherwise never reach this machine.
+    """
+    closure: set[BoxPart] = set(parts)
+    if BoxPart.DATA in closure:
+        closure |= {BoxPart.META, BoxPart.CONF}
+    return closure
+
+
+def _record_identity_and_tree_unchanged(
+    config: boxyard.config.Config,
+    box_meta: BoxMeta,
+    part: BoxPart,
+    remote_ulid: str | None,
+    exclude_file,
+) -> bool:
+    """The three gates every content-bearing part shares. See the module note."""
+    from boxyard._fingerprint import filter_signature, local_tree_differs
+    from boxyard._models import SyncRecord
+
+    if remote_ulid is None:
+        return False
+    rec_path = box_meta.get_local_sync_record_path(config, part)
+    try:
+        rec = SyncRecord.model_validate_json(rec_path.read_text())
+    except (OSError, ValueError):
+        return False
+    if not rec.sync_complete or str(rec.ulid) != remote_ulid:
+        return False
+    differs = local_tree_differs(
+        local_path=box_meta.get_local_part_path(config, part),
+        local_sync_record_path=rec_path,
+        local_sync_record_ulid=rec.ulid,
+        rclone_config_path=config.rclone_config_path,
+        exclude_file=exclude_file,
+        filter_sig=filter_signature(exclude_file),
+    )
+    return differs is False
+
+
+def meta_provably_unchanged(
+    config: boxyard.config.Config, box_meta: BoxMeta, view: RemoteRecordView | None
+) -> bool:
+    if view is None:
+        return False
+    return _record_identity_and_tree_unchanged(
+        config, box_meta, BoxPart.META, view.identity(BoxPart.META), None
+    )
+
+
+def conf_provably_unchanged(
+    config: boxyard.config.Config,
+    box_meta: BoxMeta,
+    view: RemoteRecordView | None,
+    remote_conf_dir_present: bool,
+) -> bool:
+    """
+    Two states with nothing to pull are provable without a signal, because
+    the real path answers SYNCED and transfers nothing for both (measured:
+    `get_sync_status` reads both-sides-absent as SYNCED whatever the records
+    say, and a pull whose source is missing returns silently):
+
+    - never-had-CONF: no record, no marker, nothing under the remote `conf/`,
+      no local record, no local directory;
+    - recorded-but-never-materialized: the remote holds a `conf.rec` but no
+      `conf/` directory, and this machine has neither. This is EVERY box
+      created by `new_box` as seen from every other machine: it pushes an
+      empty conf/, which rclone records but never creates on the remote. It
+      must not require a marker, since the bootstrap can only publish one for
+      a part this machine holds a record for -- so a remote written by an
+      older boxyard would never converge here.
+
+    A remote conf tree without its record is a loud ERROR on the real path
+    and must stay one; a local directory or record the remote does not have is
+    the real path's to push or warn about. Every other asymmetry goes there.
+    """
+    rec_path = box_meta.get_local_sync_record_path(config, BoxPart.CONF)
+    conf_dir = box_meta.get_local_part_path(config, BoxPart.CONF)
+    local_absent = not rec_path.exists() and not conf_dir.exists()
+    remote_has_record = view is not None and (
+        "conf" in view.records or bool(view.markers.get("conf"))
+    )
+    if local_absent and not remote_conf_dir_present:
+        return True
+    if local_absent or not remote_has_record or view is None:
+        return False
+    return _record_identity_and_tree_unchanged(
+        config, box_meta, BoxPart.CONF, view.identity(BoxPart.CONF), None
+    )
+
+
+def plain_data_provably_unchanged(
+    config: boxyard.config.Config, box_meta: BoxMeta, view: RemoteRecordView | None
+) -> bool:
+    """
+    Placement decides first, and by EXACT state -- `check_included()` is
+    false for MISSING and UNAVAILABLE too, which would have skipped an
+    unplugged removable root where the real path raises. EXCLUDED with nothing
+    on disk is provable with no signal (the real path could only answer
+    EXCLUDED); EXCLUDED with a tree sitting at the path is the real path's to
+    report; every other state keeps raising loudly through the real path.
+    """
+    from boxyard._checkout import LocalCheckoutState
+
+    state = box_meta.get_checkout_status(config).state
+    if state is LocalCheckoutState.EXCLUDED:
+        return not box_meta.get_local_part_path(config, BoxPart.DATA).exists()
+    if state is not LocalCheckoutState.INCLUDED:
+        return False
+    if view is None:
+        return False
+    return _record_identity_and_tree_unchanged(
+        config,
+        box_meta,
+        BoxPart.DATA,
+        view.identity(BoxPart.DATA),
+        box_meta.get_effective_exclude_path(config),
+    )
+
+
+@dataclass
+class SkipVerdicts:
+    needed: list[str] = field(default_factory=list)
+    skippable: list[str] = field(default_factory=list)
+    reasons: dict[str, str] = field(default_factory=dict)
+    """index_name -> why it is needed (the first part that failed to prove)."""
+
+
+def boxes_needing_sync_full(
     config: boxyard.config.Config,
     box_metas: list[BoxMeta],
-    remote_listing: dict[str, tuple[str | None, int | None]],
-) -> tuple[list[str], list[str]]:
+    *,
+    requested_parts: "list[BoxPart]",
+    record_views: dict[str, RemoteRecordView],
+    pointer_listing: dict[str, tuple[str | None, int | None]],
+    remote_conf_dirs: set[str],
+    tombstoned: set[str],
+    skip_meta: bool,
+    skip_data: bool,
+) -> SkipVerdicts:
     """
-    Split boxes into (needs a META sync, provably does not).
+    Split boxes into (needed, provably unchanged) for a pass that will execute
+    `closure_of(requested_parts)`.
 
-    `remote_listing` maps index name -> (ModTime, Size) from ONE bulk
-    `rclone lsjson` over the remote's boxes. A box missing from it is treated as
-    needing work: it may be new here, deleted there, or on a storage location
-    the listing did not cover, and every one of those wants the real sync path
-    to look rather than this filter to decide.
+    `record_views` comes from the `sync_records/` listing, `pointer_listing`
+    (restic pointers, by index name) and `remote_conf_dirs` (boxes with
+    anything under `boxes/<box>/conf/`) from the `boxes/` listing. Each part
+    is gated on its own flag -- `--skip-unchanged` for the whole box,
+    `--skip-unchanged-meta` for META alone -- and a part without its flag is
+    never provable.
 
-    Skipping is ONLY ever an optimisation. Anything wrongly skipped is caught by
-    the next unfiltered pass, since the DATA sync always syncs META too.
+    One box's failure to be judged must not abort the pass for 632 others:
+    any exception while evaluating a box routes THAT box to needed, printed
+    to stderr with its name. The real path then reports its own error.
     """
-    needed: list[str] = []
-    skippable: list[str] = []
+    import sys
+
+    from boxyard._enums import StorageFormat
+
+    verdicts = SkipVerdicts()
+    closure = closure_of(requested_parts)
 
     for box_meta in box_metas:
         index_name = box_meta.index_name
-        remote_modtime, remote_size = remote_listing.get(index_name, (None, None))
-        record = read_check_record(config, index_name, BoxPart.META)
+        try:
+            if index_name in tombstoned:
+                verdicts.reasons[index_name] = "tombstoned"
+                verdicts.needed.append(index_name)
+                continue
+            view = record_views.get(index_name)
+            failed: str | None = None
+            for part in (BoxPart.META, BoxPart.CONF, BoxPart.DATA):
+                if part not in closure:
+                    continue
+                if part is BoxPart.META:
+                    ok = skip_meta and meta_provably_unchanged(config, box_meta, view)
+                elif part is BoxPart.CONF:
+                    ok = skip_data and conf_provably_unchanged(
+                        config, box_meta, view, index_name in remote_conf_dirs
+                    )
+                else:
+                    if not skip_data:
+                        ok = False
+                    elif box_meta.storage_format is StorageFormat.RESTIC:
+                        _, provable = data_boxes_needing_sync(
+                            config, [box_meta], pointer_listing
+                        )
+                        ok = index_name in provable
+                    else:
+                        ok = plain_data_provably_unchanged(config, box_meta, view)
+                if not ok:
+                    failed = part.value
+                    break
+            if failed is None:
+                verdicts.skippable.append(index_name)
+            else:
+                verdicts.reasons[index_name] = failed
+                verdicts.needed.append(index_name)
+        except Exception as e:  # one box must not take the pass down
+            print(
+                f"--skip-unchanged: could not judge '{index_name}', syncing it "
+                f"instead ({type(e).__name__}: {e})",
+                file=sys.stderr,
+            )
+            verdicts.reasons[index_name] = f"error: {e}"
+            verdicts.needed.append(index_name)
 
-        if not remote_looks_unchanged(record, remote_modtime, remote_size):
-            needed.append(index_name)
-            continue
-        if local_meta_differs_from_base(config, box_meta):
-            needed.append(index_name)
-            continue
-        skippable.append(index_name)
-
-    return needed, skippable
+    return verdicts

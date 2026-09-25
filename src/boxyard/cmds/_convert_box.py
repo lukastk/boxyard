@@ -737,6 +737,17 @@ async def convert_box(
         # raises, which is right, and the resume path has to say out loud that it
         # tolerates absence. Any OTHER failure -- an unreachable remote -- still
         # raises and still stops the conversion.
+        #
+        # Its generation marker(s) go FIRST. A marker outliving its record would
+        # read as a known identity for a record that no longer exists -- the skip
+        # filter would then judge it against the kept local record. Sweeping
+        # first means a crash between the two leaves a record with no marker,
+        # which reads as unknown. The sweep is naturally absent-ok.
+        from boxyard._models import sweep_record_markers
+    
+        await sweep_record_markers(
+            config.rclone_config_path, box_meta.storage_location, _remote_rec_path.as_posix()
+        )
         await rclone_delete_absent_ok(
             rclone_config_path=config.rclone_config_path,
             dest=box_meta.storage_location,

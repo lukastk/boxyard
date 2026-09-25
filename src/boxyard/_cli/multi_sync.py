@@ -41,22 +41,24 @@ def cli_multi_sync(
         False,
         "--skip-unchanged-meta",
         help=(
-            "Ask the remote ONCE, in bulk, which boxmetas moved, and skip the "
-            "boxes where neither side changed. Turns a 590-box META pass from "
-            "~1,180 remote calls into one listing plus the boxes that actually "
-            "differ."
+            "The META-only form of --skip-unchanged, for a `-c meta` pass: a box "
+            "is put aside when its META is provably unchanged on both sides. "
+            "Turns a 590-box META pass from ~1,180 remote calls into two "
+            "listings plus the boxes that actually differ."
         ),
     ),
     skip_unchanged: bool = Option(
         False,
         "--skip-unchanged",
         help=(
-            "Ask the remote ONCE, in bulk, which boxes moved, and skip the ones "
-            "where neither side changed -- for META and, on restic-backed boxes, "
-            "for DATA too. The DATA half rides the SAME listing, so it costs no "
-            "additional remote calls. A plain box's DATA is never skipped: it "
-            "has no cheap remote signal, which is the reason its no-op sync "
-            "costs 30 s in the first place."
+            "Ask the remote ONCE, in bulk, which boxes moved, and put aside every "
+            "box whose requested parts -- and the parts they depend on -- are "
+            "provably unchanged on both sides: the remote's current sync-record "
+            "identity (the generation marker beside each record) equals this "
+            "machine's, and the local tree matches the fingerprint baseline bound "
+            "to it. Whatever is not provable goes through the real sync path, "
+            "exactly as without the flag. Restic DATA keeps its snapshot-pointer "
+            "check."
         ),
     ),
     due_only: bool = Option(
@@ -154,12 +156,33 @@ def cli_multi_sync(
             (bm for bm in box_metas if bm.index_name in _due_order),
             key=lambda bm: _due_order[bm.index_name],
         )
+    from boxyard._tombstones import list_tombstoned_box_ids
+    from boxyard.config import StorageType
+    
+    _tombstoned_ids_by_sl: dict[str, set[str]] = {}
+    
+    
+    async def _load_tombstoned_ids():
+        """
+        Populate `_tombstoned_ids_by_sl`, one listing per rclone storage location.
+    
+        Idempotent: the skip filter loads it BEFORE deciding anything (a tombstoned
+        box must never be put aside -- its warning has to print), and `_runner`
+        calls it again for the unfiltered path. One listing either way.
+        """
+        if _tombstoned_ids_by_sl:
+            return
+        for _sl_name in sorted({bm.storage_location for bm in box_metas}):
+            if config.storage_locations[_sl_name].storage_type == StorageType.LOCAL:
+                continue  # a local store has no tombstones and needs no remote call
+            _tombstoned_ids_by_sl[_sl_name] = await list_tombstoned_box_ids(
+                config, _sl_name
+            )
     
     # One bulk listing answers "did this boxmeta move" for every box at once. The
     # per-box alternative is the status probe: 2 remote calls per box, 0.67s each,
     # so ~6.6 min for 590 boxes at concurrency 2 -- against roughly a minute for the
     # listing. Everything that survives goes through the ordinary sync path.
-    _skipped_unchanged = []
     if skip_unchanged_meta or skip_unchanged:
         # `asyncio` is imported further down this command body, which makes it a
         # local and leaves it unbound here. Same reason as StorageType above.
@@ -172,7 +195,6 @@ def cli_multi_sync(
         from pathlib import Path as _Path
     
         from boxyard import const as _const
-        from boxyard._sync_policy import meta_boxes_needing_sync
         from boxyard._utils import is_in_event_loop, rclone_lsjson
     
         async def _bulk_listing():
@@ -237,12 +259,19 @@ def cli_multi_sync(
                     filter=[
                         f"+ /*/{const.BOX_METAFILE_REL_PATH}",
                         f"+ /*/{const.BOX_SNAPSHOT_POINTER_REL_PATH}",
+                        # Anything under `<box>/conf/`: the skip filter must not
+                        # call CONF "never had one" while a remote conf tree exists
+                        # without its record -- a loud ERROR on the real path.
+                        f"+ /*/{const.BOX_CONF_REL_PATH}/**",
                         "- **",
                     ],
-                    max_depth=2,
+                    max_depth=3,
                 )
                 for _entry in _entries or []:
                     _parts = Path(_entry["Path"]).parts
+                    if len(_parts) == 3 and _parts[1] == const.BOX_CONF_REL_PATH:
+                        _remote_conf_dirs.add(_parts[0])
+                        continue
                     if len(_parts) != 2:
                         continue
                     listing.setdefault(_parts[0], {})[_parts[1]] = (
@@ -250,6 +279,36 @@ def cli_multi_sync(
                         _entry.get("Size"),
                     )
             return listing
+    
+        _remote_conf_dirs: set = set()
+    
+        async def _records_listing():
+            """
+            {index name: RemoteRecordView} from ONE `lsjson` over `sync_records/`
+            per storage location: which `<part>.rec` files exist and each part's
+            generation marker(s). Anchored and depth-limited for the same two
+            reasons as the listing above; exact keying is in
+            `project_record_listing`.
+            """
+            from boxyard import const
+            from boxyard._sync_policy import project_record_listing
+            from boxyard.config import StorageType
+    
+            entries = []
+            for _sl_name in sorted({bm.storage_location for bm in box_metas}):
+                _sl_conf = config.storage_locations[_sl_name]
+                if _sl_conf.storage_type == StorageType.LOCAL:
+                    continue
+                entries += await rclone_lsjson(
+                    config.rclone_config_path,
+                    source=_sl_name,
+                    source_path=_sl_conf.store_path / const.SYNC_RECORDS_REL_PATH,
+                    files_only=True,
+                    recursive=True,
+                    filter=["+ /*/*.rec", "+ /*/*.rec.*", "- **"],
+                    max_depth=2,
+                ) or []
+            return project_record_listing(entries)
     
     
         def _project(listing, filename):
@@ -270,59 +329,49 @@ def cli_multi_sync(
                 err=True,
             )
         else:
-            from boxyard._sync_policy import data_boxes_needing_sync
+            from boxyard._sync_policy import boxes_needing_sync_full
+    
+            # Tombstones first: a tombstoned box must reach `sync_box`, whose
+            # warning is the only place the deletion is ever reported.
+            _aio.run(_load_tombstoned_ids())
+            _tombstoned_names = {
+                bm.index_name
+                for bm in box_metas
+                if bm.box_id in _tombstoned_ids_by_sl.get(bm.storage_location, set())
+            }
     
             _listing = _aio.run(_bulk_listing())
+            _record_views = _aio.run(_records_listing())
     
-            # A box may be skipped only if EVERY REQUESTED PART is provably
-            # unchanged. Anything not provable makes the box needed, so the
-            # intersection starts as "everything" and each part narrows it.
-            #
-            # This GENERALISES the META-only guard rather than overruling its
-            # judgement. That guard allowed a skip only when the pass asked for
-            # META alone, because META evidence says nothing about DATA. The
-            # intersection reaches the same answer everywhere that guard applied --
-            # a part with no evidence contributes the empty set, which empties the
-            # intersection -- and additionally lets a `-c data,meta` pass skip a box
-            # provably unchanged in BOTH, which is what `--skip-unchanged` is for.
-            #
-            # Each part is gated on its OWN flag. Without that, `--skip-unchanged`
-            # (the DATA flag) would silently enable META skipping, because this
-            # block is entered when EITHER flag is set.
-            _skippable = {bm.index_name for bm in box_metas}
-            _unprovable = []
-            for _part in sync_choices:
-                if _part is BoxPart.META and skip_unchanged_meta:
-                    _, _provable = meta_boxes_needing_sync(
-                        config, box_metas,
-                        _project(_listing, _const.BOX_METAFILE_REL_PATH),
-                    )
-                elif _part is BoxPart.DATA and skip_unchanged:
-                    _, _provable = data_boxes_needing_sync(
-                        config, box_metas,
-                        _project(_listing, _const.BOX_SNAPSHOT_POINTER_REL_PATH),
-                    )
-                else:
-                    # No cheap remote signal for this part in this pass. CONF has
-                    # none at all -- it lives below the depth-2 listing -- so a FULL
-                    # pass never skips, with either flag. And a part whose flag was
-                    # not given must not be filtered on.
-                    _provable = []
-                    _unprovable.append(_part)
-                _skippable &= set(_provable)
-    
-            _skipped_unchanged = sorted(_skippable)
+            # `--skip-unchanged` is the flag for the WHOLE box; `--skip-unchanged-meta`
+            # is the META-only form for the fast loop. A part without its flag is
+            # never provable, and a box is put aside only when every part in the
+            # closure of what this pass would execute is proven -- see
+            # `boxes_needing_sync_full` and the design note it implements.
+            _verdicts = boxes_needing_sync_full(
+                config,
+                box_metas,
+                requested_parts=sync_choices,
+                record_views=_record_views,
+                pointer_listing=_project(_listing, _const.BOX_SNAPSHOT_POINTER_REL_PATH),
+                remote_conf_dirs=_remote_conf_dirs,
+                tombstoned=_tombstoned_names,
+                skip_meta=skip_unchanged or skip_unchanged_meta,
+                skip_data=skip_unchanged,
+            )
+            _skippable = set(_verdicts.skippable)
             box_metas = [bm for bm in box_metas if bm.index_name not in _skippable]
     
-            # An unprovable part empties the intersection, so this is exactly the
-            # case where nothing could be skipped -- say so, and name the parts. A
-            # pass that silently skipped nothing looks like a broken flag.
-            if _unprovable:
+            if not _skippable:
+                # A pass that silently skipped nothing looks like a broken flag,
+                # so say why: the part that failed to prove, per box, summarised.
+                from collections import Counter as _Counter
+    
+                _why = _Counter(_verdicts.reasons.values())
                 typer.echo(
-                    "--skip-unchanged/--skip-unchanged-meta proves nothing about "
-                    f"{sorted(p.value for p in _unprovable)}, "
-                    "so no box was skipped. Use `-c meta` for the fast META loop, "
-                    "or `-c data` with --skip-unchanged.",
+                    "--skip-unchanged: no box was skipped -- none was provably "
+                    f"unchanged (first unprovable part, by count: "
+                    f"{dict(_why.most_common(4))}).",
                     err=True,
                 )
     
@@ -331,20 +380,6 @@ def cli_multi_sync(
     # per pass to stderr so an unattended loop's stdout stays parseable.
     for _conflict in _due_conflicts:
         typer.echo(f"Sync policy conflict: {_conflict}", err=True)
-    from boxyard._tombstones import list_tombstoned_box_ids
-    from boxyard.config import StorageType
-    
-    _tombstoned_ids_by_sl: dict[str, set[str]] = {}
-    
-    
-    async def _load_tombstoned_ids():
-        """Populate `_tombstoned_ids_by_sl`, one listing per rclone storage location."""
-        for _sl_name in sorted({bm.storage_location for bm in box_metas}):
-            if config.storage_locations[_sl_name].storage_type == StorageType.LOCAL:
-                continue  # a local store has no tombstones and needs no remote call
-            _tombstoned_ids_by_sl[_sl_name] = await list_tombstoned_box_ids(
-                config, _sl_name
-            )
     def _record_check(box_meta):
         """Record that every requested part of this box was checked just now."""
         import time as _time
@@ -593,52 +628,83 @@ def cli_multi_sync(
     if not is_in_event_loop():
         asyncio.run(_runner())
     
-    # Stamp the META check records with the remote's state AS IT IS NOW.
+    # Two kinds of bookkeeping after a filtered pass, both from the PRE-pass listing
+    # (L0) and both only for boxes that actually went through `sync_box`:
     #
-    # It has to be a SECOND listing, taken after the syncs: a pass that pushed a
-    # local edit changed the remote's ModTime, so the stamp read before the sync
-    # describes a state that no longer exists and every box would look changed
-    # forever. Two bulk listings per pass is still ~1 minute against the ~6.6 min
-    # the per-box probes cost on a 590-box yard.
-    #
-    # Only boxes that were actually synced this pass need a new stamp; the ones the
-    # filter skipped still hold a valid one.
+    # - The restic pointer stamp (the one remaining `(ModTime, Size)` filter). It
+    #   is written from L0, never from a post-sync listing: a listing taken at pass
+    #   end adopts any foreign push that landed after the box's own sync, and two
+    #   independent reviews reproduced the wrong skip that produces. From L0, a
+    #   remote that moved after we looked mismatches next pass and the box is
+    #   needed -- the loud direction.
+    # - Marker bootstrap. The skip filter proves a part's remote identity from a
+    #   generation marker, and a fleet upgraded from a version that wrote none
+    #   would never converge for idle boxes (nothing pushes them). So a part that
+    #   came back SYNCED with matching records and had NO marker in L0 gets one
+    #   written for the ULID the real path just read -- one tiny upload, once.
+    #   Any machine may do this: a marker asserts the remote's own record
+    #   identity, read from the remote; it is not a push.
     if (skip_unchanged_meta or skip_unchanged) and not is_in_event_loop():
         import asyncio as _aio
         import time as _stamp_time
     
         from boxyard import const as _const
+        from boxyard._enums import StorageFormat as _StorageFormat
+        from boxyard._models import write_record_marker as _write_record_marker
         from boxyard._sync_policy import write_check_record as _write_check_record
     
-        _final_listing = _aio.run(_bulk_listing())
         _now_unix = _stamp_time.time()
-    
-        # One listing, both stamps. The DATA stamp is the POINTER's (ModTime, Size),
-        # which is exactly what the DATA skip filter compares next pass. A push
-        # always produces a NEW snapshot id and rewrites the pointer, so a real
-        # change always moves its ModTime -- which is the same safety argument the
-        # META stamp rests on.
-        _stamp_parts = []
-        if BoxPart.META in sync_choices:
-            _stamp_parts.append((BoxPart.META, _const.BOX_METAFILE_REL_PATH))
-        if skip_unchanged and BoxPart.DATA in sync_choices:
-            _stamp_parts.append((BoxPart.DATA, _const.BOX_SNAPSHOT_POINTER_REL_PATH))
+        _pointer_l0 = _project(_listing, _const.BOX_SNAPSHOT_POINTER_REL_PATH)
+        _marker_jobs = []
     
         for _bm in box_metas:
             _stat = sync_stats.get(_bm.index_name)
             if _stat is None or _stat[1] not in ("Success", "Read-only", "Local"):
                 continue
-            _entry = _final_listing.get(_bm.index_name, {})
-            for _part, _filename in _stamp_parts:
-                _modtime, _size = _entry.get(_filename, (None, None))
+            _results = _stat[4] or {}
+    
+            if skip_unchanged and BoxPart.DATA in sync_choices and _bm.storage_format is _StorageFormat.RESTIC:
+                _modtime, _size = _pointer_l0.get(_bm.index_name, (None, None))
                 _write_check_record(
-                    config,
-                    _bm.index_name,
-                    _part,
-                    _now_unix,
-                    remote_modtime=_modtime,
-                    remote_size=_size,
+                    config, _bm.index_name, BoxPart.DATA, _now_unix,
+                    remote_modtime=_modtime, remote_size=_size,
                 )
+    
+            _view = _record_views.get(_bm.index_name)
+            for _part, (_status, _synced) in _results.items():
+                if _part is BoxPart.DATA and _bm.storage_format is _StorageFormat.RESTIC:
+                    continue
+                if _status.sync_condition != SyncCondition.SYNCED:
+                    continue
+                _lrec, _rrec = _status.local_sync_record, _status.remote_sync_record
+                if _lrec is None or _rrec is None or _lrec.ulid != _rrec.ulid or not _rrec.sync_complete:
+                    continue
+                if _view is not None and _view.markers.get(_part.value):
+                    continue  # already published (or ambiguous; the sweep on the next push settles it)
+                _marker_jobs.append(
+                    _write_record_marker(
+                        config.rclone_config_path,
+                        _bm.storage_location,
+                        _bm.get_remote_sync_record_path(config, _part).as_posix(),
+                        _rrec.ulid,
+                    )
+                )
+    
+        if _marker_jobs:
+            async def _publish_markers():
+                _sem = _aio.Semaphore(max_concurrent_rclone_ops)
+    
+                async def _one(job):
+                    async with _sem:
+                        try:
+                            await job
+                        except Exception as e:
+                            typer.echo(f"marker bootstrap failed: {e}", err=True)
+    
+                await _aio.gather(*(_one(j) for j in _marker_jobs))
+    
+            _aio.run(_publish_markers())
+            typer.echo(f"Published {len(_marker_jobs)} sync-record marker(s).", err=True)
     
     final_sync_stat_board = get_sync_stat_board(finished=True)
     console = Console()

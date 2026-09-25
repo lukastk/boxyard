@@ -263,3 +263,133 @@ def test_a_quiet_pull_still_records_a_usable_baseline():
             assert await _status(b_args) == SyncCondition.SYNCED
 
     asyncio.run(_test())
+
+# %% [markdown]
+# ## The two other lying-baseline windows on a pull
+#
+# Found by the full-pass-skip design review (2026-09-25). A skip filter TRUSTS
+# the baseline, so a baseline that describes a tree the remote does not hold is
+# no longer a one-pass inefficiency: it is a wrong skip, for ever.
+#
+# 1. The racing-write guard used the newest surviving FILE mtime, which a
+#    mid-pull deletion (or rename, chmod, symlink edit) does not move.
+# 2. The pull adopted the remote record read AFTER the transfer; an owner push
+#    between transfer and read was adopted with the PREVIOUS revision's tree.
+
+# %%
+#|export
+@pytest.mark.integration
+def test_a_file_deleted_during_a_pull_is_not_blessed():
+    """
+    A deletion racing the pull leaves no newer file mtime behind. The guard
+    is `tree_touched_since` (directory mtimes and ctimes), so the pull must
+    refuse to record a baseline -- a baseline here would bless a tree that is
+    MISSING a file the remote has, and read SYNCED about it.
+    """
+
+    async def _test():
+        with tempfile.TemporaryDirectory() as td:
+            args, remote_root = _fixture(Path(td))
+            await sync_helper(
+                sync_direction=SyncDirection.PUSH,
+                sync_setting=SyncSetting.CAREFUL,
+                **args,
+            )
+
+            b_local = Path(td) / "b_local"
+            b_args = dict(
+                args,
+                local_path=b_local,
+                local_sync_record_path=Path(td) / "b_data.rec",
+            )
+            with patch(
+                "boxyard._utils.rclone_sync",
+                new=_racing_rclone_sync(lambda: (b_local / "sub" / "file2.txt").unlink()),
+            ):
+                await sync_helper(
+                    sync_direction=SyncDirection.PULL,
+                    sync_setting=SyncSetting.CAREFUL,
+                    local_absence_means_excluded=False,
+                    **{k: v for k, v in b_args.items()},
+                )
+
+            assert not (b_local / "sub" / "file2.txt").exists(), "simulation"
+            assert (remote_root / "data" / "sub" / "file2.txt").exists(), "simulation"
+            assert not base_path_for(b_args["local_sync_record_path"]).exists(), (
+                "a baseline was recorded for a tree the pull did not produce"
+            )
+
+    asyncio.run(_test())
+
+
+@pytest.mark.integration
+def test_a_foreign_push_during_a_pull_is_not_adopted():
+    """
+    The pull adopts the remote record the PRE-transfer status read. If the
+    remote moves on while the transfer runs, the local record must still name
+    the revision whose tree was downloaded; the next status then reads
+    NEEDS_PULL and the second pull brings the new revision -- never SYNCED with
+    the old files.
+    """
+
+    async def _test():
+        with tempfile.TemporaryDirectory() as td:
+            args, remote_root = _fixture(Path(td))
+            await sync_helper(
+                sync_direction=SyncDirection.PUSH,
+                sync_setting=SyncSetting.CAREFUL,
+                **args,
+            )
+            u1 = json.loads(Path(args["local_sync_record_path"]).read_text())["ulid"]
+
+            b_args = dict(
+                args,
+                local_path=Path(td) / "b_local",
+                local_sync_record_path=Path(td) / "b_data.rec",
+            )
+
+            async def _owner_pushes_again():
+                (args["local_path"] / "file1.txt").write_text("one, pushed mid-pull")
+                await sync_helper(
+                    sync_direction=SyncDirection.PUSH,
+                    sync_setting=SyncSetting.CAREFUL,
+                    **args,
+                )
+
+            real = boxyard._utils.rclone_sync
+            fired = []
+
+            async def _racing(**kwargs):
+                res = await real(**kwargs)
+                if not fired:  # the owner's push goes through this patch too
+                    fired.append(True)
+                    await _owner_pushes_again()
+                return res
+
+            with patch("boxyard._utils.rclone_sync", new=_racing):
+                await sync_helper(
+                    sync_direction=SyncDirection.PULL,
+                    sync_setting=SyncSetting.CAREFUL,
+                    local_absence_means_excluded=False,
+                    **{k: v for k, v in b_args.items()},
+                )
+
+            u2 = json.loads(Path(args["local_sync_record_path"]).read_text())["ulid"]
+            assert u2 != u1, "simulation: the owner's second push minted a new record"
+            assert (b_args["local_path"] / "file1.txt").read_text() == "one", "simulation"
+
+            adopted = json.loads(Path(b_args["local_sync_record_path"]).read_text())["ulid"]
+            assert adopted == u1, (
+                "the pull adopted the record of a revision it did not download"
+            )
+            assert await _status(b_args) == SyncCondition.NEEDS_PULL
+
+            await sync_helper(
+                sync_direction=SyncDirection.PULL,
+                sync_setting=SyncSetting.CAREFUL,
+                **b_args,
+            )
+            assert (b_args["local_path"] / "file1.txt").read_text() == "one, pushed mid-pull"
+            assert await _status(b_args) == SyncCondition.SYNCED
+
+    asyncio.run(_test())

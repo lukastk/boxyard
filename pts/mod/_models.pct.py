@@ -1225,6 +1225,121 @@ def read_meta_base(
 # %% [markdown]
 # # `SyncRecord`
 
+# %% [markdown]
+# ## Generation markers
+#
+# A remote sync record's identity is its ULID, and the only way to read it is
+# to fetch the record — one round trip per box per part, which is exactly the
+# cost a bulk skip filter exists to avoid. So every remote record write also
+# leaves a zero-byte MARKER beside it, named `<part>.rec.<ULID>`, and retires
+# the previous one. A single `rclone lsjson` over `sync_records/` then shows
+# every part's current record ULID in a filename: an exact generation token.
+#
+# Exact is the point. The previous design compared the record's
+# `(ModTime, Size)` from the listing against a stamp, and two independent
+# reviews reproduced a wrong skip in it: SFTP truncates mtimes to the second
+# and rclone sets them from the PUSHER's clock, so a same-second push, clock
+# skew or an mtime-preserving restore produce a different record with the same
+# stamp — and a stamp taken at pass END adopted any foreign push that landed
+# after the box's own sync. Neither can happen to a ULID in a filename.
+#
+# Markers are additive. An older boxyard never writes one, and every reader
+# that scans `sync_records/` for `*.rec` ignores them. A missing marker, two
+# markers, or a malformed name (rclone leaves `<name>.<hash>.partial` upload
+# residue at the same depth) all read as "identity unknown" — the loud
+# direction: the box goes through the real sync path.
+
+# %%
+#|export
+import re as _re
+
+RECORD_MARKER_ULID_RE = _re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
+"""A Crockford-base32 ULID, exactly 26 characters -- what `str(ULID())` yields."""
+
+
+def record_marker_name(record_filename: str, ulid) -> str:
+    """`data.rec` + ULID -> `data.rec.<ULID>`."""
+    return f"{record_filename}.{ulid}"
+
+
+def parse_record_marker(filename: str) -> "tuple[str, str] | None":
+    """
+    `data.rec.<ULID>` -> ("data", "<ULID>"); anything else -> None.
+
+    Strict on purpose: the ULID must be exactly 26 Crockford characters, so
+    `data.rec` itself, `data.rec.a8bc93c2.partial` (rclone upload residue seen
+    on the live remote) and `data.base.json` all fall through.
+    """
+    stem, dot, ulid = filename.rpartition(".")
+    if not dot or not stem.endswith(".rec"):
+        return None
+    if not RECORD_MARKER_ULID_RE.match(ulid):
+        return None
+    return stem[: -len(".rec")], ulid
+
+
+async def sweep_record_markers(
+    rclone_config_path: str, dest: str, record_path: str
+) -> None:
+    """
+    Remove every marker of `record_path` (`<part>.rec.*`), and nothing else:
+    not the record, not another part's markers. One ordered `--filter` list,
+    because `--include`/`--exclude` together are order-indeterminate and were
+    measured to delete the file the exclude named.
+    """
+    from boxyard._utils.rclone import rclone_delete_matching
+
+    record = Path(record_path)
+    await rclone_delete_matching(
+        rclone_config_path,
+        dest,
+        record.parent.as_posix(),
+        [f"+ {record.name}.*", "- **"],
+    )
+
+
+async def _copy_record_marker(
+    rclone_config_path: str, dest: str, record_path: str, ulid
+) -> None:
+    from boxyard._utils.rclone import rclone_copyto
+    import tempfile
+
+    record = Path(record_path)
+    marker_name = record_marker_name(record.name, ulid)
+    empty = Path(tempfile.mkstemp(suffix=".marker")[1])
+    try:
+        ok, _stdout, stderr = await rclone_copyto(
+            rclone_config_path=rclone_config_path,
+            source="",
+            source_path=empty.as_posix(),
+            dest=dest,
+            dest_path=(record.parent / marker_name).as_posix(),
+            dry_run=False,
+        )
+    finally:
+        empty.unlink(missing_ok=True)
+    if not ok:
+        raise RuntimeError(
+            f"Failed to write the sync record marker "
+            f"'{dest}:{record.parent / marker_name}': {stderr.strip()}"
+        )
+
+
+async def write_record_marker(
+    rclone_config_path: str, dest: str, record_path: str, ulid
+) -> None:
+    """
+    Publish `record_path`'s identity beside it: sweep every older marker,
+    THEN write the new one. A crash between the two leaves NO marker, which
+    the filter reads as unknown (needed) -- never as the old identity. The
+    other order (write, then sweep) would leave the old marker standing beside
+    a record it no longer describes for the length of the crash, and a machine
+    holding that old identity would skip a box whose remote had moved.
+    """
+    await sweep_record_markers(rclone_config_path, dest, record_path)
+    await _copy_record_marker(rclone_config_path, dest, record_path, ulid)
+
+
 # %%
 #|export
 class SyncRecord(const.StrictModel):
@@ -1247,19 +1362,57 @@ class SyncRecord(const.StrictModel):
     async def rclone_save(
         self, rclone_config_path: str, dest: str, dest_path: str
     ) -> None:
+        """
+        Write this record to `dest:dest_path`, and RAISE if the write failed.
+
+        The result of `rclone_copyto` used to be discarded, which turned a
+        failed remote record write -- an SFTP connection-limit blip, a known
+        failure mode on this fleet -- into a completed-looking push whose
+        remote still held the INCOMPLETE marker. Every other machine then read
+        "incomplete sync from another machine" and stopped pulling the box,
+        while the one machine that could repair it had reported Success.
+        Found by the full-pass-skip design review (2026-09-25): under a skip
+        filter that wedge becomes permanent and silent, but it was never
+        acceptable as a silent failure to begin with.
+
+        A write to a REMOTE also publishes the record's generation marker,
+        in the one order that is safe against a crash at any point: sweep the
+        old markers, write the record, write the new marker. Every prefix of
+        that sequence leaves either the old state intact or NO marker -- and
+        no marker reads as "identity unknown", the loud direction. Writing the
+        record before the sweep would leave a machine holding the old
+        identity free to skip a box whose remote had just moved. The
+        incomplete record a push writes first goes through the same sequence,
+        so while a push is in flight every other machine sees an unknown
+        identity and pays the real check, which reports the interrupted sync
+        if the push never completes.
+        """
         from boxyard._utils import rclone_copyto
         import tempfile
 
+        if dest:
+            await sweep_record_markers(rclone_config_path, dest, dest_path)
+
         temp_path = Path(tempfile.mkstemp(suffix=".json")[1])
-        temp_path.write_text(self.model_dump_json())
-        await rclone_copyto(
-            rclone_config_path=rclone_config_path,
-            source="",
-            source_path=temp_path.as_posix(),
-            dest=dest,
-            dest_path=dest_path,
-            dry_run=False,
-        )
+        try:
+            temp_path.write_text(self.model_dump_json())
+            ok, _stdout, stderr = await rclone_copyto(
+                rclone_config_path=rclone_config_path,
+                source="",
+                source_path=temp_path.as_posix(),
+                dest=dest,
+                dest_path=dest_path,
+                dry_run=False,
+            )
+        finally:
+            temp_path.unlink(missing_ok=True)
+        if not ok:
+            raise RuntimeError(
+                f"Failed to write the sync record to "
+                f"'{dest + ':' if dest else ''}{dest_path}': {stderr.strip()}"
+            )
+        if dest:
+            await _copy_record_marker(rclone_config_path, dest, dest_path, self.ulid)
 
     @classmethod
     async def rclone_read(

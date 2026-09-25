@@ -7,22 +7,24 @@
 # ---
 
 # %% [markdown]
-# # `--skip-unchanged` — one listing, both questions
+# # `--skip-unchanged` — a full pass puts an untouched box aside
 #
-# The DATA skip rides the SAME bulk `lsjson` the META skip already runs, because
-# `boxes/<box>/data.snapshot` sits at depth 2 beside `boxmeta.toml`. So the DATA
-# half costs **no additional remote calls at all**.
+# `_dev/FULL-PASS-SKIP-DESIGN-NOTE.md` is the design. A box is dropped from a
+# pass only when EVERY part in the closure of what the pass would execute is
+# provably unchanged on both sides:
 #
-# Two things here are corrections rather than additions, and both are tested
-# directly:
+# - the remote record's identity, read from its generation marker in ONE bulk
+#   listing of `sync_records/`, equals this machine's complete local record;
+# - the local tree matches the fingerprint baseline bound to that record.
 #
-# 1. The listing is keyed by BOX AND FILENAME. rclone has no implicit exclude, so
-#    the old `+ boxmeta.toml` filter already returned `data.snapshot` too, and
-#    keying by box alone let one overwrite the other — silently disabling the
-#    META skip for exactly the boxes a migration creates.
-# 2. A box is skipped only if EVERY REQUESTED PART is provably unchanged.
-#    `--skip-unchanged-meta` used to drop a box on META evidence alone, so a full
-#    pass would skip a box whose DATA had changed locally.
+# Nothing is stamped, so there is no observation window to race: a foreign push
+# mints a new ULID and the equality fails on the next pass, whenever it landed.
+# Every "needed" verdict here is checked at the filter (`boxes_needing_sync_full`)
+# and, where the behaviour lives in `multi-sync`, through the real CLI with
+# `--print-skipped` on, so that ABSENCE from the output means "dropped from the
+# pass" and nothing else.
+#
+# The restic DATA filter keeps its pointer-stamp logic; its tests are at the end.
 
 # %%
 #|default_exp integration.cmds.test_skip_unchanged
@@ -30,21 +32,47 @@
 # %%
 #|export
 import asyncio
+import json
+import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
+from ulid import ULID
 
+import boxyard.cmds as cmds_module
 from boxyard import const
+from boxyard._checkout import (
+    CheckoutPlacement,
+    LocalCheckoutState,
+    PlacementState,
+    RelocationPhase,
+    RelocationRecord,
+    get_box_checkout_status,
+    save_placement,
+)
 from boxyard._enums import BoxPart, StorageFormat
-from boxyard._models import BoxMeta, get_boxyard_meta
+from boxyard._fingerprint import base_path_for
+from boxyard._models import BoxMeta, SyncCondition, SyncRecord, get_boxyard_meta
 from boxyard._sync_policy import (
-    check_record_path,
+    boxes_needing_sync_full,
     data_boxes_needing_sync,
-    meta_boxes_needing_sync,
+    project_record_listing,
     write_check_record,
 )
-from boxyard.cmds import convert_box, new_box, sync_box
+from boxyard._tombstones import create_tombstone
+from boxyard._utils import get_rclone_binary
+from boxyard.cmds import (
+    claim_box,
+    convert_box,
+    exclude_box,
+    include_box,
+    modify_boxmeta,
+    new_box,
+    sync_box,
+    sync_missing_boxmetas,
+)
 from boxyard.config import get_config
 
 pytestmark = pytest.mark.integration
@@ -60,73 +88,97 @@ needs_restic = pytest.mark.skipif(
 
 
 # %% [markdown]
-# ## The listing returns both files, keyed separately
+# ## What the two bulk listings return
 #
-# The concrete answer to "what does the single listing return".
+# rclone, exactly as multi-sync calls it. These pin the filter strings against
+# the real binary; the projection code is unit-tested in
+# `test_record_markers`.
 
 # %%
 #|export
-def test_one_listing_returns_both_files_at_depth_2(tmp_path):
-    """
-    rclone, exactly as multi-sync calls it. `data.snapshot` and `boxmeta.toml`
-    are both depth-2 files under `boxes/<box>/`, so one call sees both, and
-    `data/` contents at depth 3+ are excluded by `--max-depth 2`.
-    """
-    import subprocess
-
-    from boxyard._utils import get_rclone_binary
-
-    root = tmp_path / "store"
-    for box, extra in (("boxA", None), ("boxB", "data.snapshot")):
-        (root / "boxes" / box).mkdir(parents=True)
-        (root / "boxes" / box / const.BOX_METAFILE_REL_PATH).write_text('name="x"\n')
-        if extra:
-            (root / "boxes" / box / extra).write_text('{"snapshot":"abc"}\n')
-    (root / "boxes" / "boxA" / "data" / "sub").mkdir(parents=True)
-    (root / "boxes" / "boxA" / "data" / "sub" / "deep.txt").write_text("deep\n")
-
-    conf = tmp_path / "rclone.conf"
-    conf.write_text(f"[loc]\ntype = alias\nremote = {root}\n")
-
+def _lsjson(conf: Path, target: str, max_depth: int, *filters: str) -> list[str]:
     out = subprocess.run(
         [
             get_rclone_binary(), "lsjson", "--config", str(conf),
-            "--files-only", "--recursive", "--max-depth", "2",
-            "--filter", f"+ {const.BOX_METAFILE_REL_PATH}",
-            "--filter", f"+ {const.BOX_SNAPSHOT_POINTER_REL_PATH}",
-            "--filter", "- **",
-            "loc:boxes",
+            "--files-only", "--recursive", "--max-depth", str(max_depth),
+            *[a for f in filters for a in ("--filter", f)],
+            target,
         ],
         capture_output=True, text=True, check=True,
     )
-    import json
+    return sorted(e["Path"] for e in json.loads(out.stdout))
 
-    paths = sorted(e["Path"] for e in json.loads(out.stdout))
+
+def test_the_boxes_listing_sees_boxmeta_pointer_and_conf_files(tmp_path):
+    """
+    `boxmeta.toml` and `data.snapshot` at depth 2, anything directly under
+    `conf/` at depth 3 -- and NOTHING from `data/`, which is what keeps the
+    listing cheap on a yard of 600 boxes.
+    """
+    root = tmp_path / "store"
+    for box in ("boxA", "boxB"):
+        (root / "boxes" / box).mkdir(parents=True)
+        (root / "boxes" / box / const.BOX_METAFILE_REL_PATH).write_text('name="x"\n')
+    (root / "boxes" / "boxB" / const.BOX_SNAPSHOT_POINTER_REL_PATH).write_text("{}\n")
+    (root / "boxes" / "boxA" / "conf").mkdir()
+    (root / "boxes" / "boxA" / "conf" / const.RCLONE_EXCLUDE_FILENAME).write_text("*.log\n")
+    (root / "boxes" / "boxA" / "data" / "sub").mkdir(parents=True)
+    (root / "boxes" / "boxA" / "data" / "top.txt").write_text("top\n")
+    (root / "boxes" / "boxA" / "data" / "sub" / "deep.txt").write_text("deep\n")
+    conf = tmp_path / "rclone.conf"
+    conf.write_text(f"[loc]\ntype = alias\nremote = {root}\n")
+
+    paths = _lsjson(
+        conf, "loc:boxes", 3,
+        f"+ /*/{const.BOX_METAFILE_REL_PATH}",
+        f"+ /*/{const.BOX_SNAPSHOT_POINTER_REL_PATH}",
+        f"+ /*/{const.BOX_CONF_REL_PATH}/**",
+        "- **",
+    )
     assert paths == [
-        "boxA/boxmeta.toml",
-        "boxB/boxmeta.toml",
-        "boxB/data.snapshot",
+        f"boxA/{const.BOX_METAFILE_REL_PATH}",
+        f"boxA/conf/{const.RCLONE_EXCLUDE_FILENAME}",
+        f"boxB/{const.BOX_METAFILE_REL_PATH}",
+        f"boxB/{const.BOX_SNAPSHOT_POINTER_REL_PATH}",
     ]
-    assert not any("deep.txt" in p for p in paths), "depth-3 content leaked in"
+
+
+def test_the_records_listing_returns_records_and_markers_only(tmp_path):
+    """
+    `+ /*/*.rec` and `+ /*/*.rec.*` at depth 2. rclone's `.partial` upload
+    residue matches the second glob and comes back -- the projection is what
+    drops it, so that is asserted on the projected view.
+    """
+    u = str(ULID())
+    root = tmp_path / "store"
+    d = root / "sync_records" / "boxA"
+    d.mkdir(parents=True)
+    for name in ("meta.rec", f"meta.rec.{u}", "data.base.json",
+                 "data.rec.a8bc93c2.partial", "notes.txt"):
+        (d / name).write_text("")
+    (d / "sub").mkdir()
+    (d / "sub" / "data.rec").write_text("")
+    conf = tmp_path / "rclone.conf"
+    conf.write_text(f"[loc]\ntype = alias\nremote = {root}\n")
+
+    paths = _lsjson(conf, "loc:sync_records", 2, "+ /*/*.rec", "+ /*/*.rec.*", "- **")
+    assert paths == ["boxA/data.rec.a8bc93c2.partial", "boxA/meta.rec", f"boxA/meta.rec.{u}"]
+
+    view = project_record_listing([{"Path": p} for p in paths])
+    assert view["boxA"].records == {"meta"}
+    assert view["boxA"].identity(BoxPart.META) == u
+    assert view["boxA"].identity(BoxPart.DATA) is None
 
 
 def test_the_listing_must_be_keyed_by_box_and_filename():
     """
-    The latent bug. Keying by box alone lets `data.snapshot` overwrite
-    `boxmeta.toml`, so a converted box's META stamp is compared against the
-    POINTER's ModTime and the box can never be skipped -- silently disabling the
-    META optimisation for exactly the boxes a migration creates.
+    Keying by box alone lets `data.snapshot` overwrite `boxmeta.toml`; the
+    pointer projection the restic filter takes needs the (box, filename) key.
     """
     entries = [
         {"Path": "boxB/boxmeta.toml", "ModTime": "T1", "Size": 10},
         {"Path": "boxB/data.snapshot", "ModTime": "T2", "Size": 99},
     ]
-
-    by_box_only = {}
-    for e in entries:
-        by_box_only[Path(e["Path"]).parts[0]] = (e["ModTime"], e["Size"])
-    assert by_box_only["boxB"] == ("T2", 99), "the two collide, as they did"
-
     by_box_and_file = {}
     for e in entries:
         parts = Path(e["Path"]).parts
@@ -136,12 +188,95 @@ def test_the_listing_must_be_keyed_by_box_and_filename():
 
 
 # %% [markdown]
-# ## The DATA skip filter
+# ## Fixtures and the filter oracle
+#
+# `verdict` feeds `boxes_needing_sync_full` exactly what `multi-sync` feeds it,
+# built from the remote's files on disk (the remote is an alias to a local
+# directory) with the SAME projection code. `remote_files` is the view a bulk
+# listing would return.
 
 # %%
 #|export
+def _store(remote_root: Path) -> Path:
+    return remote_root / "boxyard"
+
+
+def remote_views(remote_root: Path):
+    rec_root = _store(remote_root) / const.SYNC_RECORDS_REL_PATH
+    entries = []
+    if rec_root.is_dir():
+        for box_dir in rec_root.iterdir():
+            if box_dir.is_dir():
+                for f in box_dir.iterdir():
+                    if f.is_file():
+                        entries.append({"Path": f"{box_dir.name}/{f.name}"})
+    return project_record_listing(entries)
+
+
+def remote_conf_dirs(remote_root: Path) -> set[str]:
+    boxes = _store(remote_root) / const.REMOTE_BOXES_REL_PATH
+    if not boxes.is_dir():
+        return set()
+    return {
+        d.name
+        for d in boxes.iterdir()
+        if (d / const.BOX_CONF_REL_PATH).is_dir()
+        and any(p.is_file() for p in (d / const.BOX_CONF_REL_PATH).iterdir())
+    }
+
+
+def remote_record_dir(remote_root: Path, idx: str) -> Path:
+    return _store(remote_root) / const.SYNC_RECORDS_REL_PATH / idx
+
+
+def remote_markers(remote_root: Path, idx: str, part: BoxPart) -> list[str]:
+    d = remote_record_dir(remote_root, idx)
+    return sorted(
+        p.name for p in d.iterdir() if p.name.startswith(f"{part.value}.rec.")
+    ) if d.is_dir() else []
+
+
+def verdict(
+    config_path,
+    remote_root: Path,
+    requested=None,
+    *,
+    skip_meta: bool = True,
+    skip_data: bool = True,
+    tombstoned: set[str] | None = None,
+    pointer_listing=None,
+    record_views=None,
+):
+    config = get_config(config_path)
+    return boxes_needing_sync_full(
+        config,
+        get_boxyard_meta(config).box_metas,
+        requested_parts=list(BoxPart) if requested is None else requested,
+        record_views=remote_views(remote_root) if record_views is None else record_views,
+        pointer_listing=pointer_listing or {},
+        remote_conf_dirs=remote_conf_dirs(remote_root),
+        tombstoned=tombstoned or set(),
+        skip_meta=skip_meta,
+        skip_data=skip_data,
+    )
+
+
+def _multi_sync(config_path, *args):
+    from typer.testing import CliRunner
+
+    from boxyard._cli.app import app
+
+    result = CliRunner().invoke(
+        app, ["--config", str(config_path), "multi-sync", *args]
+    )
+    assert result.exit_code == 0, f"exited {result.exit_code}\n{result.output}"
+    return result
+
+
 @pytest.fixture
 def yard(temp_boxyard, monkeypatch, tmp_path):
+    """One machine, one settled plain box: synced once, so records, markers and
+    baselines all exist and the box is provable for every part."""
     remote_name, remote_root, config, config_path, _dp = temp_boxyard
     monkeypatch.setenv("BOXYARD_RESTIC_PASSWORD", "skip-test-password")
     for target in ("boxyard.const", "boxyard._restic.const"):
@@ -149,14 +284,16 @@ def yard(temp_boxyard, monkeypatch, tmp_path):
 
     idx = new_box(config_path=config_path, box_name="skipbox",
                   storage_location=remote_name, claim=False)
-    data = get_boxyard_meta(config).by_index_name[idx].get_local_part_path(
-        config, BoxPart.DATA
-    )
+    bm = get_boxyard_meta(config).by_index_name[idx]
+    data = bm.get_local_part_path(config, BoxPart.DATA)
     (data / "notes.md").write_text("first\n")
+    (data / "sub").mkdir()
+    (data / "sub" / "inner.txt").write_text("inner\n")
+    (data / "sub" / "link").symlink_to("inner.txt")
     run(sync_box(config_path=config_path, box_index_name=idx, verbose=False))
     return {
-        "idx": idx, "config_path": config_path, "remote_name": remote_name,
-        "remote_root": remote_root, "data": data,
+        "idx": idx, "box_id": bm.box_id, "config_path": config_path,
+        "remote_name": remote_name, "remote_root": remote_root, "data": data,
     }
 
 
@@ -164,19 +301,623 @@ def metas(yard):
     return get_boxyard_meta(get_config(yard["config_path"])).box_metas
 
 
+def box_meta(yard) -> BoxMeta:
+    return get_boxyard_meta(get_config(yard["config_path"])).by_index_name[yard["idx"]]
+
+
+def local_record_path(yard, part: BoxPart) -> Path:
+    return box_meta(yard).get_local_sync_record_path(get_config(yard["config_path"]), part)
+
+
+# %% [markdown]
+# ## The feature: a settled plain box is put aside
+
+# %%
+#|export
+def test_a_settled_plain_box_is_provable_for_every_part(yard):
+    v = verdict(yard["config_path"], yard["remote_root"])
+    assert v.skippable == [yard["idx"]], v.reasons
+    assert v.needed == []
+
+
+def test_a_settled_plain_box_is_dropped_from_a_full_pass(yard):
+    """Through the real CLI. `--print-skipped` is on, so a box that merely
+    synced with no change would still be printed; absence means dropped."""
+    first = _multi_sync(yard["config_path"], "--skip-unchanged", "--print-skipped")
+    assert yard["idx"] not in first.output, first.output
+    assert "no box was skipped" not in first.output
+
+
+def _touch_same_content(p: Path):
+    p.write_text(p.read_text())
+
+
+def _chmod_x(p: Path):
+    os.chmod(p, 0o755)
+
+
+def _retarget_link(p: Path):
+    p.unlink()
+    p.symlink_to("../notes.md")
+
+
+@pytest.mark.parametrize(
+    "shape,mutate",
+    [
+        ("edit content", lambda d: (d / "notes.md").write_text("second\n")),
+        ("add a file", lambda d: (d / "new.md").write_text("new\n")),
+        ("delete a file", lambda d: (d / "notes.md").unlink()),
+        ("rename a file", lambda d: (d / "notes.md").rename(d / "renamed.md")),
+        ("chmod +x", lambda d: _chmod_x(d / "notes.md")),
+        ("touch, same content", lambda d: _touch_same_content(d / "notes.md")),
+        ("delete a directory", lambda d: shutil.rmtree(d / "sub")),
+        ("add a symlink", lambda d: (d / "l2").symlink_to("notes.md")),
+        ("remove a symlink", lambda d: (d / "sub" / "link").unlink()),
+        ("retarget a symlink", lambda d: _retarget_link(d / "sub" / "link")),
+    ],
+)
+def test_every_change_shape_on_a_settled_box_is_needed(yard, shape, mutate):
+    """
+    The ten shapes the 0.8.x arc exists for, including the ones that leave no
+    newer file mtime behind. Each must route the box to the real path with
+    DATA named as the unprovable part.
+    """
+    mutate(yard["data"])
+    v = verdict(yard["config_path"], yard["remote_root"])
+    assert v.needed == [yard["idx"]], shape
+    assert v.reasons[yard["idx"]] == "data", shape
+
+
+def test_a_local_meta_edit_is_needed(yard):
+    modify_boxmeta(config_path=yard["config_path"], box_index_name=yard["idx"],
+                   modifications={"groups": ["a-new-group"]})
+    v = verdict(yard["config_path"], yard["remote_root"])
+    assert v.reasons.get(yard["idx"]) == "meta"
+
+
+def test_a_box_absent_from_the_records_listing_is_needed(yard):
+    v = verdict(yard["config_path"], yard["remote_root"], record_views={})
+    assert v.needed == [yard["idx"]]
+    assert v.reasons[yard["idx"]] == "meta"
+
+
+@pytest.mark.parametrize("part", [BoxPart.META, BoxPart.DATA])
+def test_a_missing_baseline_is_never_proof(yard, part):
+    """`local_tree_differs` answers None without a usable baseline, and None is
+    never proof -- the box pays one real check and the real path re-blesses."""
+    base_path_for(local_record_path(yard, part)).unlink()
+    v = verdict(yard["config_path"], yard["remote_root"])
+    assert v.reasons.get(yard["idx"]) == part.value
+
+
+def test_an_incomplete_local_record_is_never_proof(yard):
+    p = local_record_path(yard, BoxPart.DATA)
+    rec = SyncRecord.model_validate_json(p.read_text())
+    p.write_text(rec.model_copy(update={"sync_complete": False}).model_dump_json())
+    v = verdict(yard["config_path"], yard["remote_root"])
+    assert v.reasons.get(yard["idx"]) == "data"
+
+
+def test_a_remote_identity_that_is_not_exactly_ours_is_needed(yard):
+    """No marker, two markers, or a different ULID: all read as needed."""
+    d = remote_record_dir(yard["remote_root"], yard["idx"])
+    (marker,) = remote_markers(yard["remote_root"], yard["idx"], BoxPart.DATA)
+
+    (d / marker).rename(d / f"data.rec.{ULID()}")  # a foreign identity
+    assert verdict(yard["config_path"], yard["remote_root"]).reasons[yard["idx"]] == "data"
+
+    (d / marker).write_text("")  # now two markers
+    assert verdict(yard["config_path"], yard["remote_root"]).reasons[yard["idx"]] == "data"
+
+    for p in d.glob("data.rec.*"):  # now none
+        p.unlink()
+    assert verdict(yard["config_path"], yard["remote_root"]).reasons[yard["idx"]] == "data"
+
+
+# %% [markdown]
+# ## Each flag gates its own parts
+#
+# `--skip-unchanged` is the flag for the WHOLE box; `--skip-unchanged-meta` is
+# the META-only form for the fast loop. A part without its flag is never
+# provable, so the META-only flag can never drop a box from a pass that would
+# execute DATA or CONF.
+
+# %%
+#|export
+def test_the_whole_box_flag_covers_a_meta_only_pass(yard):
+    result = _multi_sync(yard["config_path"], "-c", "meta", "--skip-unchanged", "--print-skipped")
+    assert yard["idx"] not in result.output, result.output
+
+
+def test_the_meta_flag_never_drops_a_box_from_a_data_pass(yard):
+    full = _multi_sync(yard["config_path"], "--skip-unchanged-meta", "--print-skipped")
+    assert "no box was skipped" in full.output
+    assert yard["idx"] in full.output
+
+    data = _multi_sync(yard["config_path"], "-c", "data", "--skip-unchanged-meta", "--print-skipped")
+    assert "no box was skipped" in data.output
+    assert yard["idx"] in data.output
+
+    v = verdict(yard["config_path"], yard["remote_root"], skip_data=False)
+    assert v.reasons[yard["idx"]] == "conf"  # META proved, then the first unflagged part
+
+
+def test_the_no_skip_message_names_the_unprovable_part(yard):
+    (yard["data"] / "notes.md").write_text("edited\n")
+    result = _multi_sync(yard["config_path"], "--skip-unchanged", "--print-skipped")
+    assert "no box was skipped" in result.output
+    assert "'data': 1" in result.output, result.output
+    assert yard["idx"] in result.output
+
+
+# %% [markdown]
+# ## One box cannot take the pass down
+
+# %%
+#|export
+def test_a_box_that_cannot_be_judged_is_synced_not_dropped(yard, monkeypatch, capsys):
+    config_path, remote_name = yard["config_path"], yard["remote_name"]
+    other = new_box(config_path=config_path, box_name="other",
+                    storage_location=remote_name, claim=False)
+    run(sync_box(config_path=config_path, box_index_name=other, verbose=False))
+
+    import boxyard._sync_policy as policy
+
+    real = policy.meta_provably_unchanged
+
+    def _judge(config, bm, view):
+        if bm.index_name == yard["idx"]:
+            raise OSError("simulated unreadable directory")
+        return real(config, bm, view)
+
+    monkeypatch.setattr(policy, "meta_provably_unchanged", _judge)
+    v = verdict(config_path, yard["remote_root"])
+    assert v.needed == [yard["idx"]]
+    assert v.reasons[yard["idx"]].startswith("error:")
+    assert v.skippable == [other]
+    assert yard["idx"] in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_unreadable_directory_isolates_to_its_own_box(yard):
+    """The fingerprint RAISES on a listing failure (a shrunken enumeration
+    would hash to a lie); the raise must cost that box a sync, not the pass."""
+    config_path, remote_name = yard["config_path"], yard["remote_name"]
+    other = new_box(config_path=config_path, box_name="other",
+                    storage_location=remote_name, claim=False)
+    run(sync_box(config_path=config_path, box_index_name=other, verbose=False))
+
+    locked = yard["data"] / "sub"
+    os.chmod(locked, 0o000)
+    try:
+        v = verdict(config_path, yard["remote_root"])
+    finally:
+        os.chmod(locked, 0o755)
+    assert v.needed == [yard["idx"]], v.reasons
+    assert v.skippable == [other]
+
+
+# %% [markdown]
+# ## Placement decides DATA first, by EXACT state
+
+# %%
+#|export
+def test_an_excluded_box_with_nothing_on_disk_is_provable(yard):
+    run(exclude_box(config_path=yard["config_path"], box_index_name=yard["idx"]))
+    assert not yard["data"].exists()
+    v = verdict(yard["config_path"], yard["remote_root"])
+    assert v.skippable == [yard["idx"]], v.reasons
+
+    result = _multi_sync(yard["config_path"], "--skip-unchanged", "--print-skipped")
+    assert yard["idx"] not in result.output
+
+
+def test_an_excluded_box_with_a_tree_on_disk_is_needed(yard):
+    run(exclude_box(config_path=yard["config_path"], box_index_name=yard["idx"]))
+    yard["data"].mkdir(parents=True)
+    (yard["data"] / "stray.txt").write_text("someone put this here\n")
+    v = verdict(yard["config_path"], yard["remote_root"])
+    assert v.reasons.get(yard["idx"]) == "data"
+
+
+def _make_missing(yard):
+    shutil.rmtree(yard["data"])
+
+
+def _make_unavailable(yard):
+    save_placement(
+        get_config(yard["config_path"]), yard["box_id"],
+        CheckoutPlacement(checkout_root="no-such-root", state=PlacementState.INCLUDED),
+    )
+
+
+def _make_relocating(yard):
+    save_placement(
+        get_config(yard["config_path"]), yard["box_id"],
+        CheckoutPlacement(
+            checkout_root="default", state=PlacementState.RELOCATING,
+            relocation=RelocationRecord(
+                source_root="default", destination_root="default",
+                phase=RelocationPhase.COPYING,
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "state,arrange",
+    [
+        (LocalCheckoutState.MISSING, _make_missing),
+        (LocalCheckoutState.UNAVAILABLE, _make_unavailable),
+        (LocalCheckoutState.RELOCATING, _make_relocating),
+    ],
+)
+def test_every_other_placement_state_is_needed(yard, state, arrange):
+    """`check_included()` is false for these too, and using it would have
+    skipped an unplugged root where the real path raises."""
+    arrange(yard)
+    config = get_config(yard["config_path"])
+    assert get_box_checkout_status(config, box_meta(yard)).state is state
+    v = verdict(yard["config_path"], yard["remote_root"])
+    assert v.reasons.get(yard["idx"]) == "data", state
+
+
+# %% [markdown]
+# ## CONF: never-had-one is provable only when BOTH sides are wholly absent
+
+# %%
+#|export
+def _strip_conf(yard):
+    """`new_box` creates an empty conf/ and the first sync records it, so the
+    fixture's CONF is a real (empty) synced part. Construct never-had-CONF:
+    no directory and no record on either side."""
+    config = get_config(yard["config_path"])
+    bm = box_meta(yard)
+    shutil.rmtree(bm.get_local_part_path(config, BoxPart.CONF))
+    rec = bm.get_local_sync_record_path(config, BoxPart.CONF)
+    rec.unlink()
+    base_path_for(rec).unlink()
+    for p in remote_record_dir(yard["remote_root"], yard["idx"]).glob("conf.rec*"):
+        p.unlink()
+
+
+def test_never_had_conf_is_provable_only_when_both_sides_are_absent(yard):
+    config = get_config(yard["config_path"])
+    bm = box_meta(yard)
+    _strip_conf(yard)
+    assert "conf" not in remote_views(yard["remote_root"])[yard["idx"]].records
+    assert verdict(yard["config_path"], yard["remote_root"]).skippable == [yard["idx"]]
+
+    # A remote conf tree without its record -- a loud ERROR on the real path.
+    remote_conf = _store(yard["remote_root"]) / const.REMOTE_BOXES_REL_PATH / yard["idx"] / const.BOX_CONF_REL_PATH
+    remote_conf.mkdir()
+    (remote_conf / const.RCLONE_EXCLUDE_FILENAME).write_text("*.log\n")
+    assert verdict(yard["config_path"], yard["remote_root"]).reasons[yard["idx"]] == "conf"
+    shutil.rmtree(remote_conf)
+
+    # A local conf directory nothing has synced yet.
+    local_conf = bm.get_local_part_path(config, BoxPart.CONF)
+    local_conf.mkdir(parents=True)
+    (local_conf / const.RCLONE_EXCLUDE_FILENAME).write_text("*.log\n")
+    assert verdict(yard["config_path"], yard["remote_root"]).reasons[yard["idx"]] == "conf"
+    shutil.rmtree(local_conf)
+
+    # A remote conf record with nothing local and no remote conf tree is the
+    # recorded-but-never-materialized state: provable (see the fleet test).
+    rec = SyncRecord.create(sync_complete=True, syncer_hostname="elsewhere")
+    run(rec.rclone_save(
+        str(config.rclone_config_path), yard["remote_name"],
+        bm.get_remote_sync_record_path(config, BoxPart.CONF).as_posix(),
+    ))
+    assert verdict(yard["config_path"], yard["remote_root"]).skippable == [yard["idx"]]
+
+    # ...until the remote conf tree exists too: then there is something to pull.
+    remote_conf.mkdir()
+    (remote_conf / const.RCLONE_EXCLUDE_FILENAME).write_text("*.log\n")
+    assert verdict(yard["config_path"], yard["remote_root"]).reasons[yard["idx"]] == "conf"
+
+
+def test_a_synced_conf_is_provable_and_a_conf_edit_is_needed(yard):
+    config = get_config(yard["config_path"])
+    local_conf = box_meta(yard).get_local_part_path(config, BoxPart.CONF)
+    local_conf.mkdir(parents=True, exist_ok=True)
+    (local_conf / const.RCLONE_EXCLUDE_FILENAME).write_text("*.log\n")
+    run(sync_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
+    assert verdict(yard["config_path"], yard["remote_root"]).skippable == [yard["idx"]]
+
+    (local_conf / const.RCLONE_EXCLUDE_FILENAME).write_text("*.log\n*.tmp\n")
+    assert verdict(yard["config_path"], yard["remote_root"]).reasons[yard["idx"]] == "conf"
+
+
+# %% [markdown]
+# ## A tombstoned box always reaches `sync_box`, whose warning is the report
+
+# %%
+#|export
+def test_a_tombstoned_box_is_needed_even_when_its_files_survive(yard):
+    """A delete whose remote purge failed leaves the box fully listable; the
+    tombstone alone must keep it out of the skippable set."""
+    config = get_config(yard["config_path"])
+    run(create_tombstone(config, yard["remote_name"], yard["box_id"], yard["idx"]))
+    assert (_store(yard["remote_root"]) / const.REMOTE_BOXES_REL_PATH / yard["idx"]).is_dir()
+
+    v = verdict(yard["config_path"], yard["remote_root"], tombstoned={yard["idx"]})
+    assert v.reasons.get(yard["idx"]) == "tombstoned"
+
+    result = _multi_sync(yard["config_path"], "--skip-unchanged", "--print-skipped")
+    assert "was deleted" in result.output, result.output
+
+
+# %% [markdown]
+# ## Bootstrapping markers on a fleet that has none
+#
+# A remote written by an older boxyard carries no markers, and an idle box never
+# pushes, so the real path publishes the marker for the record it just read --
+# once per part, only for a part that came back SYNCED with matching records.
+
+# %%
+#|export
+def _strip_markers(remote_root, idx):
+    for p in remote_record_dir(remote_root, idx).glob("*.rec.*"):
+        p.unlink()
+
+
+def test_markers_are_bootstrapped_by_the_real_path(yard):
+    _strip_markers(yard["remote_root"], yard["idx"])
+    assert verdict(yard["config_path"], yard["remote_root"]).reasons[yard["idx"]] == "meta"
+
+    first = _multi_sync(yard["config_path"], "--skip-unchanged", "--print-skipped")
+    assert yard["idx"] in first.output
+    # Three: META, DATA, and the (empty) CONF the first sync recorded.
+    assert "Published 3 sync-record marker(s)" in first.output, first.output
+
+    d = remote_record_dir(yard["remote_root"], yard["idx"])
+    for part in BoxPart:
+        remote_rec = SyncRecord.model_validate_json((d / f"{part.value}.rec").read_text())
+        assert remote_markers(yard["remote_root"], yard["idx"], part) == [
+            f"{part.value}.rec.{remote_rec.ulid}"
+        ]
+
+    second = _multi_sync(yard["config_path"], "--skip-unchanged", "--print-skipped")
+    assert yard["idx"] not in second.output
+
+
+def test_a_failed_sync_bootstraps_nothing(yard, monkeypatch):
+    _strip_markers(yard["remote_root"], yard["idx"])
+
+    async def _explode(*args, **kwargs):
+        raise RuntimeError("remote went away")
+
+    monkeypatch.setattr(cmds_module, "sync_box", _explode)
+    _multi_sync(yard["config_path"], "--skip-unchanged")
+
+    assert remote_markers(yard["remote_root"], yard["idx"], BoxPart.META) == []
+    assert remote_markers(yard["remote_root"], yard["idx"], BoxPart.DATA) == []
+    assert verdict(yard["config_path"], yard["remote_root"]).needed == [yard["idx"]]
+
+
+def test_an_unfiltered_pass_bootstraps_nothing(yard):
+    """Bookkeeping for the filter happens only on filtered passes."""
+    _strip_markers(yard["remote_root"], yard["idx"])
+    _multi_sync(yard["config_path"])
+    assert remote_markers(yard["remote_root"], yard["idx"], BoxPart.META) == []
+
+
+# %% [markdown]
+# ## Two machines: the races and the closure
+#
+# `fleet` is machine A and machine B sharing one remote, both with the box
+# included and settled. The "foreign push" tests inject A's push INSIDE B's
+# filtered pass, right after B's own sync of the box -- the window a pass-end
+# stamp would have adopted -- and require the box to be needed on B's next
+# pass and the pushed change to arrive.
+
+# %%
+#|export
+@pytest.fixture
+def fleet(monkeypatch, tmp_path):
+    from tests.integration.conftest import create_boxyards
+
+    monkeypatch.setenv("BOXYARD_RESTIC_PASSWORD", "skip-test-password")
+    for target in ("boxyard.const", "boxyard._restic.const"):
+        monkeypatch.setattr(f"{target}.RESTIC_CANONICAL_ROOT", str(tmp_path / "canon"))
+
+    remote_name, remote_root, yards = create_boxyards(num_boxyards=2)
+    (cfgA, cpA, _), (cfgB, cpB, _) = yards
+    idx = new_box(config_path=cpA, box_name="shared", storage_location=remote_name, claim=False)
+    bmA = get_boxyard_meta(cfgA).by_index_name[idx]
+    dataA = bmA.get_local_part_path(cfgA, BoxPart.DATA)
+    (dataA / "notes.md").write_text("first\n")
+    run(sync_box(config_path=cpA, box_index_name=idx, verbose=False))
+
+    run(sync_missing_boxmetas(config_path=cpB, verbose=False))
+    run(include_box(config_path=cpB, box_index_name=idx, read_only=True))
+    run(sync_box(config_path=cpB, box_index_name=idx, verbose=False))
+    bmB = get_boxyard_meta(cfgB).by_index_name[idx]
+    dataB = bmB.get_local_part_path(cfgB, BoxPart.DATA)
+    assert (dataB / "notes.md").read_text() == "first\n"
+    assert verdict(cpB, remote_root).skippable == [idx]
+
+    return {
+        "idx": idx, "remote_name": remote_name, "remote_root": remote_root,
+        "cpA": cpA, "cpB": cpB, "dataA": dataA, "dataB": dataB,
+    }
+
+
+def _push_from_a_after_b_synced(fleet, monkeypatch, foreign_push):
+    """Patch `sync_box` so that, once B has synced the box in this pass, A's
+    push lands. Returns the pass result."""
+    real = cmds_module.sync_box
+    fired = []
+
+    async def _wrapped(**kwargs):
+        result = await real(**kwargs)
+        if kwargs["box_index_name"] == fleet["idx"] and not fired:
+            fired.append(True)
+            await foreign_push(real)
+        return result
+
+    monkeypatch.setattr(cmds_module, "sync_box", _wrapped)
+    result = _multi_sync(fleet["cpB"], "--skip-unchanged", "--print-skipped")
+    monkeypatch.setattr(cmds_module, "sync_box", real)
+    assert fired, "the box never went through sync_box in the injected pass"
+    return result
+
+
+def test_a_foreign_meta_push_after_b_synced_the_box_is_needed_next_pass(fleet, monkeypatch):
+    # Make the box needed on B's pass without touching META: a DATA edit on B.
+    (fleet["dataB"] / "from-b.md").write_text("b\n")
+
+    async def _a_pushes_meta(real_sync_box):
+        modify_boxmeta(config_path=fleet["cpA"], box_index_name=fleet["idx"],
+                       modifications={"groups": ["pushed-by-a"]})
+        await real_sync_box(config_path=fleet["cpA"], box_index_name=fleet["idx"],
+                            sync_choices=[BoxPart.META], verbose=False)
+
+    _push_from_a_after_b_synced(fleet, monkeypatch, _a_pushes_meta)
+
+    assert verdict(fleet["cpB"], fleet["remote_root"]).reasons.get(fleet["idx"]) == "meta"
+    nxt = _multi_sync(fleet["cpB"], "--skip-unchanged", "--print-skipped")
+    assert fleet["idx"] in nxt.output
+    bmB = get_boxyard_meta(get_config(fleet["cpB"])).by_index_name[fleet["idx"]]
+    assert "pushed-by-a" in bmB.groups
+
+
+def test_a_foreign_data_push_after_b_synced_the_box_is_needed_next_pass(fleet, monkeypatch):
+    modify_boxmeta(config_path=fleet["cpB"], box_index_name=fleet["idx"],
+                   modifications={"groups": ["edited-on-b"]})
+
+    async def _a_pushes_data(real_sync_box):
+        (fleet["dataA"] / "notes.md").write_text("second, from a\n")
+        await real_sync_box(config_path=fleet["cpA"], box_index_name=fleet["idx"],
+                            sync_choices=[BoxPart.DATA], verbose=False)
+
+    _push_from_a_after_b_synced(fleet, monkeypatch, _a_pushes_data)
+
+    assert verdict(fleet["cpB"], fleet["remote_root"]).reasons.get(fleet["idx"]) == "data"
+    nxt = _multi_sync(fleet["cpB"], "--skip-unchanged", "--print-skipped")
+    assert fleet["idx"] in nxt.output
+    assert (fleet["dataB"] / "notes.md").read_text() == "second, from a\n"
+
+
+def test_a_data_pass_cannot_skip_a_box_whose_remote_conf_moved(fleet):
+    """`sync_box -c data` syncs CONF too (its filters decide what DATA syncs),
+    so a `-c data` skip must prove CONF as well -- the closure."""
+    cfgA = get_config(fleet["cpA"])
+    confA = get_boxyard_meta(cfgA).by_index_name[fleet["idx"]].get_local_part_path(cfgA, BoxPart.CONF)
+    confA.mkdir(parents=True, exist_ok=True)
+    (confA / const.RCLONE_EXCLUDE_FILENAME).write_text("*.log\n")
+    run(sync_box(config_path=fleet["cpA"], box_index_name=fleet["idx"], verbose=False))
+
+    v = verdict(fleet["cpB"], fleet["remote_root"], requested=[BoxPart.DATA])
+    assert v.reasons.get(fleet["idx"]) == "conf"
+
+    result = _multi_sync(fleet["cpB"], "-c", "data", "--skip-unchanged", "--print-skipped")
+    assert fleet["idx"] in result.output
+    cfgB = get_config(fleet["cpB"])
+    confB = get_boxyard_meta(cfgB).by_index_name[fleet["idx"]].get_local_part_path(cfgB, BoxPart.CONF)
+    assert (confB / const.RCLONE_EXCLUDE_FILENAME).read_text() == "*.log\n"
+
+
+def test_a_data_pass_cannot_skip_a_box_whose_remote_meta_moved(fleet):
+    modify_boxmeta(config_path=fleet["cpA"], box_index_name=fleet["idx"],
+                   modifications={"groups": ["pushed-by-a"]})
+    run(sync_box(config_path=fleet["cpA"], box_index_name=fleet["idx"],
+                 sync_choices=[BoxPart.META], verbose=False))
+
+    v = verdict(fleet["cpB"], fleet["remote_root"], requested=[BoxPart.DATA])
+    assert v.reasons.get(fleet["idx"]) == "meta"
+
+    result = _multi_sync(fleet["cpB"], "-c", "data", "--skip-unchanged", "--print-skipped")
+    assert fleet["idx"] in result.output
+    bmB = get_boxyard_meta(get_config(fleet["cpB"])).by_index_name[fleet["idx"]]
+    assert "pushed-by-a" in bmB.groups
+
+
+def test_undoing_a_denied_edit_still_pulls_the_owners_push(fleet):
+    """
+    Identity, not the tree, decides. B (non-owner) edits, is denied, then
+    undoes the edit byte-for-byte WITH its mtime -- so B's tree equals its
+    baseline again. Meanwhile the owner pushed. The remote identity moved, so
+    the box must be needed and the push must arrive.
+    """
+    run(claim_box(config_path=fleet["cpA"], box_index_name=fleet["idx"], verbose=False))
+    run(sync_box(config_path=fleet["cpB"], box_index_name=fleet["idx"], verbose=False))
+    assert verdict(fleet["cpB"], fleet["remote_root"]).skippable == [fleet["idx"]]
+
+    notes = fleet["dataB"] / "notes.md"
+    before = notes.stat()
+    notes.write_text("edited on b\n")
+    denied = run(sync_box(config_path=fleet["cpB"], box_index_name=fleet["idx"], verbose=False))
+    assert denied[BoxPart.DATA][0].sync_condition is SyncCondition.WRITE_DENIED
+
+    (fleet["dataA"] / "other.md").write_text("from the owner\n")
+    run(sync_box(config_path=fleet["cpA"], box_index_name=fleet["idx"], verbose=False))
+
+    notes.write_text("first\n")
+    os.utime(notes, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    v = verdict(fleet["cpB"], fleet["remote_root"])
+    assert v.reasons.get(fleet["idx"]) == "data"
+    result = _multi_sync(fleet["cpB"], "--skip-unchanged", "--print-skipped")
+    assert fleet["idx"] in result.output
+    assert (fleet["dataB"] / "other.md").read_text() == "from the owner\n"
+
+
+def test_an_edit_landing_after_a_clean_probe_is_not_blessed(fleet, monkeypatch):
+    """
+    The non-owner probe-clean baseline: fingerprinted BEFORE the remote probe.
+    An edit that lands between the probe and the baseline write must show up
+    as pending work (WRITE_DENIED) on the next sync, not be blessed as already
+    on the remote.
+    """
+    import boxyard.cmds._sync_box as sync_box_module
+
+    run(claim_box(config_path=fleet["cpA"], box_index_name=fleet["idx"], verbose=False))
+    cfgA = get_config(fleet["cpA"])
+    confA = get_boxyard_meta(cfgA).by_index_name[fleet["idx"]].get_local_part_path(cfgA, BoxPart.CONF)
+    confA.mkdir(parents=True, exist_ok=True)
+    (confA / const.RCLONE_EXCLUDE_FILENAME).write_text("*.log\n")
+    run(sync_box(config_path=fleet["cpA"], box_index_name=fleet["idx"], verbose=False))
+    run(sync_box(config_path=fleet["cpB"], box_index_name=fleet["idx"], verbose=False))
+
+    # Put B on the mtime fallback with a tree that LOOKS changed but transfers
+    # nothing: no baseline, plus a file the box's own filters exclude.
+    cfgB = get_config(fleet["cpB"])
+    bmB = get_boxyard_meta(cfgB).by_index_name[fleet["idx"]]
+    base_path_for(bmB.get_local_sync_record_path(cfgB, BoxPart.DATA)).unlink()
+    (fleet["dataB"] / "scratch.log").write_text("excluded by conf\n")
+
+    real_probe = sync_box_module.push_would_transfer
+
+    async def _probe_then_edit(*args, **kwargs):
+        would = await real_probe(*args, **kwargs)
+        (fleet["dataB"] / "notes.md").write_text("edited after the probe\n")
+        return would
+
+    monkeypatch.setattr(sync_box_module, "push_would_transfer", _probe_then_edit)
+    first = run(sync_box(config_path=fleet["cpB"], box_index_name=fleet["idx"], verbose=False))
+    monkeypatch.setattr(sync_box_module, "push_would_transfer", real_probe)
+    assert first[BoxPart.DATA][0].sync_condition is SyncCondition.SYNCED
+
+    assert verdict(fleet["cpB"], fleet["remote_root"]).reasons.get(fleet["idx"]) == "data"
+    second = run(sync_box(config_path=fleet["cpB"], box_index_name=fleet["idx"], verbose=False))
+    assert second[BoxPart.DATA][0].sync_condition is SyncCondition.WRITE_DENIED
+
+
+# %% [markdown]
+# ## Restic DATA: the pointer-stamp filter, unchanged in logic
+
+# %%
+#|export
 def pointer_entry(yard):
     """(ModTime, Size) of the box's pointer, as the bulk listing would report."""
-    import json
-    import subprocess
-
-    from boxyard._utils import get_rclone_binary
-
     config = get_config(yard["config_path"])
     out = subprocess.run(
         [
             get_rclone_binary(), "lsjson", "--config", str(config.rclone_config_path),
             "--files-only", "--recursive", "--max-depth", "2",
-            "--filter", f"+ {const.BOX_SNAPSHOT_POINTER_REL_PATH}",
+            "--filter", f"+ /*/{const.BOX_SNAPSHOT_POINTER_REL_PATH}",
             "--filter", "- **",
             f"{yard['remote_name']}:"
             f"{config.storage_locations[yard['remote_name']].store_path}/"
@@ -190,65 +931,46 @@ def pointer_entry(yard):
     return result
 
 
-# %%
-#|export
-def test_a_plain_box_is_never_skippable_for_data(yard):
-    """
-    A plain box's DATA has no cheap remote signal -- which is the reason its
-    no-op sync costs 30 s. It must always go through the real path.
-
-    Everything else is arranged to say "skippable" -- a matching pointer entry,
-    a matching check record, an unmodified tree, a local state record -- so the
-    ONLY thing keeping this box out of `skippable` is the format guard. Without
-    that, a passing test would prove nothing, which is what mutation testing
-    caught the first time.
-    """
+def test_a_plain_box_handed_to_the_restic_filter_is_always_needed(yard):
+    """The format guard: everything else is arranged to say "skippable"."""
     from boxyard._restic import write_state
 
     config = get_config(yard["config_path"])
     listing = {yard["idx"]: ("2026-01-01T00:00:00Z", 42)}
     write_check_record(config, yard["idx"], BoxPart.DATA, 1000.0,
                        remote_modtime="2026-01-01T00:00:00Z", remote_size=42)
-    # A state record whose timestamp is far in the future, so the local tree
-    # cannot look modified either.
     write_state(config.boxyard_data_path, yard["idx"], "deadbeef",
                 now_unix=4102444800.0, files=1)
-
-    assert BoxMeta.load(
-        config, yard["remote_name"], yard["idx"]
-    ).storage_format is StorageFormat.PLAIN
+    assert box_meta(yard).storage_format is StorageFormat.PLAIN
 
     needed, skippable = data_boxes_needing_sync(config, metas(yard), listing)
-    assert skippable == [], "a plain box was skipped on evidence it cannot have"
+    assert skippable == []
     assert yard["idx"] in needed
 
 
 @needs_restic
 def test_a_converted_unchanged_box_is_skippable(yard):
-    run(convert_box(config_path=yard["config_path"],
-                    box_index_name=yard["idx"], verbose=False))
+    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     config = get_config(yard["config_path"])
     listing = pointer_entry(yard)
     modtime, size = listing[yard["idx"]]
     write_check_record(config, yard["idx"], BoxPart.DATA, 1000.0,
                        remote_modtime=modtime, remote_size=size)
-
     needed, skippable = data_boxes_needing_sync(config, metas(yard), listing)
     assert skippable == [yard["idx"]]
     assert needed == []
+    # ...and through the full-pass verdict, which delegates restic DATA here.
+    assert verdict(yard["config_path"], yard["remote_root"], pointer_listing=listing).skippable == [yard["idx"]]
 
 
 @needs_restic
 def test_a_moved_pointer_is_never_skipped(yard):
-    run(convert_box(config_path=yard["config_path"],
-                    box_index_name=yard["idx"], verbose=False))
+    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     config = get_config(yard["config_path"])
     listing = pointer_entry(yard)
     modtime, size = listing[yard["idx"]]
     write_check_record(config, yard["idx"], BoxPart.DATA, 1000.0,
                        remote_modtime=modtime, remote_size=size)
-
-    # As another machine's push would leave it.
     moved = {yard["idx"]: ("2099-01-01T00:00:00Z", size)}
     needed, skippable = data_boxes_needing_sync(config, metas(yard), moved)
     assert needed == [yard["idx"]]
@@ -256,281 +978,143 @@ def test_a_moved_pointer_is_never_skipped(yard):
 
 
 @needs_restic
-def test_a_locally_modified_box_is_never_skipped(yard):
-    run(convert_box(config_path=yard["config_path"],
-                    box_index_name=yard["idx"], verbose=False))
+def test_a_locally_modified_restic_box_is_never_skipped(yard):
+    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     config = get_config(yard["config_path"])
     listing = pointer_entry(yard)
     modtime, size = listing[yard["idx"]]
     write_check_record(config, yard["idx"], BoxPart.DATA, 1000.0,
                        remote_modtime=modtime, remote_size=size)
-
     (yard["data"] / "notes.md").write_text("edited after the last sync\n")
-
-    needed, skippable = data_boxes_needing_sync(config, metas(yard), listing)
+    needed, _ = data_boxes_needing_sync(config, metas(yard), listing)
     assert needed == [yard["idx"]]
 
 
 @needs_restic
-def test_a_box_with_no_check_record_is_never_skipped(yard):
-    """Degrades in ONE direction: unknown means do the work."""
-    run(convert_box(config_path=yard["config_path"],
-                    box_index_name=yard["idx"], verbose=False))
+def test_a_lone_deletion_in_a_restic_box_is_never_skipped(yard):
+    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     config = get_config(yard["config_path"])
-    needed, skippable = data_boxes_needing_sync(
-        config, metas(yard), pointer_entry(yard)
-    )
+    listing = pointer_entry(yard)
+    modtime, size = listing[yard["idx"]]
+    write_check_record(config, yard["idx"], BoxPart.DATA, 1000.0,
+                       remote_modtime=modtime, remote_size=size)
+    (yard["data"] / "notes.md").unlink()  # the ONLY change: no mtime survives it
+    needed, skippable = data_boxes_needing_sync(config, metas(yard), listing)
+    assert needed == [yard["idx"]]
+    assert skippable == []
+
+
+@needs_restic
+def test_a_restic_box_with_no_check_record_is_never_skipped(yard):
+    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
+    config = get_config(yard["config_path"])
+    needed, _ = data_boxes_needing_sync(config, metas(yard), pointer_entry(yard))
     assert needed == [yard["idx"]]
 
 
 @needs_restic
 def test_an_interrupted_restore_is_never_skipped(yard):
-    """
-    A torn tree is exactly when the real path has work to do. Skipping it would
-    leave the box half-restored until something else happened to notice.
-    """
     from boxyard._restic import mark_pull_started
 
-    run(convert_box(config_path=yard["config_path"],
-                    box_index_name=yard["idx"], verbose=False))
+    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     config = get_config(yard["config_path"])
     listing = pointer_entry(yard)
     modtime, size = listing[yard["idx"]]
     write_check_record(config, yard["idx"], BoxPart.DATA, 1000.0,
                        remote_modtime=modtime, remote_size=size)
     mark_pull_started(config.boxyard_data_path, yard["idx"], "0" * 64)
-
-    needed, skippable = data_boxes_needing_sync(config, metas(yard), listing)
+    needed, _ = data_boxes_needing_sync(config, metas(yard), listing)
     assert needed == [yard["idx"]]
 
 
 @needs_restic
-def test_a_box_missing_from_the_listing_is_never_skipped(yard):
-    run(convert_box(config_path=yard["config_path"],
-                    box_index_name=yard["idx"], verbose=False))
+def test_a_restic_box_missing_from_the_listing_is_never_skipped(yard):
+    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
     config = get_config(yard["config_path"])
     write_check_record(config, yard["idx"], BoxPart.DATA, 1000.0,
                        remote_modtime="T", remote_size=1)
-    needed, skippable = data_boxes_needing_sync(config, metas(yard), {})
+    needed, _ = data_boxes_needing_sync(config, metas(yard), {})
     assert needed == [yard["idx"]]
 
 
-# %% [markdown]
-# ## The correction: a box is skipped only if every requested part is provable
-
-# %%
-#|export
-@needs_restic
-def test_the_real_bulk_listing_keeps_the_two_files_apart(yard, monkeypatch):
-    """
-    The production path, not a simulation. A converted box has BOTH files at
-    depth 2; if the listing keys by box alone, one overwrites the other, the
-    META stamp is compared against the POINTER, and the box can never be
-    skipped for META again.
-
-    Driven through the real `multi-sync` so the fix is tested where it lives.
-    """
-    from typer.testing import CliRunner
-
-    from boxyard._cli.app import app
-    from boxyard._sync_policy import read_check_record
-
-    def _multi_sync(*args):
-        result = CliRunner().invoke(
-            app,
-            ["--config", str(yard["config_path"]), "multi-sync", *args],
-        )
-        assert result.exit_code == 0, f"exited {result.exit_code}\n{result.output}"
-        return result
-
-    run(convert_box(config_path=yard["config_path"],
-                    box_index_name=yard["idx"], verbose=False))
-    _multi_sync("-c", "meta")
-    _multi_sync("-c", "meta", "--skip-unchanged-meta")
-
-    config = get_config(yard["config_path"])
-    meta_record = read_check_record(config, yard["idx"], BoxPart.META)
-    assert meta_record is not None
-
-    # The stamp must describe the BOXMETA, not the pointer. Compare it against
-    # what each file actually reports.
-    pointer = pointer_entry(yard).get(yard["idx"])
-    assert pointer is not None, "precondition: the box is converted"
-    assert (meta_record["remote_modtime"], meta_record["remote_size"]) != pointer, (
-        "the META stamp was taken from data.snapshot -- the two collided"
-    )
-
-    # ...and with a correct stamp the box is skippable for META, which is the
-    # optimisation the collision silently switched off.
-    from boxyard._sync_policy import meta_boxes_needing_sync as _meta_needing
-
-    import json as _json
-    import subprocess as _sp
-
-    from boxyard._utils import get_rclone_binary
-
-    out = _sp.run(
-        [
-            get_rclone_binary(), "lsjson", "--config",
-            str(config.rclone_config_path), "--files-only", "--recursive",
-            "--max-depth", "2",
-            "--filter", f"+ {const.BOX_METAFILE_REL_PATH}", "--filter", "- **",
-            f"{yard['remote_name']}:"
-            f"{config.storage_locations[yard['remote_name']].store_path}/"
-            f"{const.REMOTE_BOXES_REL_PATH}",
-        ],
-        capture_output=True, text=True,
-    )
-    meta_listing = {
-        Path(e["Path"]).parts[0]: (e.get("ModTime"), e.get("Size"))
-        for e in _json.loads(out.stdout or "[]")
-    }
-    _, skippable = _meta_needing(config, metas(yard), meta_listing)
-    assert yard["idx"] in skippable
-
-
-def test_meta_evidence_alone_does_not_skip_a_data_sync(yard):
-    """
-    `--skip-unchanged-meta` used to drop a box from the pass on META evidence
-    alone, so a full pass would skip a box whose DATA had changed locally: its
-    boxmeta was settled, which says nothing about its files. Latent only because
-    the flag has never been switched on.
-
-    Expressed at the level the fix lives at -- the intersection over requested
-    parts -- because DATA is not provable for a plain box at all.
-    """
-    config = get_config(yard["config_path"])
-    box_metas = metas(yard)
-
-    _, meta_skippable = meta_boxes_needing_sync(config, box_metas, {})
-    _, data_skippable = data_boxes_needing_sync(config, box_metas, {})
-
-    both_parts = set(meta_skippable) & set(data_skippable)
-    assert both_parts == set(), "a plain box's DATA is never provable"
-
-
-# %% [markdown]
-# ## Each flag gates only its own part
-#
-# The block that computes skippability is entered when EITHER
-# `--skip-unchanged` or `--skip-unchanged-meta` is given, and it then walks
-# every requested part. So each part must check its OWN flag: without that,
-# `--skip-unchanged` — the DATA flag — silently switches META skipping on for a
-# `-c meta` pass the user never asked to filter.
-#
-# Found while merging this branch with the META-only guard that landed on main.
-# The intersection is the correct generalisation of that guard, but only once
-# each arm is gated; the version written before the merge gated DATA and not
-# META.
-
-# %%
-#|export
-def test_the_data_flag_does_not_switch_on_meta_skipping(yard):
-    """
-    `-c meta --skip-unchanged` must skip NOTHING: the pass asks for META, and
-    the flag given is the DATA one. The message names META as unprovable here,
-    which is the honest answer -- no META evidence was requested.
-    """
-    from typer.testing import CliRunner
-
-    from boxyard._cli.app import app
-
-    def _multi_sync(*args):
-        result = CliRunner().invoke(
-            app, ["--config", str(yard["config_path"]), "multi-sync", *args]
-        )
-        assert result.exit_code == 0, f"exited {result.exit_code}\n{result.output}"
-        return result
-
-    # Settle the box so it WOULD be skippable if META skipping were on.
-    _multi_sync("-c", "meta")
-    settled = _multi_sync("-c", "meta", "--skip-unchanged-meta")
-    assert "no box was skipped" not in settled.output, (
-        "precondition: with its own flag, a settled META pass does skip"
-    )
-
-    result = _multi_sync("-c", "meta", "--skip-unchanged")
-    assert "no box was skipped" in result.output, (
-        "the DATA flag switched on META skipping"
-    )
-
-
-# %% [markdown]
-# ## The filter itself, observed end to end
-#
-# The tests above that touch rclone build the filter strings themselves, so they
-# describe what rclone does rather than what multi-sync ASKS it. Mutation
-# testing during the merge showed the cost: dropping
-# `+ /*/data.snapshot` from multi-sync's real filter left every one of them
-# green, because none of them read the code's filter.
-#
-# This one drives `multi-sync` and observes whether the box was dropped from the
-# pass, which is the only thing the filter ultimately decides.
-
-# %%
-#|export
 @needs_restic
 def test_the_real_filter_admits_the_pointer(yard):
+    """A converted, settled box must be DROPPED from a `-c data --skip-unchanged`
+    pass -- possible only if the bulk listing returned its `data.snapshot`."""
+    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
+    first = _multi_sync(yard["config_path"], "-c", "data", "--skip-unchanged", "--print-skipped")
+    assert yard["idx"] in first.output, "the first pass must sync the box and stamp it"
+    second = _multi_sync(yard["config_path"], "-c", "data", "--skip-unchanged", "--print-skipped")
+    assert yard["idx"] not in second.output
+
+
+@needs_restic
+def test_a_pointer_moved_after_the_box_was_synced_is_needed_next_pass(yard, monkeypatch):
     """
-    A converted, settled box must be DROPPED from a `-c data --skip-unchanged`
-    pass. It can only be dropped if the bulk listing actually returned its
-    `data.snapshot`, so this fails if the filter stops asking for it.
-
-    `--print-skipped` is on so that a box which was merely synced-with-no-change
-    still appears: absence then means dropped from the pass, not quietly
-    unchanged.
+    The stamp is taken from the PRE-pass listing. A stamp from a pass-end
+    listing adopts a foreign push that lands after the box's own sync and
+    skips the box next pass -- the race two independent reviews reproduced.
     """
-    from typer.testing import CliRunner
+    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
+    _multi_sync(yard["config_path"], "--skip-unchanged")
+    # Needed next pass through META alone; the restic DATA half stays clean.
+    modify_boxmeta(config_path=yard["config_path"], box_index_name=yard["idx"],
+                   modifications={"groups": ["nudge"]})
+    pointer = _store(yard["remote_root"]) / const.REMOTE_BOXES_REL_PATH / yard["idx"] / const.BOX_SNAPSHOT_POINTER_REL_PATH
 
-    from boxyard._cli.app import app
+    real = cmds_module.sync_box
 
-    def _multi_sync(*args):
-        result = CliRunner().invoke(
-            app, ["--config", str(yard["config_path"]), "multi-sync", *args]
-        )
-        assert result.exit_code == 0, f"exited {result.exit_code}\n{result.output}"
+    async def _then_foreign_push(**kwargs):
+        result = await real(**kwargs)
+        pointer.write_text(pointer.read_text() + "\n")  # another machine's push
+        os.utime(pointer, (4102444800, 4102444800))
         return result
 
-    run(convert_box(config_path=yard["config_path"],
-                    box_index_name=yard["idx"], verbose=False))
+    monkeypatch.setattr(cmds_module, "sync_box", _then_foreign_push)
+    _multi_sync(yard["config_path"], "--skip-unchanged")
+    monkeypatch.setattr(cmds_module, "sync_box", real)
 
-    first = _multi_sync("-c", "data", "--skip-unchanged", "--print-skipped")
-    assert yard["idx"] in first.output, (
-        "precondition: the first pass must actually sync the box and stamp it"
-    )
+    nxt = _multi_sync(yard["config_path"], "--skip-unchanged", "--print-skipped")
+    assert yard["idx"] in nxt.output, "the moved pointer was adopted as agreed"
 
-    second = _multi_sync("-c", "data", "--skip-unchanged", "--print-skipped")
-    assert yard["idx"] not in second.output, (
-        "the settled box was not dropped from the pass -- the bulk listing "
-        "did not return its data.snapshot"
-    )
+
+@needs_restic
+def test_convert_removes_the_data_record_and_its_marker(yard):
+    run(convert_box(config_path=yard["config_path"], box_index_name=yard["idx"], verbose=False))
+    d = remote_record_dir(yard["remote_root"], yard["idx"])
+    assert not (d / "data.rec").exists()
+    assert remote_markers(yard["remote_root"], yard["idx"], BoxPart.DATA) == []
+    assert remote_markers(yard["remote_root"], yard["idx"], BoxPart.META) != []
+
 
 # %% [markdown]
-# ## The motivating shape: a lone deletion is never skipped
+# ## CONF recorded but never materialized
 #
-# The whole 0.8.x arc started from a deletion that left no newer mtime behind.
-# The filter's local gate is `tree_touched_since` — ctime-and-directories —
-# precisely so this shape opens it (deleting a file moves its parent's
-# mtime/ctime). Reverting that gate to the files-only mtime test left this
-# file's every test green, so the shape gets pinned by name.
+# `new_box` pushes an empty conf/, which rclone records but never creates on
+# the remote. Every other machine then holds no CONF record and no directory
+# while the remote holds a record: the real path reads SYNCED and transfers
+# nothing, so the filter must call it provable -- and without requiring a
+# marker, which the bootstrap could never publish here.
 
 # %%
 #|export
-@needs_restic
-def test_a_lone_deletion_is_never_skipped(yard):
-    run(convert_box(config_path=yard["config_path"],
-                    box_index_name=yard["idx"], verbose=False))
-    config = get_config(yard["config_path"])
-    listing = pointer_entry(yard)
-    modtime, size = listing[yard["idx"]]
-    write_check_record(config, yard["idx"], BoxPart.DATA, 1000.0,
-                       remote_modtime=modtime, remote_size=size)
+def test_a_conf_recorded_but_never_materialized_is_provable(fleet):
+    cfgB = get_config(fleet["cpB"])
+    bmB = get_boxyard_meta(cfgB).by_index_name[fleet["idx"]]
+    assert not bmB.get_local_sync_record_path(cfgB, BoxPart.CONF).exists()
+    assert not bmB.get_local_part_path(cfgB, BoxPart.CONF).exists()
+    assert "conf" in remote_views(fleet["remote_root"])[fleet["idx"]].records
 
-    (yard["data"] / "notes.md").unlink()  # the ONLY change: no mtime survives it
+    v = verdict(fleet["cpB"], fleet["remote_root"])
+    assert v.skippable == [fleet["idx"]], v.reasons
 
-    needed, skippable = data_boxes_needing_sync(config, metas(yard), listing)
-    assert needed == [yard["idx"]], (
-        "a box whose only change is a deletion was skipped -- the exact shape "
-        "the 0.8.x work exists to catch"
-    )
-    assert skippable == []
+    # An older boxyard's remote: the record without its marker. Still provable.
+    for p in remote_record_dir(fleet["remote_root"], fleet["idx"]).glob("conf.rec.*"):
+        p.unlink()
+    assert verdict(fleet["cpB"], fleet["remote_root"]).skippable == [fleet["idx"]]
+
+    # But a remote conf tree is something to pull: needed.
+    remote_conf = _store(fleet["remote_root"]) / const.REMOTE_BOXES_REL_PATH / fleet["idx"] / const.BOX_CONF_REL_PATH
+    remote_conf.mkdir()
+    (remote_conf / const.RCLONE_EXCLUDE_FILENAME).write_text("*.log\n")
+    assert verdict(fleet["cpB"], fleet["remote_root"]).reasons[fleet["idx"]] == "conf"
