@@ -179,7 +179,16 @@ machines, no interaction with machines on older versions.
    `sync/test_mid_transfer_writes` (mid-pull write and deletion, post-check
    write, foreign push during a pull, the single-file guard).
 2. **Oracle on the live yard, read-only** (`_dev/oracle_skip.py`, sidecars
-   synthesized into a scratch copy): see the log below.
+   synthesized into a scratch copy) — DONE 2026-09-25 on mymain, before any
+   rollout, against commit `94b7b00`: **632 boxes, 621 skippable after one
+   real-path pass, 0 wrong skips.** Needed: 3 boxes genuinely NEEDS_PUSH, 1
+   with an interrupted push (SYNC_TO_REMOTE_INCOMPLETE — the real path raises
+   for it, as it should), 5 tombstoned (routed to `sync_box` for the warning),
+   and 2 benign misses: one DATA baseline not yet converged (the next real
+   pass blesses it) and the restic canary awaiting its first pointer stamp.
+   The listing's conf-dir signal agreed with `remote_path_exists` on all 632;
+   the real path raised on none. Listings measured during the run, with the
+   test suite competing: `boxes/` 33 s, hashed `sync_records/` 172 s.
 3. **Second adversarial code review** of v5 by both reviewers.
 4. **Staged rollout**: every machine gets the same version (no version
    barrier is needed, but the first filtered pass on each is a full pass);
