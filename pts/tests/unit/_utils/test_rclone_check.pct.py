@@ -35,7 +35,7 @@ import os
 
 import pytest
 
-from boxyard._utils import rclone_check
+from boxyard._utils import rclone_check, rclone_would_transfer
 
 
 def run(coro):
@@ -231,3 +231,135 @@ class _ConfigWithRcloneConf:
 
     def __getattr__(self, name):
         return getattr(self._config, name)
+
+# %% [markdown]
+# ## A partial comparison is not an equality certificate
+#
+# rclone exits 6 with "N errors while checking" when part of the tree could
+# not be enumerated, and still prints `= ` lines for the files it could read.
+# The old rule (`ret_code != 0 and not lines`) read that as answered-and-equal;
+# the pull-baseline bless now rests on this answer.
+
+# %%
+#|export
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_unreadable_remote_directory_is_not_answered(pair):
+    conf, src, dst = pair
+    (src / "common.txt").write_text("same")
+    (dst / "common.txt").write_text("same")
+    (dst / "locked").mkdir()
+    (dst / "locked" / "remote-only.txt").write_text("hidden from the check")
+    os.chmod(dst / "locked", 0o000)
+    try:
+        answered, differing = check(conf, src)
+    finally:
+        os.chmod(dst / "locked", 0o755)
+    assert answered is False, (answered, differing)
+
+
+def test_a_complete_comparison_with_differences_is_answered(pair):
+    conf, src, dst = pair
+    (src / "a.txt").write_text("a")
+    (dst / "a.txt").write_text("b")
+    (dst / "only-remote.txt").write_text("r")
+    answered, differing = check(conf, src)
+    assert answered is True
+    assert set(differing) == {"a.txt", "only-remote.txt"}
+
+
+# %% [markdown]
+# ## `rclone_would_transfer`: the dry-run comparison the blesses rest on
+
+# %%
+#|export
+def would(conf, src, dst_name="dst", **kwargs):
+    return run(
+        rclone_would_transfer(
+            rclone_config_path=conf,
+            source="",
+            source_path=str(src),
+            dest=dst_name,
+            dest_path="",
+            **kwargs,
+        )
+    )
+
+
+def test_equal_trees_would_move_nothing(pair):
+    conf, src, dst = pair
+    for d in (src, dst):
+        (d / "a.txt").write_text("same")
+        (d / "sub").mkdir()
+        (d / "sub" / "b.txt").write_text("same")
+    for f in (src / "a.txt", dst / "a.txt", src / "sub" / "b.txt", dst / "sub" / "b.txt"):
+        os.utime(f, (1_600_000_000, 1_600_000_000))
+    assert would(conf, src) == (True, [])
+
+
+def test_every_kind_of_difference_is_reported(pair):
+    conf, src, dst = pair
+    (src / "new.txt").write_text("n")
+    (src / "edited.txt").write_text("v2")
+    (dst / "edited.txt").write_text("v1")
+    os.utime(dst / "edited.txt", (1_600_000_000, 1_600_000_000))
+    (dst / "extra.txt").write_text("x")
+    answered, moving = would(conf, src)
+    assert answered is True
+    assert set(moving) == {"new.txt", "edited.txt", "extra.txt"}
+
+
+def test_an_mtime_only_difference_with_equal_content_is_not_a_transfer(pair):
+    """A touch moves no bytes: rclone would only update the modtime. This is
+    the content-based answer the non-owner probe converges on (an mtime-only
+    touch must not read as unpushed work for ever)."""
+    conf, src, dst = pair
+    (src / "a.txt").write_text("same")
+    (dst / "a.txt").write_text("same")
+    os.utime(src / "a.txt", (1_600_000_000, 1_600_000_000))
+    os.utime(dst / "a.txt", (1_500_000_000, 1_500_000_000))
+    assert would(conf, src) == (True, [])
+
+
+def test_a_same_size_content_edit_is_a_transfer(pair):
+    conf, src, dst = pair
+    (src / "a.txt").write_text("aaaa")
+    (dst / "a.txt").write_text("bbbb")
+    os.utime(src / "a.txt", (1_600_000_000, 1_600_000_000))
+    os.utime(dst / "a.txt", (1_500_000_000, 1_500_000_000))
+    assert would(conf, src) == (True, ["a.txt"])
+
+
+def test_an_unreachable_remote_is_not_answered(pair):
+    conf, src, _dst = pair
+    (src / "a.txt").write_text("a")
+    assert would(conf, src, dst_name="no_such_remote")[0] is False
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_a_partial_enumeration_is_not_answered_by_the_dry_run(pair):
+    conf, src, dst = pair
+    (src / "a.txt").write_text("a")
+    (dst / "a.txt").write_text("a")
+    os.utime(src / "a.txt", (1_600_000_000, 1_600_000_000))
+    os.utime(dst / "a.txt", (1_600_000_000, 1_600_000_000))
+    (dst / "locked").mkdir()
+    (dst / "locked" / "hidden.txt").write_text("h")
+    os.chmod(dst / "locked", 0o000)
+    try:
+        answered, _moving = would(conf, src)
+    finally:
+        os.chmod(dst / "locked", 0o755)
+    assert answered is False
+
+
+def test_the_filters_apply(pair):
+    conf, src, dst = pair
+    (src / "a.txt").write_text("a")
+    (dst / "a.txt").write_text("a")
+    os.utime(src / "a.txt", (1_600_000_000, 1_600_000_000))
+    os.utime(dst / "a.txt", (1_600_000_000, 1_600_000_000))
+    (src / "scratch.tmp").write_text("t")
+    exclude = src.parent / "exclude.txt"
+    exclude.write_text("*.tmp\n")
+    assert would(conf, src, exclude_file=str(exclude)) == (True, [])
+    assert would(conf, src) == (True, ["scratch.tmp"])

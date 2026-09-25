@@ -258,6 +258,32 @@ for sl_name, sl_config in config.storage_locations.items():
             for missing_meta in missing_metas:
                 print(f"  - {missing_meta}")
 
+        # Read each box's remote META record BEFORE the transfer, and adopt
+        # that. An owner pushing META between the transfer and a post-transfer
+        # read would be adopted with the PREVIOUS boxmeta's content, and the
+        # baseline blessed on the next SYNCED verdict would describe the wrong
+        # revision (the same window `sync_helper`'s pull closed; found by the
+        # implementation review). Read first, a remote that moves meanwhile
+        # reads NEEDS_PULL next time -- the loud direction.
+        async def _read_record(box_index_name):
+            return box_index_name, await SyncRecord.rclone_read(
+                config.rclone_config_path,
+                sl_name,
+                (
+                    sl_config.store_path
+                    / const.SYNC_RECORDS_REL_PATH
+                    / box_index_name
+                    / f"{BoxPart.META.value}.rec"
+                ).as_posix(),
+            )
+
+        _records_before = dict(
+            await async_throttler(
+                [_read_record(n) for n in missing_box_index_names],
+                max_concurrency=config.max_concurrent_rclone_ops,
+            )
+        )
+
         await rclone_sync(
             rclone_config_path=config.rclone_config_path,
             source=sl_name,
@@ -273,11 +299,7 @@ for sl_name, sl_config in config.storage_locations.items():
             box_meta = BoxMeta.load(
                 config, sl_name, box_index_name
             )  # Used to get the paths consistently
-            rec = await SyncRecord.rclone_read(
-                config.rclone_config_path,
-                sl_name,
-                box_meta.get_remote_sync_record_path(config, BoxPart.META),
-            )
+            rec = _records_before[box_index_name]
             await rec.rclone_save(
                 config.rclone_config_path,
                 "",

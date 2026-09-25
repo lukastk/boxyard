@@ -1,11 +1,14 @@
-# Making a full `multi-sync` pass skippable — design note (v3)
+# Making a full `multi-sync` pass skippable — design note (v5)
 
-Status: **implemented (unreleased), under review.** Written 2026-09-25; v2 the
-same day after the first adversarial review (claude); v3 after the second (pi),
-which changed the mechanism: the remote signal is no longer a timestamp stamp
-but the record's own identity, published in the listing. **v4 during
-implementation**, with three corrections the tests forced (marked "v4" below).
-Everything measured here was measured on the live fleet that day.
+Status: **v5 implemented (unreleased), second review pending.** Written
+2026-09-25; v2 the same day after the first adversarial design review (claude);
+v3 after the second (pi); v4 during implementation; **v5 after the
+implementation review of v4 (pi, "do not ship")**, which withdrew the marker
+mechanism entirely. The remote signal is now the sync record's own content
+hash from a bulk hashed listing — nothing is written to the remote for the
+feature at all. Everything measured here was measured on the live fleet that
+day. The v3/v4 marker sections are kept below the line for the record; the
+current design is the first part of this note.
 
 ---
 
@@ -46,6 +49,145 @@ reproduced a wrong skip in that mechanism — in the EXISTING META filter, today
   `diverged-box` prefilter skips remote records within 5 s of the local ULID
   time — precisely the colliding window — so it is not the independent backstop
   v1 claimed.
+
+## The mechanism (v5): the record's content is its identity
+
+Every remote sync record is a small JSON file whose bytes contain its ULID and
+`sync_complete` flag. **The md5 of those bytes is the record's identity**, and
+one bulk listing reports it for every record at once:
+
+    rclone lsjson --hash --hash-type md5 --files-only --recursive --max-depth 2 \
+        --filter '+ /*/*.rec' --filter '- **'  <store>:boxyard/sync_records
+
+Measured against the live Hetzner box: 1,867 records, **142 s** (the SFTP
+backend runs `md5sum` per file, serially — `--checkers 32` took 234 s and
+dropped 12 files, so parallelism is not an option). The `boxes/` listing
+(files AND directories at depth 2, filters `+ /*/boxmeta.toml`,
+`+ /*/data.snapshot`, `+ /*/conf/`, `- **`) costs ~13 s and gives boxmeta
+presence, whether a `conf/` DIRECTORY exists, and the restic pointer.
+
+The local half is a machine-local sidecar beside each local record,
+`sync_records/<box>/<part>.remote.json` (`_remote_identity`): the md5 of the
+remote record's bytes **as this machine read them** when the real path last
+agreed with that record — a SYNCED or EXCLUDED verdict (`get_sync_status`
+returns the bytes' md5 in `SyncStatus.remote_sync_record_md5`), a completed
+pull (the pre-transfer record it adopted), or a completed push (the bytes it
+wrote). It is written at exactly the sites where a baseline is blessed, plus
+the EXCLUDED return, and by nothing else: WRITE_DENIED, CONFLICT, NEEDS_*,
+INCOMPLETE and ERROR write nothing.
+
+### Provable, per part
+
+A part this machine HOLDS (a local record exists) is provable when ALL of:
+
+1. the listing shows the record with an md5 (a record the backend could not
+   hash reads as unknown);
+2. the sidecar exists, is complete, names the same ULID as the local record,
+   and its md5 equals the listed md5;
+3. the local record parses and is complete;
+4. `local_tree_differs(...) is False` against the fingerprint baseline bound
+   to that ULID (None — no usable baseline — is never proof).
+
+A part this machine holds NO copy of is provable when the remote has no
+record for it at all, or when the listed md5 equals a sidecar that says the
+record was complete (an incomplete record never earns a sidecar: the real path
+answers INCOMPLETE and raises before it ever reaches EXCLUDED or SYNCED).
+
+Why this is exact: both sides of the comparison are facts about bytes. Any
+writer of any version that changes a record changes its md5; there is no
+second file to keep consistent with the record, no crash ordering, no
+concurrent-publisher interleaving, no bootstrap, and no version barrier. A
+foreign push landing at any moment — during the pass, during the box's own
+sync, a millisecond after the real path read the record — produces a different
+md5 on the next listing and the box is needed. The pass-end stamping race of
+v1/v2 and the three critical marker findings of v4 (a bootstrap overwriting a
+live identity, an old writer leaving a stale marker, two concurrent publishers
+plus a crash) have no analogue here.
+
+### The special cases (v5)
+
+| case | verdict |
+|---|---|
+| box in the bulk tombstone list (loaded BEFORE the filter) | needed — `sync_box` prints the tombstone warning, even when the delete's purge failed |
+| box on a `local` storage location | needed — no listing covers it |
+| `boxes/<index>/boxmeta.toml` absent from the listing under the name this machine knows | needed — a rename whose record move failed, a deletion, or an uncovered store; the real path resolves by id and raises or warns |
+| DATA, placement EXCLUDED (exact `LocalCheckoutState.EXCLUDED`; `check_included()` is false for MISSING/UNAVAILABLE too) AND no directory at the DATA path | provable iff the remote `data.rec` is absent or complete-and-agreed (plain) / trivially (restic keeps no record) — an incomplete remote push (`sync_box` raises INCOMPLETE before EXCLUDED) is needed |
+| DATA, placement EXCLUDED but a directory exists | needed — the real path reports it |
+| DATA, placement MISSING / UNAVAILABLE / RELOCATING, either format | needed — the gate sits BEFORE the storage-format dispatch (v4 let a RELOCATING restic box through) |
+| DATA, restic, INCLUDED | existing pointer `(ModTime, Size)` stamp + `tree_touched_since`, stamped from the pre-pass listing |
+| CONF, no local record and no local dir | provable iff no remote `conf/` DIRECTORY (from the directory entry — a files-only listing at any depth cannot prove a directory absent: `conf/nested/x` sits at depth 4) AND the remote record is absent or complete-and-agreed. This is every box as seen from every machine but its creator: `new_box` pushes an empty `conf/` that rclone records but never creates |
+| CONF, any other asymmetry (local dir without record, record without dir) | needed |
+| any part, evaluating the box raised | needed, exception printed to stderr; the pass continues |
+| either bulk listing failed or timed out | the pass syncs EVERY box and says so on stderr — the optimisation is lost, never the sync (the tombstone listing keeps raising: without it a deleted box would be resurrected) |
+| `multi-sync` called inside a running event loop | RuntimeError — v4 printed "syncing every box" and executed nothing |
+
+### Dependency closure
+
+Unchanged from v3: `closure(DATA) = {META, CONF, DATA}`, `closure(CONF) =
+{CONF}`, `closure(META) = {META}`. `--skip-unchanged` covers the whole box;
+`--skip-unchanged-meta` is the META-only form.
+
+### Baseline production (v5)
+
+1. **Pull bless**: the post-transfer tree is FINGERPRINTED FIRST, then
+   `rclone check` (directory) or the file's mtime against the pull start
+   (single file) validates it, then that same fingerprint is blessed. v4 ran
+   the check first and blessed a fingerprint taken after it; a write landing
+   between the two was blessed, read SYNCED, and was deleted by the next
+   ordinary pull (reproduced by the review).
+2. **`rclone_check` is strict**: rclone counts every difference as an "error
+   while checking", so an "errors" count EXCEEDING "differences found", or a
+   `! ` line, means part of the tree was never enumerated and the answer is
+   not an equality certificate. The old rule read "0 differences, 1 error,
+   one `= ` line" as answered-and-equal.
+3. The non-owner probe-clean baseline is fingerprinted before the probe
+   (unchanged from v4); the pull adopts the pre-transfer record (unchanged).
+
+### What it costs
+
+Idle pass: `boxes/` ~13 s + hashed `sync_records/` ~142 s + tombstones, plus
+a local fingerprint per included part. **≈ 3 min is the hypothesis to measure
+on the first rollout pass, not to quote before it.** Per pushed part nothing
+is added on the remote (the md5 is computed from the bytes written); per
+pulled directory part one `rclone check`. A needed box fingerprints twice.
+
+### Upgrade
+
+No sidecars exist on a machine that has never run this version, so its first
+filtered pass goes through the real path for every box (a full pass), which
+writes them; the second pass skips. No remote migration, no ordering between
+machines, no interaction with machines on older versions.
+
+---
+
+### Verification of v5
+
+1. **Tests** — `tests/unit/models/test_remote_identity` (md5 agreement across
+   write, read and listing; sidecar semantics; listing projections incl. the
+   real directory listing; id resolution incl. renames and duplicates; fd
+   leak), `tests/unit/_utils/test_rclone_check` (strict check; the dry-run
+   comparison incl. partial enumeration and modtime-only touches),
+   `tests/integration/cmds/test_skip_unchanged` (every row of the table, all
+   ten change shapes, records rewritten elsewhere / by an older writer /
+   re-serialized, unhashable records, stale sidecars, two stores, renames
+   whole and half, duplicates, deleted ids, flags, isolation, listing
+   failure, event loop, placement states, CONF states incl. nested-only and
+   empty remote conf dirs, incomplete remote pushes on excluded boxes,
+   tombstone, upgrade convergence, the in-pass and in-sync foreign-push races,
+   closure, denied-then-undo, denied verdicts writing nothing, the post-probe
+   edit, restic placement and pointer race, convert), `test_meta_skip_filter`,
+   `sync/test_mid_transfer_writes` (mid-pull write and deletion, post-check
+   write, foreign push during a pull, the single-file guard).
+2. **Oracle on the live yard, read-only** (`_dev/oracle_skip.py`, sidecars
+   synthesized into a scratch copy): see the log below.
+3. **Second adversarial code review** of v5 by both reviewers.
+4. **Staged rollout**: every machine gets the same version (no version
+   barrier is needed, but the first filtered pass on each is a full pass);
+   mymain first, two passes watched, then the fleet.
+
+---
+
+## History: the v3/v4 marker mechanism (withdrawn)
 
 ## The mechanism (v3): the record publishes its identity
 

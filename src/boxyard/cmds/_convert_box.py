@@ -737,17 +737,6 @@ async def convert_box(
         # raises, which is right, and the resume path has to say out loud that it
         # tolerates absence. Any OTHER failure -- an unreachable remote -- still
         # raises and still stops the conversion.
-        #
-        # Its generation marker(s) go FIRST. A marker outliving its record would
-        # read as a known identity for a record that no longer exists -- the skip
-        # filter would then judge it against the kept local record. Sweeping
-        # first means a crash between the two leaves a record with no marker,
-        # which reads as unknown. The sweep is naturally absent-ok.
-        from boxyard._models import sweep_record_markers
-    
-        await sweep_record_markers(
-            config.rclone_config_path, box_meta.storage_location, _remote_rec_path.as_posix()
-        )
         await rclone_delete_absent_ok(
             rclone_config_path=config.rclone_config_path,
             dest=box_meta.storage_location,
@@ -789,8 +778,12 @@ async def convert_box(
         # deliberately KEPT (the adoption check reads it), so the pair would look
         # like live plain state to anyone inspecting the records directory.
         from boxyard._fingerprint import clear_base
+        from boxyard._remote_identity import clear_remote_identity
     
         clear_base(box_meta.get_local_sync_record_path(config, BoxPart.DATA))
+        # ...and the remote-identity sidecar beside it: it named a `data.rec`
+        # that no longer exists on the remote.
+        clear_remote_identity(box_meta.get_local_sync_record_path(config, BoxPart.DATA))
     
         _on_disk = BoxMeta.load(config, box_meta.storage_location, box_index_name)
         _on_disk.storage_format = StorageFormat.RESTIC

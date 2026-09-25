@@ -32,6 +32,7 @@ from nblite import nbl_export, show_doc; nbl_export();
 from pathlib import Path
 import textwrap
 from boxyard._utils import check_interrupted, SoftInterruption
+from boxyard._remote_identity import note_agreement, write_remote_identity
 from boxyard._enums import SyncSetting, SyncDirection
 
 from boxyard import const
@@ -178,15 +179,17 @@ sync_status = await get_sync_status(
     exclude_path=exclude_path,
     local_absence_means_excluded=local_absence_means_excluded,
 )
-(
-    sync_condition,
-    local_path_exists,
-    remote_path_exists,
-    local_sync_record,
-    remote_sync_record,
-    sync_path_is_dir,
-    error_message,
-) = sync_status
+# By name, not by position: `SyncStatus` grows fields at the end (the remote
+# record's md5, for the full-pass skip) and a positional unpack would break.
+sync_condition = sync_status.sync_condition
+local_path_exists = sync_status.local_path_exists
+remote_path_exists = sync_status.remote_path_exists
+local_sync_record = sync_status.local_sync_record
+remote_sync_record = sync_status.remote_sync_record
+sync_path_is_dir = sync_status.is_dir
+error_message = sync_status.error_message
+remote_sync_record_md5 = sync_status.remote_sync_record_md5
+
 
 if sync_condition == SyncCondition.ERROR and sync_setting != SyncSetting.FORCE:
     raise Exception(error_message)
@@ -281,6 +284,11 @@ if sync_setting != SyncSetting.FORCE and sync_condition == SyncCondition.SYNCED:
                     fingerprint=_bs_fp,
                     filter_sig=_bs_sig,
                 )
+    # SYNCED is an agreement with the remote record as read: remember its
+    # identity for the full-pass skip (`_remote_identity`). Unconditional --
+    # unlike the baseline above this needs no local record, and the filter
+    # still demands a usable baseline before it trusts a held part.
+    note_agreement(local_sync_record_path, sync_status)
     if verbose:
         print("Sync not needed.")
     sync_status, False  #|func_return_line
@@ -291,6 +299,10 @@ if sync_direction is None:  # auto
     elif sync_condition == SyncCondition.NEEDS_PULL:
         sync_direction = SyncDirection.PULL
     elif sync_condition == SyncCondition.EXCLUDED:
+        # EXCLUDED is an agreement too: this machine deliberately holds no
+        # copy, and the remote record was read and is complete (an incomplete
+        # one yields an INCOMPLETE condition before this branch).
+        note_agreement(local_sync_record_path, sync_status)
         if verbose:
             print("Sync not needed as the box is excluded.")
         sync_status, False  #|func_return_line
@@ -456,7 +468,7 @@ async def _sync(
 from datetime import datetime, timezone
 
 from boxyard._models import SyncRecord
-from boxyard._utils import check_last_time_modified, literal_exclude_names, rclone_check
+from boxyard._utils import check_last_time_modified, literal_exclude_names, rclone_would_transfer
 from boxyard._fingerprint import filter_signature, tree_fingerprint, write_base
 
 if check_interrupted():
@@ -552,7 +564,7 @@ if sync_direction == SyncDirection.PULL:
         # the sync backup that momentarily holds it is purged on success).
         #
         # For a DIRECTORY the guard is a remote comparison, not a clock: bless
-        # only when `rclone check` proves local and remote equal under the same
+        # only when a dry-run pull proves nothing would move under the same
         # filters the transfer used -- the standard `_verify_then_bless_data`
         # already applies. No timestamp gate can do this job: the newest FILE
         # mtime misses a racing deletion, rename, chmod or symlink edit (found
@@ -562,7 +574,8 @@ if sync_direction == SyncDirection.PULL:
         # listing of a box that just transferred, which is rare -- and cheaper
         # than the alternative, where the box sits on the mtime fallback and
         # `_verify_then_bless_data` pays that listing on the next pass anyway.
-        # Not answered (unreachable remote) is not proof, so no baseline.
+        # Not answered (unreachable remote, a partial enumeration) is not
+        # proof, so no baseline.
         #
         # For a single FILE (META's boxmeta.toml) the file's own mtime against
         # the pull's start is exact enough: an edit moves it, a deletion leaves
@@ -570,16 +583,35 @@ if sync_direction == SyncDirection.PULL:
         # spuriously; that costs staying on the old test for this file, never a
         # wrong answer.
         #
+        # THE FINGERPRINT IS TAKEN FIRST, THEN THE GUARD RUNS, THEN THAT SAME
+        # FINGERPRINT IS BLESSED. The other order -- guard, then fingerprint --
+        # blesses a write that lands between the two (reproduced by the
+        # implementation review: the file read SYNCED, and the next ordinary
+        # pull deleted it). With the fingerprint first, a write after the walk
+        # is either seen by the guard (a difference: no baseline) or absent
+        # from the digest (the next check reads it as pending work). The same
+        # rule the push side and the non-owner probe already follow.
+        #
         # What neither guard sees, stated rather than hidden: an exec-bit-only
         # change racing a directory pull is blessed with the bit as it landed.
         _sig = filter_signature(exclude_path)
+        _pulled_fp = tree_fingerprint(
+            local_path,
+            rclone_config_path=rclone_config_path,
+            exclude_file=exclude_path,
+            filter_sig=_sig,
+        )
         if sync_path_is_dir:
-            _answered, _differing = await rclone_check(
+            # "Would the pull move anything NOW?" -- a dry-run sync in the
+            # pull direction, by rclone's size-and-modtime comparison at
+            # listing cost. Not `rclone check`: that hashes every file, one
+            # remote exec each on SFTP (found by the implementation review).
+            _answered, _moving = await rclone_would_transfer(
                 rclone_config_path=rclone_config_path,
-                source="",
-                source_path=local_path,
-                dest=remote,
-                dest_path=remote_path,
+                source=remote,
+                source_path=remote_path,
+                dest="",
+                dest_path=local_path,
                 include=include or [],
                 exclude=exclude or [],
                 filter=filter or [],
@@ -587,7 +619,7 @@ if sync_direction == SyncDirection.PULL:
                 exclude_file=exclude_path,
                 filters_file=filters_path,
             )
-            _tree_is_what_the_remote_holds = _answered and not _differing
+            _tree_is_what_the_remote_holds = _answered and not _moving
         else:
             _newest = check_last_time_modified(
                 local_path, literal_exclude_names(exclude_path)
@@ -600,17 +632,18 @@ if sync_direction == SyncDirection.PULL:
                     "pull ran; the next sync reconciles it."
                 )
         else:
-            _record_baseline(
-                rec.ulid,
-                sig=_sig,
-                fp=tree_fingerprint(
-                    local_path,
-                    rclone_config_path=rclone_config_path,
-                    exclude_file=exclude_path,
-                    filter_sig=_sig,
-                ),
-            )
+            _record_baseline(rec.ulid, sig=_sig, fp=_pulled_fp)
         await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
+        # The remote record this pull adopted is the one this machine now
+        # agrees with -- by its bytes as read before the transfer, never a
+        # re-serialization (see `_remote_identity`).
+        if remote_sync_record_md5 is not None:
+            write_remote_identity(
+                local_sync_record_path,
+                md5=remote_sync_record_md5,
+                ulid=str(rec.ulid),
+                sync_complete=rec.sync_complete,
+            )
 
 elif sync_direction == SyncDirection.PUSH:
     # Capture the current executable bits into the manifest so they travel with
@@ -638,9 +671,17 @@ elif sync_direction == SyncDirection.PUSH:
 
     # Save the incomplete sync record on BOTH local and remote to signify an ongoing sync
     # This creates a "sync session" marker - if interrupted, both sides have the same incomplete ULID,
-    # proving this machine owns the interrupted sync and can safely retry
-    await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
+    # proving this machine owns the interrupted sync and can safely retry.
+    #
+    # LOCAL FIRST. `rclone_save` raises on a failed remote write, and a write
+    # rclone reports as failed can still have landed (an SFTP session dropped
+    # after the upload). With the remote written first and the local not yet,
+    # that leaves remote-incomplete-U beside local-complete-U_old: "incomplete
+    # sync from another machine", for this machine too -- a wedge only `force`
+    # clears (found by the implementation review). Local first, the retry
+    # reads matching incomplete records and is safe.
     await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
+    await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
 
     backup_remote = remote
     backup_path = Path(remote_sync_backups_path) / backup_name
@@ -660,7 +701,15 @@ elif sync_direction == SyncDirection.PUSH:
         rec = SyncRecord.create(syncer_hostname=syncer_hostname, sync_complete=True)
         _record_baseline(rec.ulid, sig=_push_sig, fp=_push_fp)
         await rec.rclone_save(rclone_config_path, "", local_sync_record_path)
-        await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
+        _pushed_md5 = await rec.rclone_save(rclone_config_path, remote, remote_sync_record_path)
+        # The bytes just written ARE the remote record; remember their md5 as
+        # the identity this machine agrees with.
+        write_remote_identity(
+            local_sync_record_path,
+            md5=_pushed_md5,
+            ulid=str(rec.ulid),
+            sync_complete=True,
+        )
 
 else:
     raise ValueError(f"Unknown sync direction: {sync_direction}")

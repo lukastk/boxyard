@@ -114,9 +114,13 @@ async def push_would_transfer(
     than as a silent all-clear — the one thing this must never do is claim a
     box is clean because it failed to look.
     """
-    from ._utils import rclone_check
+    from ._utils import rclone_would_transfer
 
-    answered, differing = await rclone_check(
+    # A dry-run sync, not `rclone check`: the check hashes every file, which
+    # on this fleet's SFTP box is one remote exec per file (see
+    # `rclone_would_transfer`). The dry run asks exactly this function's
+    # question -- what would a push move -- at listing cost.
+    answered, moving = await rclone_would_transfer(
         rclone_config_path=config.rclone_config_path,
         source="",
         source_path=local_path.as_posix(),
@@ -128,4 +132,4 @@ async def push_would_transfer(
     )
     if not answered:
         return True
-    return bool(differing)
+    return bool(moving)

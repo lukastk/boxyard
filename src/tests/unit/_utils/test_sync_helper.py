@@ -21,6 +21,22 @@ from boxyard._utils.sync_helper import (
 from boxyard._models import SyncCondition, SyncStatus, SyncRecord
 
 
+@pytest.fixture(autouse=True)
+def _no_remote_identity_sidecars():
+    """
+    These tests drive `sync_helper` with scripted rclone calls and literal
+    record paths such as `/local/.sync`, so the machine-local sidecar the
+    helper writes on an agreement (`_remote_identity`) has nowhere real to
+    go. It is exercised by `test_remote_identity` and the integration suite;
+    here it is switched off.
+    """
+    with (
+        patch("boxyard._utils.sync_helper.write_remote_identity", new=lambda *a, **k: None),
+        patch("boxyard._utils.sync_helper.note_agreement", new=lambda *a, **k: False),
+    ):
+        yield
+
+
 # ============================================================================
 # Tests for SyncSetting enum
 # ============================================================================

@@ -43,6 +43,11 @@ REMOTE_BOXES_REL_PATH = "boxes"
 REMOTE_BACKUP_REL_PATH = "sync_backups"
 
 BOX_DATA_REL_PATH = "data"
+BOX_REMOTE_IDENTITY_SUFFIX = ".remote.json"
+"""Suffix of the machine-local sidecar beside a part's `.rec` sync record that
+remembers the md5 of the REMOTE record this machine last read and agreed with
+(see `_remote_identity`). Like the fingerprint sidecar below it is never synced
+and is invisible to every `*.rec` scan."""
 BOX_SYNC_BASE_SUFFIX = ".base.json"
 """Suffix of the machine-local fingerprint sidecar that sits beside a part's
 `.rec` sync record. Deliberately NOT `.rec`: doctor's interrupted-record scan

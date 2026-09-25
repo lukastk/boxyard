@@ -17,6 +17,7 @@ from .._models import (
 )
 from .._enums import StorageFormat
 from .._fingerprint import filter_signature, has_usable_base, tree_fingerprint, write_base
+from .._remote_identity import note_agreement
 from .._utils import literal_exclude_names
 from .._ownership import may_push, push_would_transfer, write_denied_message
 from ..config import get_config, StorageType
@@ -638,6 +639,10 @@ async def sync_box(
                                 fingerprint=_bs_fp,
                                 filter_sig=_bs_sig,
                             )
+                # A non-owner's SYNCED verdict is an agreement with the remote
+                # record it just read: remember its identity for the full-pass
+                # skip, as `sync_helper`'s own SYNCED return does for an owner.
+                note_agreement(helper_kwargs["local_sync_record_path"], _status)
                 return _status, False
     
             if _condition == SyncCondition.NEEDS_PULL:
@@ -709,7 +714,11 @@ async def sync_box(
                             fingerprint=_bl_fp,
                             filter_sig=_bl_sig,
                         )
-                    return _status._replace(sync_condition=SyncCondition.SYNCED), False
+                    _clean_status = _status._replace(sync_condition=SyncCondition.SYNCED)
+                    # The probe proved local == remote under the box's filters:
+                    # the remote record read before it is the one agreed with.
+                    note_agreement(helper_kwargs["local_sync_record_path"], _clean_status)
+                    return _clean_status, False
                 return _deny(_status)
     
             if _condition == SyncCondition.CONFLICT:

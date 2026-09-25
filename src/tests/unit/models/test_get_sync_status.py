@@ -14,6 +14,26 @@ from ulid import ULID
 from boxyard._models import get_sync_status, SyncCondition, SyncStatus, SyncRecord
 
 
+@pytest.fixture(autouse=True)
+def _raw_reads_follow_rclone_read():
+    """
+    `get_sync_status` reads the REMOTE record through `rclone_read_raw` (it
+    needs the bytes, for the remote-identity md5) and the local one through
+    `rclone_read`. These tests script both reads by patching `rclone_read`
+    with a two-item side effect, so the raw read delegates to whatever
+    `rclone_read` currently is and derives the text from the record.
+    """
+    async def _raw(**kwargs):
+        rec = await SyncRecord.rclone_read(**kwargs)
+        # Some tests script MagicMock records (`spec=SyncRecord` passes the
+        # isinstance check); those have no bytes to hash.
+        text = rec.serialized() if rec is not None else None
+        return rec, (text if isinstance(text, str) else None)
+
+    with patch.object(SyncRecord, "rclone_read_raw", new=AsyncMock(side_effect=_raw)):
+        yield
+
+
 # ============================================================================
 # Helper fixtures
 # ============================================================================

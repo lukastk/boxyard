@@ -393,3 +393,122 @@ def test_a_foreign_push_during_a_pull_is_not_adopted():
             assert await _status(b_args) == SyncCondition.SYNCED
 
     asyncio.run(_test())
+
+
+# %% [markdown]
+# ## A write landing AFTER the pull's equality check
+#
+# The check proves the tree equal to the remote; the fingerprint that gets
+# blessed must be the tree the check judged. Found by the implementation
+# review: with the fingerprint taken after the check, a file written in
+# between was blessed, read SYNCED, and was deleted by the next ordinary pull.
+
+# %%
+#|export
+@pytest.mark.integration
+def test_a_file_written_after_the_pull_check_is_not_blessed_and_not_later_deleted():
+    async def _test():
+        with tempfile.TemporaryDirectory() as td:
+            args, remote_root = _fixture(Path(td))
+            await sync_helper(
+                sync_direction=SyncDirection.PUSH,
+                sync_setting=SyncSetting.CAREFUL,
+                **args,
+            )
+
+            b_local = Path(td) / "b_local"
+            b_args = dict(
+                args,
+                local_path=b_local,
+                local_sync_record_path=Path(td) / "b_data.rec",
+            )
+            real_check = boxyard._utils.rclone_would_transfer
+            racing = b_local / "written-after-check.txt"
+
+            async def _check_then_write(**kwargs):
+                res = await real_check(**kwargs)
+                racing.write_text("racing")
+                return res
+
+            with patch("boxyard._utils.rclone_would_transfer", new=_check_then_write):
+                await sync_helper(
+                    sync_direction=SyncDirection.PULL,
+                    sync_setting=SyncSetting.CAREFUL,
+                    local_absence_means_excluded=False,
+                    **{k: v for k, v in b_args.items()},
+                )
+
+            assert racing.exists() and not (remote_root / "data" / racing.name).exists()
+            # The baseline (if any) describes the tree BEFORE the write, so the
+            # write reads as pending local work.
+            assert await _status(b_args) == SyncCondition.NEEDS_PUSH
+
+            # The owner moves on; B's next careful pull must not delete the file.
+            (args["local_path"] / "file1.txt").write_text("one, again")
+            await sync_helper(
+                sync_direction=SyncDirection.PUSH,
+                sync_setting=SyncSetting.CAREFUL,
+                **args,
+            )
+            assert await _status(b_args) == SyncCondition.CONFLICT
+            assert racing.exists()
+
+    asyncio.run(_test())
+
+
+# %% [markdown]
+# ## The single-file guard (META's boxmeta.toml)
+#
+# A single-file part has no directory to dry-run; its guard is the file's own
+# mtime against the pull's start. An edit landing while the pull ran must not
+# be blessed. Mutation-checked by the implementation review: removing this
+# guard left every existing test green.
+
+# %%
+#|export
+@pytest.mark.integration
+def test_a_single_file_edited_during_a_pull_is_not_blessed():
+    async def _test():
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a").mkdir()
+            a_file = root / "a" / "boxmeta.toml"
+            a_file.write_text('name = "one"\n')
+            remote_root = root / "remote"
+            remote_root.mkdir()
+            conf = root / "rclone.conf"
+            conf.write_text(f"[my_remote]\ntype = alias\nremote = {remote_root}\n")
+            (root / "backups").mkdir()
+            args = dict(
+                rclone_config_path=conf,
+                local_path=a_file,
+                local_sync_record_path=root / "a_meta.rec",
+                remote="my_remote",
+                remote_path="box/boxmeta.toml",
+                remote_sync_record_path="meta.rec",
+                local_sync_backups_path=root / "backups",
+                remote_sync_backups_path="sync_backups",
+            )
+            await sync_helper(sync_direction=SyncDirection.PUSH, sync_setting=SyncSetting.CAREFUL, **args)
+
+            (root / "b").mkdir()
+            b_file = root / "b" / "boxmeta.toml"
+            b_args = dict(args, local_path=b_file, local_sync_record_path=root / "b_meta.rec")
+            with patch(
+                "boxyard._utils.rclone_sync",
+                new=_racing_rclone_sync(lambda: b_file.write_text('name = "edited mid-pull"\n')),
+            ):
+                await sync_helper(
+                    sync_direction=SyncDirection.PULL,
+                    sync_setting=SyncSetting.CAREFUL,
+                    local_absence_means_excluded=False,
+                    **b_args,
+                )
+
+            assert b_file.read_text() == 'name = "edited mid-pull"\n', "simulation"
+            assert not base_path_for(b_args["local_sync_record_path"]).exists(), (
+                "the mid-pull edit was blessed as what the remote holds"
+            )
+            assert await _status(b_args) == SyncCondition.NEEDS_PUSH
+
+    asyncio.run(_test())

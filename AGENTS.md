@@ -132,23 +132,30 @@ result;
 - **index_name**: `{box_id}__{name}` - unique identifier for each box
 - **Storage locations**: local filesystem or rclone remotes (S3, SFTP, etc.)
 - **Sync records**: Track sync state between local/remote in `~/.boxyard/sync_records/`
-- **Sync-record markers (v0.8.4)**: every REMOTE record write also publishes a
-  zero-byte `<part>.rec.<ULID>` beside `<part>.rec`, so one bulk listing of
-  `sync_records/` names each part's current record identity. Written by
-  `SyncRecord.rclone_save` in the order sweep-old-markers, record, marker (a
-  crash at any point leaves no marker, never a stale one); parsed strictly by
-  `_models.parse_record_marker`; projected by `_sync_policy.project_record_listing`.
-  `multi-sync --skip-unchanged` (`_sync_policy.boxes_needing_sync_full`) drops a
-  box from a pass only when every part in the closure of what it would execute
-  (`closure(DATA) = {META, CONF, DATA}`) has remote identity == this machine's
-  complete local record AND the local tree matches the fingerprint baseline bound
-  to it. Nothing is stamped except the restic pointer check. Design and its
-  review history: `_dev/FULL-PASS-SKIP-DESIGN-NOTE.md`.
-- **Pull blessing**: a directory pull records its fingerprint baseline only after
-  `rclone check` proves local == remote (a racing local write, deletion or rename
-  during the transfer must not be blessed); a single-file pull uses the file's
-  mtime against the pull start. A timestamp/ctime gate cannot do this job — the
-  pull's own writes trip it.
+- **Remote record identity (v0.8.4)**: `multi-sync --skip-unchanged`
+  (`_sync_policy.boxes_needing_sync_full`) drops a box from a pass only when
+  every part in the closure of what it would execute (`closure(DATA) = {META,
+  CONF, DATA}`) is provably unchanged: the remote record's md5 -- from ONE
+  `lsjson --hash` over `sync_records/` (~2.5 min on the storage box; hashing
+  is serial there) -- equals the md5 in the machine-local sidecar
+  `sync_records/<box>/<part>.remote.json` (`_remote_identity`), which the real
+  path writes when it last agreed with that record (SYNCED / EXCLUDED verdict,
+  completed push or pull); a held part's local record must be complete and
+  name the sidecar's ULID, and its tree must match the fingerprint baseline.
+  Boxes are matched to the `boxes/` listing by id (`remote_view_for`), so a
+  box renamed elsewhere is judged under its remote name. NOTHING is written to
+  the remote for this and nothing is stamped from a listing; the first pass
+  after an upgrade is a full pass that writes the sidecars. Design and its
+  review history (v3/v4 markers withdrawn): `_dev/FULL-PASS-SKIP-DESIGN-NOTE.md`.
+- **Dry-run comparison, never `rclone check`**: "would a push/pull move
+  anything" is answered by `_utils.rclone_would_transfer` (a `--dry-run` sync
+  with `--use-json-log`; modtime-only differences do not count). `rclone check`
+  hashes every file, and on the SFTP box that is one remote exec per file.
+- **Pull blessing**: a directory pull fingerprints the post-transfer tree, then
+  records that fingerprint as the baseline only if a dry-run pull would move
+  nothing (a racing local write, deletion or rename during the transfer must not
+  be blessed); a single-file pull uses the file's mtime against the pull start.
+  A timestamp/ctime gate cannot do this job — the pull's own writes trip it.
 - **Write ownership (single-writer, v0.5.2)**: `BoxMeta.write_owner` names the one
   machine allowed to push a box's DATA/CONF. `write_owner is None` means UNOWNED and is
   fully unrestricted — exactly the pre-feature behaviour — so ownership is opt-in per box

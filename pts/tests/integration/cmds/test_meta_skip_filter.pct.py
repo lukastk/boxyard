@@ -17,8 +17,8 @@
 # in prose: with nothing changed, a filtered pass must make dramatically fewer
 # remote calls than an unfiltered one — and must still sync a box the moment
 # either side actually moves. "Moves" is decided by record IDENTITY (the
-# generation marker in the listing against the local record) plus the
-# fingerprint baseline, never by a stamp.
+# remote record's md5 from a hashed listing against the one this machine
+# last agreed with) plus the fingerprint baseline, never by a stamp.
 
 # %%
 #|default_exp integration.cmds.test_meta_skip_filter
@@ -27,11 +27,14 @@
 #|export
 import pytest
 
+import hashlib
+
 from boxyard import const
 from boxyard._enums import BoxPart
 from boxyard._fingerprint import base_path_for
 from boxyard._models import SyncRecord, get_boxyard_meta
-from boxyard._sync_policy import meta_provably_unchanged, project_record_listing
+from boxyard._remote_identity import read_remote_identity
+from boxyard._sync_policy import meta_provably_unchanged
 from boxyard.cmds import modify_boxmeta, new_box
 
 
@@ -58,15 +61,17 @@ def _run(config_path, *args):
 
 
 def _views(remote_root):
-    """What the bulk `sync_records/` listing projects to, from the disk the
-    alias remote points at."""
+    """{index name: {part: md5}} -- what the hashed bulk `sync_records/`
+    listing projects to, from the disk the alias remote points at."""
     rec_root = remote_root / "boxyard" / const.SYNC_RECORDS_REL_PATH
-    entries = []
+    out = {}
     for box_dir in rec_root.iterdir():
         for f in box_dir.iterdir():
-            if f.is_file():
-                entries.append({"Path": f"{box_dir.name}/{f.name}"})
-    return project_record_listing(entries)
+            if f.is_file() and f.name.endswith(".rec") and f.name.count(".") == 1:
+                out.setdefault(box_dir.name, {})[f.name[: -len(".rec")]] = (
+                    hashlib.md5(f.read_bytes()).hexdigest()
+                )
+    return out
 
 
 def _meta(config, index_name):
@@ -224,14 +229,14 @@ def test_a_remote_record_rewritten_elsewhere_is_never_provable(temp_boxyard):
     assert not meta_provably_unchanged(config, meta, _views(remote_root)[index_name])
 
 
-def test_a_box_whose_sync_failed_stays_needed(temp_boxyard, monkeypatch):
+def test_a_box_whose_sync_failed_writes_no_agreement(temp_boxyard, monkeypatch):
     """
     The most dangerous wrong answer this filter could give would be to record
-    a reconciliation that never happened. Nothing is stamped any more, but the
-    marker BOOTSTRAP is a write the real path makes after a pass -- so it must
-    not happen for a box whose sync errored, or a moved remote could be
-    published as agreed. Constructed so the outcomes are distinguishable:
-    strip the box's marker, move the remote on, then fail the sync.
+    an agreement that never happened. The sidecar is written by the real path
+    at the moment it agrees; a sync that ERRORS must leave it exactly as it
+    was, so a moved remote stays needed. Constructed so the outcomes are
+    distinguishable: settle the box, move the remote record on, then fail the
+    sync.
     """
     import boxyard.cmds as cmds_module
 
@@ -239,10 +244,17 @@ def test_a_box_whose_sync_failed_stays_needed(temp_boxyard, monkeypatch):
     index_name = _make_box(config_path, remote_name, "doomed-box")
     _run(config_path, "-c", "meta", "--skip-unchanged-meta")
     meta = _meta(config, index_name)
+    rec_path = meta.get_local_sync_record_path(config, BoxPart.META)
+    before = read_remote_identity(rec_path)
+    assert before is not None
 
-    rec_dir = remote_root / "boxyard" / const.SYNC_RECORDS_REL_PATH / index_name
-    for marker in rec_dir.glob("meta.rec.*"):
-        marker.unlink()
+    import asyncio
+
+    foreign = SyncRecord.create(sync_complete=True, syncer_hostname="another-machine")
+    asyncio.run(foreign.rclone_save(
+        str(config.rclone_config_path), remote_name,
+        meta.get_remote_sync_record_path(config, BoxPart.META).as_posix(),
+    ))
     assert not meta_provably_unchanged(config, meta, _views(remote_root)[index_name])
 
     async def _explode(*args, **kwargs):
@@ -251,8 +263,8 @@ def test_a_box_whose_sync_failed_stays_needed(temp_boxyard, monkeypatch):
     monkeypatch.setattr(cmds_module, "sync_box", _explode)
     _run(config_path, "-c", "meta", "--skip-unchanged-meta")
 
-    assert list(rec_dir.glob("meta.rec.*")) == [], (
-        "a box whose sync FAILED had a marker published for it; it would now "
-        "be skipped on every future pass"
+    assert read_remote_identity(rec_path) == before, (
+        "a box whose sync FAILED had its agreement rewritten; it would now be "
+        "skipped on every future pass"
     )
     assert not meta_provably_unchanged(config, meta, _views(remote_root)[index_name])
