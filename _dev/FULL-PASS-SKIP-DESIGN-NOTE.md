@@ -230,12 +230,22 @@ Status per step is kept here as it happens.
    post-probe edit, mid-pull foreign push), asserting remote and local FILE
    state, not only `get_sync_status`; lone local deletion/rename/chmod/symlink
    on a settled box; an unreadable directory in one box among many.
-2. **Oracle on the live yard, read-only**: on mymain, after one bootstrapping
-   pass, compute the filter's verdict for all 632 boxes; for every box it calls
-   skippable, run the full `get_sync_status` for every part and assert SYNCED /
-   EXCLUDED / never-had-CONF. Any disagreement blocks the rollout. This is a
-   point-in-time check; the injected-push tests and the daily unfiltered pass
-   cover what it cannot see.
+2. **Oracle on the live yard, read-only** — DONE 2026-09-25 on mymain, BEFORE
+   any rollout: for each of the 632 registered boxes the oracle ran the real
+   `get_sync_status` for META, CONF and (included plain) DATA, synthesized the
+   marker view a bootstrap would publish from the remote records it read, took
+   `boxes_needing_sync_full`'s verdict, and checked it against the real
+   answers. Result: **623 skippable after bootstrap, 0 wrong skips**, 9
+   needed — 3 boxes genuinely NEEDS_PUSH (jackfruit-hq-mymain,
+   scuttlebug-platform-hq, scuttlebug-healthcare-dagster), 1 restic box
+   awaiting its first pointer stamp, 5 tombstoned magpie boxes (META reads
+   ERROR on the real path; the filter routes them to `sync_box` for the
+   warning). The listing's conf-dir signal agreed with `remote_path_exists` on
+   all 632; the real path raised on none. With the live listing (no markers
+   yet) 0 boxes are skippable, as designed. Script: `_dev/oracle_skip.py`
+   (re-run it after the rollout to compare the LIVE-listing verdicts too). This is a point-in-time
+   check; the injected-push tests and the daily unfiltered pass cover what it
+   cannot see.
 3. **Adversarial code review** of the implementation by both reviewers before
    rollout.
 4. **Staged rollout**: mymain first, watching at least two passes for duration
