@@ -181,11 +181,23 @@ async def main(argv):
     out = Path(argv[argv.index("--out") + 1]) if "--out" in argv else None
     concurrency = int(argv[argv.index("--concurrency") + 1]) if "--concurrency" in argv else 3
 
+    cache = Path(argv[argv.index("--listings-cache") + 1]) if "--listings-cache" in argv else None
+
     config = get_config(Path.home() / ".config" / "boxyard" / "config.toml")
     box_metas = sorted(get_boxyard_meta(config).box_metas, key=lambda b: b.index_name)
     chunk = box_metas[offset: offset + limit if limit else None]
     t0 = time.time()
-    boxes, records = await bulk_listings(config, box_metas)
+    if cache is not None and cache.exists():
+        import pickle
+
+        boxes, records = pickle.loads(cache.read_bytes())
+        print(f"listings: reused {cache} (a point-in-time view; fine for slices run back to back)", file=sys.stderr)
+    else:
+        boxes, records = await bulk_listings(config, box_metas)
+        if cache is not None:
+            import pickle
+
+            cache.write_bytes(pickle.dumps((boxes, records)))
     tombstoned = set()
     for sl_name in sorted({bm.storage_location for bm in box_metas}):
         if config.storage_locations[sl_name].storage_type != StorageType.LOCAL:
