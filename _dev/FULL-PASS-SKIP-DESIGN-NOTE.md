@@ -245,6 +245,11 @@ machines, no interaction with machines on older versions.
    The listing's conf-dir signal agreed with `remote_path_exists` on all 632;
    the real path raised on none. Listings measured during the run, with the
    test suite competing: `boxes/` 33 s, hashed `sync_records/` 172 s.
+   **Re-run against the round-2 code (`74789cb`): 632 boxes, 617 skippable
+   after one pass, 0 wrong skips**; needed = 5 tombstoned + 6 restic boxes
+   (the oracle does not read pointers; the pass does) + 3 pending pushes + 1
+   DATA baseline that has not converged. The listing showed 613 boxes with a
+   remote `data/`, 6 with `data.restic/`, 0 anomalies.
 3. **Second adversarial code review** of v5 by both reviewers — DONE
    2026-09-25 on `94b7b00`. Neither found a wrong skip in the identity half.
    Reproduced and fixed in the following commit ("round-2 corrections"):

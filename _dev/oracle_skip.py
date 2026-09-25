@@ -62,6 +62,10 @@ async def bulk_listings(config, box_metas):
                 f"+ /*/{const.BOX_METAFILE_REL_PATH}",
                 f"+ /*/{const.BOX_SNAPSHOT_POINTER_REL_PATH}",
                 f"+ /*/{const.BOX_CONF_REL_PATH}/",
+                f"+ /*/{const.BOX_CONF_REL_PATH}",
+                f"+ /*/{const.BOX_DATA_REL_PATH}/",
+                f"+ /*/{const.BOX_DATA_REL_PATH}",
+                f"+ /*/{const.BOX_RESTIC_REL_PATH}/",
                 "- **",
             ],
         )))
@@ -205,7 +209,10 @@ async def main(argv):
             tombstoned |= {bm.index_name for bm in box_metas if bm.storage_location == sl_name and bm.box_id in ids}
     print(f"listings: {time.time() - t0:.1f}s; {len(records)} boxes with records, "
           f"{sum(1 for v in boxes.values() if v.conf_dir)} with a remote conf dir, "
-          f"{sum(1 for v in boxes.values() if v.pointer)} pointers, {len(tombstoned)} tombstoned",
+          f"{sum(1 for v in boxes.values() if v.data_dir)} with data/, "
+          f"{sum(1 for v in boxes.values() if v.restic_dir)} with data.restic/, "
+          f"{sum(1 for v in boxes.values() if v.pointer)} pointers, "
+          f"{sum(1 for v in boxes.values() if v.anomalies)} anomalies, {len(tombstoned)} tombstoned",
           file=sys.stderr)
 
     scratch = ScratchSidecars(config)
