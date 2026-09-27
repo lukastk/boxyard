@@ -713,9 +713,11 @@ for _bm in sorted(box_metas, key=lambda b: b.index_name):
 # mistake its length for breakage -- every one of those boxes syncs normally in
 # the format it actually has.
 #
-# The hint names `boxyard convert`, which `test_doctor_hints_are_runnable`
-# checks actually parses -- a rule with a scar behind it, since `diverged-box`
-# spent months telling people to run something that exited 2.
+# The hint names `boxyard convert` (and `--to-plain` for the other direction),
+# which `test_doctor_hints_are_runnable` checks actually parses -- a rule with a
+# scar behind it, since `diverged-box` spent months telling people to run
+# something that exited 2, and this hint's restic branch spent a release saying
+# `--to-plain` did not exist after it had been added.
 
 from boxyard._enums import StorageFormat as _fmt
 
@@ -744,20 +746,25 @@ for _bm in sorted(box_metas, key=lambda b: b.index_name):
             )
             if _bm.storage_format is _fmt.PLAIN
             else (
-                # The OTHER direction, and `boxyard convert` cannot do it --
-                # it only goes plain -> restic. Saying "run convert" here sends
-                # someone to a command that cannot help, and this fires on every
-                # converted box during the rollout's pinned window, when the
-                # policy deliberately says `plain`.
-                f"This box is already restic and there is NO SUPPORTED ROUTE "
-                f"BACK: `boxyard convert` only goes plain -> restic, and there "
-                f"is no `--to-plain`. If the policy is what is wrong -- which "
-                f"it is during the rollout's pinned window -- change the "
-                f"policy. If the BOX is what is wrong, the only route today is "
-                f"`boxyard copy -r '{_bm.index_name}' --dest <somewhere>` "
-                f"followed by a new plain box, which does not preserve the "
-                f"box's id, groups or attachments. Converting is currently the "
-                f"one irreversible act in boxyard."
+                # The OTHER direction. This fires on every converted box during
+                # the rollout's pinned window, when the policy deliberately says
+                # `plain`, so the box is usually the side that is right -- and
+                # the box can say so itself: `conf/sync.toml` is the top layer
+                # of `resolve_policy`, travels with the box's CONF, and needs no
+                # config change on any machine. `--to-plain` is the other way
+                # round (an earlier hint said no such route existed; it does).
+                f"This box is restic while the policy asks for plain, so one "
+                f"of them is wrong. If the BOX is right -- it was converted on "
+                f"purpose -- let it say so: put `storage_format = \"restic\"` "
+                f"in its `conf/sync.toml` (a box's own file beats every "
+                f"`[sync_policies.*]` table) and push CONF from the owner, or "
+                f"change the policy. If the POLICY is right, `boxyard convert "
+                f"-r '{_bm.index_name}' --to-plain` takes the box back to a "
+                f"plain tree: it verifies a byte-identical restore before the "
+                f"repository is removed and is resumable -- run it with "
+                f"--dry-run first. Nothing converts a box automatically in "
+                f"either direction; it syncs normally meanwhile in the format "
+                f"it actually has."
             ),
             box_index_name=_bm.index_name,
         )

@@ -6,7 +6,7 @@ import asyncio
 from ..config import get_config
 from .._utils import enable_soft_interruption
 from .._utils.locking import BoxyardLockManager, LockAcquisitionError, BOX_SYNC_LOCK_TIMEOUT, acquire_lock_async
-from .._tombstones import create_tombstone
+from .._tombstones import create_tombstone, is_tombstoned
 from .._remote_index import remove_from_remote_index_cache
 
 async def delete_box(
@@ -47,17 +47,41 @@ async def delete_box(
             "Recover the local state first (`boxyard doctor --no-remote`)."
         )
     
+    from boxyard.config import StorageType
+    
+    _sl_is_remote = (
+        box_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL
+    )
+    
+    # A box that ANOTHER machine has already deleted -- the remote holds a
+    # tombstone for its id -- is not taken away from anyone by deleting it here:
+    # that happened when the tombstone was written, and the remote copy is gone.
+    # What is left is this machine's registration and whatever local copy it
+    # holds, which is exactly what doctor's `tombstoned-box` hint sends people
+    # here to remove. The owner gate below has nothing to protect in that case:
+    # it exists so a non-owner cannot destroy the SHARED copy, and there is no
+    # shared copy. Without this check the ghost of a box could never be removed
+    # from any machine but its owner -- the boxmeta still names the owner, and
+    # the gate read that name and refused (five boxes deleted from macstudio sat
+    # as `tombstoned-box` on three other machines, 2026-09-27).
+    _already_tombstoned = _sl_is_remote and await is_tombstoned(
+        config,
+        box_meta.storage_location,
+        BoxMeta.extract_box_id(box_index_name),
+    )
+    
     # Ownership is checked BEFORE and INDEPENDENTLY of any force/safety flag. A
     # `--force` that also bypassed ownership would leave the remote holding this
     # machine's data while `boxmeta.toml` still names another machine as the owner
     # -- a lie in shared state, which is worse than a refusal.
     # `delete` purges the REMOTE and writes a tombstone keyed by box id, so it
     # takes the box away from every machine, not just this one.
-    owner_gate(
-        config,
-        BoxMeta.load(config, box_meta.storage_location, box_index_name),
-        f"delete '{box_index_name}'",
-    )
+    if not _already_tombstoned:
+        owner_gate(
+            config,
+            BoxMeta.load(config, box_meta.storage_location, box_index_name),
+            f"delete '{box_index_name}'",
+        )
     import shutil
     from boxyard import const
     from boxyard._models import BoxPart, refresh_boxyard_meta, BoxMeta
@@ -78,9 +102,6 @@ async def delete_box(
         # Extract box_id for tombstone and cache operations
         box_id = BoxMeta.extract_box_id(box_index_name)
         storage_location = box_meta.storage_location
-        _sl_is_remote = (
-            box_meta.get_storage_location_config(config).storage_type != StorageType.LOCAL
-        )
     
         # Retry rmtree to handle macOS race where Finder recreates .DS_Store mid-delete
         import time
@@ -111,8 +132,12 @@ async def delete_box(
                 f'retry, e.g.  sudo chown -R "$USER" {local_box_path}'
             ) from e
     
-        # Create tombstone BEFORE deleting remote (so other machines can see it)
-        if _sl_is_remote:
+        # Create tombstone BEFORE deleting remote (so other machines can see it).
+        # Not when the box is already tombstoned: the machine that deleted it
+        # wrote the tombstone and purged the remote, and this delete is only
+        # removing the ghost left here -- rewriting the tombstone would put THIS
+        # machine's name on a deletion it did not make.
+        if _sl_is_remote and not _already_tombstoned:
             await create_tombstone(
                 config=config,
                 storage_location=storage_location,

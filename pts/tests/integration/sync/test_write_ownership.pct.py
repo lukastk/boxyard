@@ -41,6 +41,7 @@ from boxyard._ownership import OwnershipRefused
 from boxyard._utils.sync_helper import SyncDirection, SyncSetting
 from boxyard.cmds import (
     claim_box,
+    delete_box,
     discard_local,
     exclude_box,
     force_push_to_remote,
@@ -990,3 +991,59 @@ def test_conf_probe_clean_baseline_converges_instead_of_reprobing_forever():
 
     assert not probe_calls
     assert results[BoxPart.CONF][0].sync_condition == SyncCondition.SYNCED
+
+
+# ============================================================================
+# A box another machine already deleted can be dropped here without owning it
+# ============================================================================
+
+# %% [markdown]
+# `delete` is owner-gated because it purges the REMOTE copy and writes a
+# tombstone: it takes the box away from every machine. But once the owner has
+# deleted a box, every other machine is left holding a registration for
+# something that no longer exists -- doctor reports it as `tombstoned-box` and
+# its hint is `boxyard delete`. That delete removes nothing shared, so the gate
+# has nothing to protect, and the boxmeta still naming the former owner is the
+# only reason it ever refused. Found live: five boxes deleted from one machine
+# left ghosts on three others that no command could remove.
+
+# %%
+#|export
+@pytest.mark.integration
+@pytest.mark.parametrize("m2_holds_a_copy", [True, False])
+def test_a_tombstoned_registration_can_be_deleted_by_a_non_owner(m2_holds_a_copy):
+    from boxyard._tombstones import get_tombstone_path
+
+    fleet = Fleet(include_on_m2=m2_holds_a_copy)
+    box_id = BoxMeta.extract_box_id(fleet.index_name)
+    m2_config = get_config(fleet.cp2)
+    m2_registration = fleet.meta(fleet.cp2).get_local_path(m2_config)
+    m2_data = fleet.data_path(fleet.cp2)
+
+    # The owner deletes the box: tombstone written, remote copy gone.
+    run(delete_box(config_path=fleet.cp1, box_index_name=fleet.index_name))
+    tombstone = fleet.remote_root / "boxyard" / get_tombstone_path(box_id)
+    assert tombstone.exists()
+    owners_tombstone = tombstone.read_text()
+    assert not fleet.remote_data.exists()
+
+    # m2 is not the owner. Before the fix this raised OwnershipRefused naming
+    # test-machine-1, and the ghost stayed for ever.
+    run(delete_box(config_path=fleet.cp2, box_index_name=fleet.index_name))
+
+    assert fleet.index_name not in get_boxyard_meta(m2_config).by_index_name
+    assert not m2_registration.exists()
+    assert not m2_data.exists()
+    # This removed a ghost, it did not delete the box again: the owner's
+    # tombstone is exactly as the owner wrote it.
+    assert tombstone.read_text() == owners_tombstone
+
+
+@pytest.mark.integration
+def test_deleting_a_live_box_another_machine_owns_is_still_refused():
+    """The relaxation is for tombstoned boxes only; a live box keeps its gate."""
+    fleet = Fleet(include_on_m2=True)
+    with pytest.raises(OwnershipRefused, match="test-machine-1"):
+        run(delete_box(config_path=fleet.cp2, box_index_name=fleet.index_name))
+    assert fleet.remote_data.exists()
+    assert fleet.index_name in get_boxyard_meta(get_config(fleet.cp2)).by_index_name

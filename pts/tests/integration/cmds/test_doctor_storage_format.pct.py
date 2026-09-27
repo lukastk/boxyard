@@ -201,10 +201,13 @@ def test_the_hint_warns_that_old_machines_cannot_read_a_converted_box(yard):
 # %% [markdown]
 # ## The hint has to name a command that can actually help
 #
-# `boxyard convert` only goes plain -> restic. Offering it for a mismatch in the
-# OTHER direction sends someone to a command that cannot do what they need --
-# and that direction is not exotic: it is what every converted box reports
-# during the rollout's pinned window, when the policy deliberately says `plain`.
+# Each direction has its own fix, and the hint must name the right one. A plain
+# box under a restic policy converts with `boxyard convert`. A restic box under
+# a plain policy -- what every converted box reports during the rollout's pinned
+# window, when the policy deliberately says `plain` -- is usually the box being
+# RIGHT, so the hint must offer the per-box override (`conf/sync.toml`) first
+# and `--to-plain` for the case where the policy is right. An earlier version of
+# this hint said `--to-plain` did not exist, a whole release after it did.
 
 # %%
 #|export
@@ -219,14 +222,15 @@ def test_the_hint_for_a_plain_box_offers_convert(yard):
     set_policies(yard, {"default": {"storage_format": "restic"}})
     hint = hint_for(yard)
     assert "boxyard convert" in hint
-    assert "NO SUPPORTED ROUTE BACK" not in hint
+    assert "--to-plain" not in hint, "the plain box needs the forward conversion"
+    assert "conf/sync.toml" not in hint
 
 
-def test_the_hint_for_a_restic_box_says_there_is_no_route_back(yard):
+def test_the_hint_for_a_restic_box_offers_the_override_and_to_plain(yard):
     """
-    restic box, plain policy. The honest answer is that there is none: no
-    `--to-plain` exists, and copying out into a new box does not preserve the
-    box's id, groups or attachments.
+    restic box, plain policy. Two honest answers, and the hint must give both:
+    the box's own `conf/sync.toml` when the box is right (the usual case in the
+    pinned window), and `boxyard convert --to-plain` when the policy is right.
     """
     config, box = load(yard)
     box.storage_format = StorageFormat.RESTIC
@@ -234,6 +238,8 @@ def test_the_hint_for_a_restic_box_says_there_is_no_route_back(yard):
     set_policies(yard, {"default": {"storage_format": "plain"}})
 
     hint = hint_for(yard)
-    assert "NO SUPPORTED ROUTE BACK" in hint
-    assert "boxyard copy" in hint, "it must name the only route that exists"
-    assert "--to-plain" in hint, "and say plainly that the flag does not exist"
+    assert 'storage_format = "restic"' in hint
+    assert "conf/sync.toml" in hint, "the per-box override is the cheap fix"
+    assert "--to-plain" in hint, "and the reverse conversion is the other"
+    assert "NO SUPPORTED ROUTE BACK" not in hint, "that claim was stale"
+    assert "boxyard copy" not in hint, "copying out into a new box loses the id"
