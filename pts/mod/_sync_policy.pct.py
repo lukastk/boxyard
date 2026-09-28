@@ -494,7 +494,7 @@ def data_boxes_needing_sync(
       records as last agreed with, and no restore is in flight;
     - the local tree has not been TOUCHED since -- `tree_touched_since`, the
       ctime-and-directories gate the restic backend itself uses (it sees all
-      ten change shapes; `tree_modified_since` saw two).
+      ten change shapes; the newest-mtime test it replaced saw two).
 
     Skipping is ONLY ever an optimisation. A wrong "changed" costs a sync. A
     wrong "unchanged" LOSES DATA, silently, until something else moves.

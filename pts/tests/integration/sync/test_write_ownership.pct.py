@@ -643,6 +643,70 @@ def test_write_denied_is_reported_by_doctor_with_both_ways_out():
 # %%
 #|export
 @pytest.mark.integration
+def test_write_denied_is_reported_when_the_baseline_cannot_answer():
+    """
+    Stranded work is still reported when the sidecar is missing.
+
+    A behavioural pin on the state a filter-signature change, a
+    `FINGERPRINT_VERSION` bump or a lost `~/.boxyard` produces: a complete sync
+    record with no baseline beside it. Today the answer comes from the mtime
+    fallback (the file is new, so it is visible); whatever replaces that
+    fallback must keep this reported, which is why the pin is here and not
+    written against the mechanism.
+    """
+    from boxyard._fingerprint import base_path_for
+    from boxyard.cmds import run_doctor
+
+    fleet = Fleet(include_on_m2=True)
+    (fleet.data_path(fleet.cp2) / "m2-work.txt").write_text("stranded work")
+
+    # Leave the sync record, remove only the sidecar: a complete record with no
+    # baseline beside it is exactly the state a filter-signature change, a
+    # `FINGERPRINT_VERSION` bump or a lost `~/.boxyard` produces.
+    _rec = fleet.meta(fleet.cp2).get_local_sync_record_path(
+        get_config(fleet.cp2), BoxPart.DATA
+    )
+    _base = base_path_for(_rec)
+    _base.unlink(missing_ok=True)
+    assert not _base.exists()
+
+    report = run(run_doctor(config_path=fleet.cp2))
+    findings = report["checks"]["write-denied"]["findings"]
+    assert [f["index_name"] for f in findings] == [fleet.index_name], (
+        "an UNKNOWN baseline skipped the probe, so stranded work went unreported"
+    )
+
+
+# %%
+#|export
+@pytest.mark.integration
+def test_an_unanswerable_baseline_still_does_not_cry_wolf():
+    """
+    ...and a missing sidecar must not make debris look like stranded work.
+
+    The other half of the pin above, and the one that constrains any future
+    answer for UNKNOWN: whatever the predicate says, the finding comes from what
+    a push would ACTUALLY move, so a non-owner machine that has merely acquired
+    a `.DS_Store` stays quiet.
+    """
+    from boxyard._fingerprint import base_path_for
+    from boxyard.cmds import run_doctor
+
+    fleet = Fleet(include_on_m2=True)
+    (fleet.data_path(fleet.cp2) / ".DS_Store").write_text("junk")
+
+    _rec = fleet.meta(fleet.cp2).get_local_sync_record_path(
+        get_config(fleet.cp2), BoxPart.DATA
+    )
+    base_path_for(_rec).unlink(missing_ok=True)
+
+    report = run(run_doctor(config_path=fleet.cp2))
+    assert not report["checks"]["write-denied"]["findings"]
+
+
+# %%
+#|export
+@pytest.mark.integration
 def test_write_denied_is_quiet_for_debris_only():
     """
     Doctor must apply the same probe the sync path does, or the two would

@@ -1583,12 +1583,43 @@ async def get_sync_status(
             # today's until a box syncs once and gets a baseline, after which
             # every change shape is caught. Nothing is actioned retroactively.
             #
-            # TODO(cleanup): drop this fallback and treat UNKNOWN as NEEDS_PUSH
-            # -- once `boxyard doctor` reports 0 uncovered fingerprint
-            # baselines on every machine (a sync pass alone does NOT achieve
-            # this: an already-synced box never writes a baseline), AND the
-            # historical backlog has been reviewed deliberately rather than by
-            # upgrade.
+            # TODO(cleanup): NOT removable by the condition first written
+            # here. That condition -- "`boxyard doctor` reports 0 uncovered
+            # fingerprint baselines on every machine, AND the historical backlog
+            # has been reviewed deliberately rather than by upgrade" -- was MET
+            # on 2026-09-28 (mymain 382/0, macbook 470/0, macstudio 20/0,
+            # ideapad 9/0, pocket4 14/0; backlog audited 2026-09-03, 4 stranded
+            # files, all transient artifacts, all cleared). The removal was then
+            # attempted and REVERTED: 12 integration tests fail, and they are
+            # right.
+            #
+            # What the condition missed is that three mechanisms written AFTER
+            # it require UNKNOWN to mean "no claim", not "changed":
+            #
+            # - baseline convergence (0.8.3): a baseline-less part must be able
+            #   to reach a SYNCED verdict, because that verdict is what triggers
+            #   the bless (META/CONF) or the verify-then-bless probe (DATA). The
+            #   probe is also what surfaces a hidden divergence as a WARNING
+            #   instead of pushing over it, so resolving UNKNOWN to NEEDS_PUSH
+            #   trades "ask the remote, then bless or warn" for "push" and loses
+            #   the warning -- `test_a_hidden_divergence_is_surfaced_not_blessed`
+            #   and `test_a_box_without_baselines_regains_all_three...`.
+            # - interrupted-sync and mid-transfer recovery: at the second site
+            #   below, CONFLICT wedges a state that heals itself in one pass --
+            #   `test_a_foreign_push_during_a_pull_is_not_adopted`.
+            # - the full-pass skip (0.8.4): its verdicts are computed from these
+            #   conditions, so changing them silently re-decides what a pass
+            #   skips -- `test_a_deletion_racing_a_conf_pull_is_never_blessed_later`.
+            #
+            # So the mtime call is not merely a migration crutch any more; it is
+            # the thing that stops a bless from happening when a change IS
+            # visible. What remains genuinely open is whether the UNKNOWN branch
+            # can become a plain `False` and let the probe decide everything.
+            # That is NOT free either: META/CONF bless on a SYNCED verdict
+            # WITHOUT verifying against the remote, so a change this fallback can
+            # still see would be blessed as agreed and stranded for ever. It is
+            # an architectural call about what "cannot prove" should mean, and it
+            # needs Lukas rather than another attempt at the same removal.
             if _locally_modified is None:
                 _modified_a = (
                     local_last_modified is not None
@@ -1629,13 +1660,12 @@ async def get_sync_status(
                         # bounded to one cycle per box because the pull that
                         # resolves it writes the baseline.
                         #
-                        # TODO(cleanup): drop the `local_last_modified` fallback
-                        # here and treat UNKNOWN as CONFLICT -- once `boxyard
-                        # doctor` reports 0 uncovered fingerprint baselines on
-                        # every machine (a sync pass alone does NOT achieve
-                        # this: an already-synced box never writes a baseline),
-                        # AND the historical backlog has been reviewed
-                        # deliberately rather than by upgrade.
+                        # TODO(cleanup): NOT removable by the condition first written here --
+                        # the coverage gate was met on 2026-09-28 and the removal fails 12
+                        # integration tests, because the convergence (0.8.3), mid-transfer-recovery
+                        # and full-pass-skip (0.8.4) mechanisms all need UNKNOWN to mean "no claim"
+                        # rather than "changed". Full reasoning at the matching site in
+                        # `_models.get_sync_status`; the decision is Lukas's.
                         if _locally_modified is None:
                             _modified = (
                                 local_last_modified is not None

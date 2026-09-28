@@ -36,7 +36,6 @@ from boxyard._restic import (
     read_state,
     repo_url_for_box,
     state_path,
-    tree_modified_since,
     write_state,
 )
 
@@ -355,28 +354,6 @@ def test_state_is_not_inside_the_synced_parts(tmp_path):
     machine's position.
     """
     assert const.RESTIC_STATE_REL_PATH in state_path(tmp_path, "b").parts
-
-
-# %% [markdown]
-# ## The repo-independent fallback
-
-# %%
-#|export
-def test_tree_modified_since_sees_a_new_file(tmp_path):
-    (tmp_path / "a.txt").write_text("a")
-    os.utime(tmp_path / "a.txt", (5000, 5000))
-    assert tree_modified_since(tmp_path, 1000.0) is True
-
-
-def test_tree_modified_since_is_false_for_an_older_tree(tmp_path):
-    (tmp_path / "a.txt").write_text("a")
-    os.utime(tmp_path / "a.txt", (1000, 1000))
-    os.utime(tmp_path, (1000, 1000))
-    assert tree_modified_since(tmp_path, 5000.0) is False
-
-
-def test_tree_modified_since_is_false_for_an_empty_tree(tmp_path):
-    assert tree_modified_since(tmp_path, 1000.0) is False
 
 
 # %% [markdown]

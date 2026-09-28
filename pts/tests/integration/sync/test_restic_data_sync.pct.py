@@ -551,6 +551,38 @@ def test_a_replica_with_an_unpushed_deletion_refuses_to_adopt(pair):
 
 
 # %% [markdown]
+# ## A replica whose baseline cannot answer refuses adoption too
+#
+# `get_sync_status`'s UNKNOWN branches still fall back to the mtime test; this
+# one refuses, and the difference is structural. Doctor's baseline coverage —
+# the number those fallbacks are gated on — skips DATA on a restic box, because
+# restic carries its own change-detection state, so it never measures the part
+# this check reads: the PLAIN baseline beside the plain record of a box that has
+# since become restic. "0 uncovered fleet-wide" cannot license a fallback here.
+# Both alternatives are worse anyway: the old mtime test silently reverts a
+# deletion, rename, chmod or symlink edit, and assuming "changed" adopts a
+# possibly-stale local tree as the new snapshot.
+
+# %%
+#|export
+def test_a_replica_whose_baseline_cannot_answer_refuses_to_adopt(pair):
+    from boxyard._fingerprint import base_path_for
+    from boxyard._models import BoxMeta
+
+    _meta = BoxMeta.load(pair["cfgB"], pair["remote_name"], pair["idx"])
+    _rec = _meta.get_local_sync_record_path(pair["cfgB"], BoxPart.DATA)
+    _base = base_path_for(_rec)
+    assert _base.exists(), "the fixture's B-side plain sync must have left one"
+    _base.unlink()
+
+    with pytest.raises(SyncUnsafe) as excinfo:
+        sync(pair, "B")
+    assert "no usable fingerprint baseline" in str(excinfo.value)
+    # Nothing was restored over the replica on the way to refusing.
+    assert (pair["dataB"] / "sub" / "keep.txt").exists()
+
+
+# %% [markdown]
 # ## One excluded-name arrival does not tax the box for ever
 #
 # `.DS_Store` lands, its directory's mtime moves, the cheap gate opens, and

@@ -160,18 +160,29 @@ def owner_gate(
 # %% [markdown]
 # ## The dry-run probe
 #
-# Mandatory, not an optimisation. Measured: creating `.DS_Store`,
-# `__pycache__/x.pyc` or `.venv/pyvenv.cfg` flips a box to `needs_push` even
-# though all three are in `DEFAULT_RCLONE_EXCLUDE` and the resulting push
-# transfers nothing — `get_sync_status` asks `check_last_time_modified`, which
-# is a tree walk, not a filter-aware one. Without this probe every read-only
-# machine would report "you have local changes" forever, for changes that do not
-# exist, and the feature would be unusable.
+# Written when it was mandatory, and kept now that it is not the only defence.
 #
-# (The deeper fix is to make `check_last_time_modified` filter-aware, which would
-# also remove today's yard-wide no-op pushes. That is a separate, riskier change
-# — getting rclone's filter semantics subtly wrong means silently not syncing
-# real work — and is deliberately not attempted here.)
+# The measured failure it was built for: creating `.DS_Store`,
+# `__pycache__/x.pyc` or `.venv/pyvenv.cfg` flipped a box to `needs_push` even
+# though all three are in `DEFAULT_RCLONE_EXCLUDE` and the resulting push
+# transferred nothing, because `get_sync_status` asked
+# `check_last_time_modified` — a tree walk, not a filter-aware one. Every
+# read-only machine reported "you have local changes" forever, for changes that
+# did not exist.
+#
+# That root cause is fixed for any box with a usable baseline: `_fingerprint`
+# v2 enumerates with `rclone lsf` under the SAME exclude file the transfer uses,
+# so an excluded file cannot enter the digest and cannot flip the status (and the
+# filter-aware rewrite this comment used to propose as "separate and riskier" is
+# what that was — ticket bfedf81c). It is NOT fixed where the fingerprint cannot
+# answer: that branch still consults `check_last_time_modified`, so the old false
+# positive is still reachable for a baseline-less part.
+#
+# The probe stays because it answers a different, still-open question: the
+# fingerprint says the tree has changed since the last agreement, while this
+# says what a push would ACTUALLY move right now, against the live remote. That
+# is the sentence a WRITE_DENIED message and doctor's `write-denied` finding
+# need, and no local predicate can supply it.
 
 # %%
 #|export

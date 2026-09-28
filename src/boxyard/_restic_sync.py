@@ -27,7 +27,6 @@ from ._restic import (
     count_tracked_files,
     read_state,
     repo_url_for_box,
-    tree_modified_since,
     resolve_restic_password,
     repo_exists,
     write_pointer,
@@ -348,10 +347,26 @@ async def sync_data_restic(
         # exists: it digests every change shape, where the mtime test this used
         # to rely on sees two of ten -- an unpushed deletion, rename, chmod or
         # symlink edit read "clean" here and was silently reverted by the full
-        # restore that follows. UNKNOWN (no baseline yet) falls back to that
-        # old mtime test: exactly the transition rule `get_sync_status` uses,
-        # for the same reason -- never worse than before, strictly better once
-        # the box has synced on >= 0.8.0.
+        # restore that follows.
+        #
+        # UNKNOWN REFUSES here, unlike the UNKNOWN branches in
+        # `get_sync_status`, which still fall back to the mtime test (see the
+        # `TODO(cleanup)` there -- their removal was attempted and reverted).
+        # This site is different in a way that matters: the coverage number
+        # those fallbacks were gated on CANNOT cover it. `doctor`'s baseline
+        # coverage skips DATA on a restic box, by design, since restic carries
+        # its own change-detection state -- and the part this site reads is
+        # exactly the part it skips, the PLAIN baseline beside the plain record
+        # of a box that has since become restic. A fallback here justified by
+        # "0 uncovered fleet-wide" would rest on evidence about a different
+        # thing.
+        #
+        # Refusing is also right on its own terms. Both alternatives are worse:
+        # the old mtime test silently reverts the four shapes above, and
+        # assuming "changed" adopts a possibly-stale local tree as the new
+        # snapshot. This is the same epistemic state as the missing-record
+        # branch a few lines up, so it gets the same refusal and the same remedy
+        # -- and `discard-local` keeps this machine's copy first.
         _adoption_exc = box_meta.get_effective_exclude_path(config)
         _adoption_differs = local_tree_differs(
             local_path=data_path,
@@ -364,13 +379,16 @@ async def sync_data_restic(
             filter_sig=filter_signature(_adoption_exc),
         )
         if _adoption_differs is None:
-            # TODO(cleanup): drop this fallback with the others -- once `boxyard
-            # doctor` reports 0 uncovered fingerprint baselines on every machine
-            # (a sync pass alone does NOT achieve this: an already-synced box
-            # never writes a baseline), AND the historical backlog has been
-            # reviewed deliberately rather than by upgrade.
-            _adoption_differs = tree_modified_since(
-                data_path, plain_record.timestamp.timestamp()
+            raise SyncUnsafe(
+                f"Box '{index_name}' was converted to restic elsewhere, and this "
+                f"machine has no usable fingerprint baseline for the copy it "
+                f"held beforehand, so there is no way to tell whether that copy "
+                f"holds unpushed work. Nothing has been changed. If this copy is "
+                f"expendable, take the remote's version with `boxyard "
+                f"discard-local -r '{index_name}'` (this machine's copy is kept "
+                f"under the sync backups directory). If it is not, compare it "
+                f"against the remote first with `boxyard copy -r '{index_name}' "
+                f"-d /tmp/compare`."
             )
         if _adoption_differs:
             if not may_push:

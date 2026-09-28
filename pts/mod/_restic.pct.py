@@ -1061,22 +1061,6 @@ def tree_touched_since(
     return False
 
 
-def tree_modified_since(data_path: Path, since_unix: float) -> bool:
-    """
-    Repo-independent change detection, for when the recorded snapshot is gone.
-
-    Deliberately the SAME question the plain backend already asks --
-    `check_last_time_modified` against the sync record's timestamp -- so the
-    fallback is not a new mechanism and not a weaker guarantee than today's.
-    """
-    from boxyard._utils import check_last_time_modified
-
-    last_modified = check_last_time_modified(Path(data_path))
-    if last_modified is None:
-        return False  # nothing there to have changed
-    return last_modified.timestamp() > since_unix
-
-
 @contextlib.contextmanager
 def _backup_path(box_index_name: str | None, data_path: Path):
     """
@@ -1324,10 +1308,10 @@ async def local_is_modified(
             # comparison cannot run. Three candidate fallbacks, and the middle
             # one is right:
             #
-            # - `tree_modified_since` (what this used to be): files-only
-            #   mtimes, two of ten change shapes -- a replica whose only change
-            #   was a deletion, rename, chmod or symlink edit read "clean" and
-            #   had it silently reverted by the next full restore.
+            # - `check_last_time_modified` (what this used to wrap):
+            #   files-only mtimes, two of ten change shapes -- a replica whose
+            #   only change was a deletion, rename, chmod or symlink edit read
+            #   "clean" and had it silently reverted by the next full restore.
             # - unconditional True: every replica that is merely BEHIND wedges
             #   into CONFLICT after a retention run -- the false-conflict storm
             #   `test_a_forgotten_base_does_not_become_a_false_conflict` pins,

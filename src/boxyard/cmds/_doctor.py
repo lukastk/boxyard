@@ -970,12 +970,12 @@ async def run_doctor(
                         # No usable baseline: fall back to the old scan, exactly as
                         # `get_sync_status`'s remote-newer branch does, so the two
                         # still cannot disagree during the migration.
-                        # TODO(cleanup): drop this fallback with the matching one in
-                        # `_models.get_sync_status` -- once `boxyard doctor` reports
-                        # 0 uncovered fingerprint baselines on every machine (a sync
-                        # pass alone does NOT achieve this: an already-synced box
-                        # never writes a baseline), AND the historical backlog has
-                        # been reviewed deliberately rather than by upgrade.
+                        # TODO(cleanup): NOT removable by the condition first written here --
+                        # the coverage gate was met on 2026-09-28 and the removal fails 12
+                        # integration tests, because the convergence (0.8.3), mid-transfer-recovery
+                        # and full-pass-skip (0.8.4) mechanisms all need UNKNOWN to mean "no claim"
+                        # rather than "changed". Full reasoning at the matching site in
+                        # `_models.get_sync_status`; the decision is Lukas's.
                         _local_modified = check_last_time_modified(
                             _bm.get_local_part_path(config, _part),
                             exclude_names=literal_exclude_names(_exc),
@@ -1421,11 +1421,12 @@ async def run_doctor(
                 filter_sig=filter_signature(_effective_exclude),
             )
             if _wd_changed is None:
-                # TODO(cleanup): drop this fallback with the others -- once `boxyard
-                # doctor` reports 0 uncovered fingerprint baselines on every machine
-                # (a sync pass alone does NOT achieve this: an already-synced box
-                # never writes a baseline), AND the historical backlog has been
-                # reviewed deliberately rather than by upgrade.
+                # TODO(cleanup): NOT removable by the condition first written here --
+                # the coverage gate was met on 2026-09-28 and the removal fails 12
+                # integration tests, because the convergence (0.8.3), mid-transfer-recovery
+                # and full-pass-skip (0.8.4) mechanisms all need UNKNOWN to mean "no claim"
+                # rather than "changed". Full reasoning at the matching site in
+                # `_models.get_sync_status`; the decision is Lukas's.
                 _modified = check_last_time_modified(
                     _data_path, exclude_names=literal_exclude_names(_effective_exclude)
                 )

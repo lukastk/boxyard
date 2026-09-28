@@ -218,11 +218,38 @@ result;
   verbatim, and `SyncRecord` is `extra="forbid"`). No usable baseline (absent,
   wrong `FINGERPRINT_VERSION`, ULID mismatch, or filter-signature mismatch)
   falls back to the old newest-mtime test — the `TODO(cleanup)` sites in
-  `_models`, `_doctor` and `_restic_sync`. Signatures must match between
-  writer and reader: resolve the exclude with
-  `BoxMeta.get_effective_exclude_path` for DATA and pass None for META/CONF —
-  anything else makes the baseline dead weight. `boxyard doctor` prints
-  coverage as a gauge.
+  `_models` and `_doctor`. **That removal was attempted in v0.8.7 and reverted,
+  and the TODOs now record why.** Its stated gate (0 uncovered baselines on every
+  machine, plus a deliberate backlog review) was genuinely met on 2026-09-28, but
+  the gate was written at v0.8.0 and three mechanisms added after it — baseline
+  convergence (v0.8.3), interrupted-sync/mid-transfer recovery, and the full-pass
+  skip (v0.8.4) — all require UNKNOWN to mean "no claim" rather than "changed": a
+  baseline-less part must be able to reach a SYNCED verdict, because that verdict
+  is what triggers the bless or the verify-then-bless probe, and the probe is what
+  surfaces a hidden divergence as a warning instead of pushing over it. 12
+  integration tests say so. What is still open is whether the UNKNOWN branch can
+  become a plain `False` and let the probe decide everything; that is not free
+  either (META/CONF bless without verifying), so it is a decision, not a cleanup.
+  `_restic_sync`'s adoption check is the ONE site that refuses loudly instead of
+  falling back, and for a structural reason: it reads the PLAIN baseline of a box
+  that is now restic, which is exactly the part doctor's coverage number skips, so
+  that number can never license a fallback there. Signatures must match between
+  writer and reader:
+  resolve the exclude with `BoxMeta.get_effective_exclude_path` for DATA and
+  pass None for META/CONF — anything else makes the baseline dead weight.
+- **Editing the default exclude list is a fleet-wide event, not a config tweak.**
+  The exclude rules are hashed into every baseline, so adding one line to
+  `~/.config/boxyard/default.rclone_exclude` (rendered from myrig) invalidates
+  every DATA baseline on every machine at once — ~596 boxes x 5 — and each one
+  then reads NEEDS_PUSH until its next sync rewrites the baseline. Nothing is
+  lost (a push that moves nothing still re-records), but it is hours of fleet
+  churn and a `fingerprint-baseline-missing` finding everywhere until it
+  settles. This is why `.coverage` and `.claude/scheduled_tasks.lock` were NOT
+  added in 2026-09 despite being the file types the old deletion blindness
+  stranded: they appear in 4 boxes out of 120, and 2,980 invalidated baselines
+  is the wrong price for that. **If the list must change, batch every wanted
+  line into ONE edit so the fleet pays once**, and expect the check to be red
+  until the passes finish.
 - **Sync backups**: every sync writes the files it is about to overwrite or
   delete into `sync_backups/<sync ULID>/` (local `~/.boxyard/sync_backups/` for a
   pull, `<store>/sync_backups/` on the remote for a push) and purges that
