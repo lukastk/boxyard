@@ -334,3 +334,41 @@ class TestTimestampFormat:
 
         with pytest.raises(ValidationError):
             Config(**minimal_config_dict)
+
+# ============================================================================
+# Tests for known_machines
+# ============================================================================
+
+# %%
+#|export
+class TestKnownMachines:
+    """
+    `known_machines` is the fleet list that makes doctor's `stale-owner` check
+    exact. Optional, validated like `machine_name`, and it must contain this
+    machine: a machine outside its own fleet list would be reported as stale by
+    every other machine the moment it claimed a box.
+    """
+
+    def test_absent_by_default(self, minimal_config_dict):
+        assert Config(**minimal_config_dict).known_machines is None
+
+    def test_accepts_a_fleet_that_contains_this_machine(self, minimal_config_dict):
+        minimal_config_dict["machine_name"] = "pocket4"
+        minimal_config_dict["known_machines"] = ["mymain", "pocket4"]
+        assert Config(**minimal_config_dict).known_machines == ["mymain", "pocket4"]
+
+    def test_this_machine_must_be_in_the_fleet(self, minimal_config_dict):
+        minimal_config_dict["machine_name"] = "pocket4"
+        minimal_config_dict["known_machines"] = ["mymain"]
+        with pytest.raises(ValueError, match="not in known_machines"):
+            Config(**minimal_config_dict)
+
+    def test_every_entry_must_be_a_valid_machine_name(self, minimal_config_dict):
+        minimal_config_dict["known_machines"] = ["mymain", "Lukas’s MacBook Pro"]
+        with pytest.raises(ValueError, match="Invalid entry"):
+            Config(**minimal_config_dict)
+
+    def test_a_machine_listed_twice_is_refused(self, minimal_config_dict):
+        minimal_config_dict["known_machines"] = ["mymain", "mymain"]
+        with pytest.raises(ValueError, match="twice"):
+            Config(**minimal_config_dict)

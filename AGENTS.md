@@ -172,6 +172,16 @@ result;
   `config.machine_name`, which is **configured, never derived from the hostname**.
   Commands: `claim`, `release`, `owner`, and `discard-local`; enforcement is
   `may_push()` plus `owner_gate()`, and refusal raises `OwnershipRefused`.
+  `delete` of a box the remote already holds a tombstone for skips the gate
+  (v0.8.5): it removes a ghost, not the shared copy. Config `known_machines`
+  (v0.8.6, rendered by myrig from its `machines` table) lists every name that
+  may own a box; with it `doctor`'s `stale-owner` is exact, without it the
+  check guesses from owner counts. `machine_name` must be in the list.
+- **Stale duplicate registrations (v0.8.6)**: `sync-missing-meta` reconciles
+  on box id, adopts a remote rename, and drops a registration under a name the
+  remote no longer has when the remote's name is also registered here and the
+  stale one holds no DATA (checkout EXCLUDED or MISSING). Never `delete` a
+  stale name: that tombstones the id, i.e. the live box, fleet-wide.
 - **Storage format (v0.7.0+)**: a box's DATA is either a plain rclone tree
   (`boxes/<index>/data/`) or a per-box restic repository
   (`boxes/<index>/data.restic/` + `data.snapshot` pointer); META/CONF are always

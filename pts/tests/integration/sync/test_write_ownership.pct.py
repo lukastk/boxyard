@@ -1047,3 +1047,76 @@ def test_deleting_a_live_box_another_machine_owns_is_still_refused():
         run(delete_box(config_path=fleet.cp2, box_index_name=fleet.index_name))
     assert fleet.remote_data.exists()
     assert fleet.index_name in get_boxyard_meta(get_config(fleet.cp2)).by_index_name
+
+
+# ============================================================================
+# A4 — `known_machines` makes stale-owner exact
+# ============================================================================
+
+# %% [markdown]
+# The owner-count heuristic reported pocket4 -- a real machine that owned exactly
+# one box -- on every other machine for days. With the fleet listed in config
+# the check has nothing to guess: an owner in the list is never stale, an owner
+# outside it always is, whatever the counts say.
+
+# %%
+#|export
+def _set_known_machines(config_path, names):
+    """Prepend the key: a top-level TOML key must sit above the first [table]."""
+    line = "known_machines = [" + ", ".join(f'"{n}"' for n in names) + "]\n"
+    config_path.write_text(line + config_path.read_text())
+
+
+def _write_owner_by_hand(config_path, sl, index_name, owner):
+    """Put a `write_owner` straight into this machine's boxmeta mirror."""
+    config = get_config(config_path)
+    bm = BoxMeta.load(config, sl, index_name)
+    bm.write_owner = owner
+    bm.save(config)
+
+
+@pytest.mark.integration
+def test_with_the_fleet_listed_an_unlisted_owner_is_stale_whatever_the_counts():
+    from boxyard.cmds import run_doctor
+
+    fleet = Fleet(claim_on_m1=False)
+    # One box, one owner, nobody owning several: the heuristic has nothing to
+    # compare against and stays quiet -- which is right for it, and useless.
+    _write_owner_by_hand(fleet.cp2, fleet.sl, fleet.index_name, "retired-laptop")
+    report = run(run_doctor(config_path=fleet.cp2, check_remote=False))
+    assert not report["checks"]["stale-owner"]["findings"]
+
+    _set_known_machines(fleet.cp2, ["test-machine-1", "test-machine-2"])
+    report = run(run_doctor(config_path=fleet.cp2, check_remote=False))
+    findings = report["checks"]["stale-owner"]["findings"]
+    assert [f["write_owner"] for f in findings] == ["retired-laptop"]
+    assert "known_machines" in findings[0]["message"]
+    assert f"boxyard claim --steal -r '{fleet.index_name}'" in findings[0]["hint"]
+
+
+@pytest.mark.integration
+def test_with_the_fleet_listed_a_listed_owner_of_one_box_is_not_stale():
+    """The pocket4 case: another machine owns several, a real machine owns one."""
+    from boxyard.cmds import run_doctor
+
+    fleet = Fleet()  # m1 owns `shared`
+    second = new_box(config_path=fleet.cp1, box_name="second", storage_location=fleet.sl)
+    run(sync_box(config_path=fleet.cp1, box_index_name=second, verbose=False))
+    third = new_box(
+        config_path=fleet.cp1, box_name="third", storage_location=fleet.sl, claim=False
+    )
+    run(sync_box(config_path=fleet.cp1, box_index_name=third, verbose=False))
+    run(sync_missing_boxmetas(config_path=fleet.cp2))
+    # m2 mirrored `shared` before m1 claimed it; a sync pulls the owner in.
+    fleet.sync_m2()
+    _write_owner_by_hand(fleet.cp2, fleet.sl, third, "pocket")
+
+    # Without the list: test-machine-1 owns two, `pocket` owns one -> reported.
+    report = run(run_doctor(config_path=fleet.cp2, check_remote=False))
+    assert [f["write_owner"] for f in report["checks"]["stale-owner"]["findings"]] == ["pocket"]
+    assert "known_machines" in report["checks"]["stale-owner"]["findings"][0]["hint"]
+
+    # With the fleet listed and `pocket` in it: nothing to report.
+    _set_known_machines(fleet.cp2, ["test-machine-1", "test-machine-2", "pocket"])
+    report = run(run_doctor(config_path=fleet.cp2, check_remote=False))
+    assert not report["checks"]["stale-owner"]["findings"]

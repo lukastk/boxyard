@@ -62,8 +62,9 @@
 #     sync stays deliberately silent about it (see `SyncCondition.WRITE_DENIED`),
 #     so if doctor did not say it, nothing would.
 # 20. **stale-owner** — a box whose `write_owner` cannot be a working owner:
-#     either it names a machine that owns nothing else in this yard, or it names
-#     THIS machine for a box this machine does not have. Both mean no machine
+#     either it names a machine that is not in the fleet (`known_machines` in
+#     config when set; otherwise a name that owns nothing else in this yard),
+#     or it names THIS machine for a box this machine does not have. Both mean no machine
 #     can push the box. `claim` and `exclude` each close one known route into
 #     that state; this check is what catches the routes nobody thought of.
 # 21. **unpushed-meta-edit** — a `boxmeta.toml` that differs from the copy this
@@ -776,11 +777,17 @@ for _box_id, _bms in sorted(_metas_by_id.items()):
             "duplicate-box-id",
             f"Box id '{_box_id}' is registered {len(_bms)} times: {_locations}",
             "Box ids must be unique. This usually means the box was RENAMED on "
-            "another machine: `sync-missing-meta` fetched the new name while the "
-            "old registration stayed behind. The remote's name is authoritative "
-            "— check it with `boxyard copy`/`rclone lsf` or on the machine that "
-            "owns the box, then remove the registration whose name the remote "
-            "does not have. Do NOT re-create the box; that would mint a new id.",
+            "another machine while this one held the old registration (an older "
+            "`sync-missing-meta` fetched the new name and left the old one). The "
+            "remote's name is authoritative. Run `boxyard sync-missing-meta`: it "
+            "drops a registration whose name the remote does not have when that "
+            "registration holds no DATA here. If it stays, one of the stale-named "
+            "registrations has a directory under a checkout root: move that "
+            "directory out of the root (its contents are the OLD name's, the "
+            "live box is the other registration) and run it again. Never "
+            "`boxyard delete` the stale name -- that would tombstone the id, i.e. "
+            "the live box, on every machine. Do NOT re-create the box either; "
+            "that would mint a new id.",
             box_id=_box_id,
         )
 
@@ -1882,12 +1889,17 @@ else:
 #   it owns, so both known routes into this are closed — but they were both
 #   found by inspection rather than by anything reporting them, which is the
 #   whole reason this check exists.
-# - **Owned by a name that owns exactly one box, while some other machine owns
-#   several.** A heuristic, and labelled as one. A real machine in a migrated
-#   yard owns tens to hundreds of boxes, so a name holding exactly one — in a
-#   yard where another name holds more — is far more likely a machine that was
-#   renamed or retired than a machine with one box. The "some other machine owns
-#   several" condition is what keeps this quiet during the migration itself,
+# - **Owned by a name that is not a machine in this fleet.** Exact when the
+#   config lists the fleet (`known_machines`, rendered by myrig): an owner not
+#   in the list is stale, an owner in it never is. Without the list it falls
+#   back to a heuristic, labelled as one: a name that owns exactly one box,
+#   while some other machine owns several. A real machine in a migrated yard
+#   owns tens to hundreds of boxes, so a name holding exactly one — in a yard
+#   where another name holds more — is more likely a machine that was renamed
+#   or retired than a machine with one box. More likely, not certain: pocket4,
+#   a real machine, owned exactly one box for days and was reported by every
+#   other machine, which is why the list exists. The "some other machine owns
+#   several" condition keeps the heuristic quiet during the migration itself,
 #   when the first machine to claim is legitimately the only owner in the yard.
 #
 # Note what is deliberately NOT reported: a box owned by another machine that is
@@ -1934,6 +1946,25 @@ for bm in box_metas:
             )
         continue
 
+    if config.known_machines is not None:
+        if bm.write_owner not in config.known_machines:
+            _add_finding(
+                "stale-owner",
+                f"Box '{bm.index_name}' is owned by '{bm.write_owner}', which is "
+                f"not a machine in this fleet (`known_machines` in "
+                f"'{config.config_path}' lists {config.known_machines})",
+                f"A renamed or retired machine: no machine can push this box. "
+                f"Take it over from the machine that should have it with "
+                f"`boxyard claim --steal -r '{bm.index_name}'`. If "
+                f"'{bm.write_owner}' is a real machine, the fleet list is what "
+                f"is wrong: add it to `known_machines` (in myrig, which renders "
+                f"the list from its `machines` table).",
+                index_name=bm.index_name,
+                write_owner=bm.write_owner,
+                storage_location=bm.storage_location,
+            )
+        continue
+
     if _yard_has_an_established_owner and _owner_counts[bm.write_owner] == 1:
         _add_finding(
             "stale-owner",
@@ -1941,9 +1972,10 @@ for bm in box_metas:
             f"other box in this yard",
             f"Probably a machine that was renamed or retired, in which case no "
             f"machine can push this box. If '{bm.write_owner}' is real and simply "
-            f"owns only this box, nothing is wrong. Otherwise take it over from "
-            f"the machine that should have it: `boxyard claim --steal -r "
-            f"'{bm.index_name}'`.",
+            f"owns only this box, nothing is wrong -- and listing the fleet as "
+            f"`known_machines` in '{config.config_path}' makes this check exact "
+            f"instead of a guess. Otherwise take it over from the machine that "
+            f"should have it: `boxyard claim --steal -r '{bm.index_name}'`.",
             index_name=bm.index_name,
             write_owner=bm.write_owner,
             storage_location=bm.storage_location,

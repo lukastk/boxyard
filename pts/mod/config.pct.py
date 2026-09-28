@@ -267,6 +267,17 @@ class Config(const.StrictModel):
     # cannot be the delivery mechanism for the real value.
     machine_name: str | None = None
 
+    # Every machine name that may appear as a box's `write_owner` -- the fleet,
+    # as the thing that installs boxyard on each machine (myrig) already knows
+    # it. Optional; without it `doctor`'s `stale-owner` check has to GUESS
+    # whether an owner is a real machine from how many boxes it owns, and that
+    # guess reported a real machine that owned exactly one box, on every other
+    # machine, for days. With it the check is exact: an owner not in this list
+    # is stale, an owner in it never is. `machine_name` must be in it, checked
+    # below, because a machine that is not in its own fleet list would be
+    # reported as stale by every other machine the moment it claimed a box.
+    known_machines: list[str] | None = None
+
     # Parent-child settings
     single_parent: bool = False  # If True, each box can have at most one parent
 
@@ -388,6 +399,30 @@ class Config(const.StrictModel):
                 "1-64 characters). Use the machine's canonical short name, e.g. "
                 "'macbook' or 'mymain'."
             )
+
+        if self.known_machines is not None:
+            for _name in self.known_machines:
+                if not re.fullmatch(const.MACHINE_NAME_REGEX, _name):
+                    raise ValueError(
+                        f"Invalid entry {_name!r} in known_machines in "
+                        f"'{self.config_path}'. Every entry must match "
+                        f"{const.MACHINE_NAME_REGEX}, like machine_name."
+                    )
+            if len(set(self.known_machines)) != len(self.known_machines):
+                raise ValueError(
+                    f"known_machines in '{self.config_path}' lists a machine twice: "
+                    f"{self.known_machines!r}."
+                )
+            if (
+                self.machine_name is not None
+                and self.machine_name not in self.known_machines
+            ):
+                raise ValueError(
+                    f"machine_name {self.machine_name!r} is not in known_machines "
+                    f"{self.known_machines!r} in '{self.config_path}'. The list is "
+                    f"the whole fleet, and this machine is part of it: add it, or "
+                    f"drop the list to go back to doctor's owner-count heuristic."
+                )
 
         # The passthrough must stay disjoint from the fields this version owns,
         # or a report of "keys boxyard does not know" would name one it does.

@@ -191,22 +191,90 @@ for sl_name, sl_config in config.storage_locations.items():
     #
     # Ambiguity is skipped rather than guessed at: more than one directory for
     # one id on either side means something is already wrong, and picking one
-    # arbitrarily could rename a box onto a name that is already taken.
+    # arbitrarily could rename a box onto a name that is already taken. One
+    # shape of it IS resolvable without guessing and is handled just below: the
+    # remote holds exactly one name for the id, this machine holds that name
+    # AND others, and the others hold no DATA here.
     _renames: list[tuple[str, str]] = []
+    _stale_twins: list[tuple[str, str]] = []  # (stale local name, the remote's name)
     for _box_id, _remote_names in _remote_by_id.items():
         _local_names = _local_by_id.get(_box_id)
-        if not _local_names or len(_remote_names) != 1 or len(_local_names) != 1:
+        if not _local_names or len(_remote_names) != 1:
             continue
         _remote_index_name = next(iter(_remote_names))
-        _local_index_name = next(iter(_local_names))
-        if _remote_index_name != _local_index_name:
-            _renames.append((_local_index_name, _remote_index_name))
+        if len(_local_names) == 1:
+            _local_index_name = next(iter(_local_names))
+            if _remote_index_name != _local_index_name:
+                _renames.append((_local_index_name, _remote_index_name))
+        elif _remote_index_name in _local_names:
+            for _stale in sorted(_local_names - {_remote_index_name}):
+                _stale_twins.append((_stale, _remote_index_name))
 
     if box_index_names is not None:
         _renames = [
             _r for _r in _renames
             if _r[0] in box_index_names or _r[1] in box_index_names
         ]
+        _stale_twins = [
+            _t for _t in _stale_twins
+            if _t[0] in box_index_names or _t[1] in box_index_names
+        ]
+
+    # The leftover of a rename this machine was not around for: a registration
+    # under a name the remote no longer has, beside the registration under the
+    # name it does have. Before this pass reconciled on box id it created these
+    # itself (fetching the new name as a new box), and once made, nothing ever
+    # removed them -- `boxyard delete` on the stale name would tombstone the id,
+    # which is the LIVE box, on every machine. Removing the stale registration
+    # is safe exactly when it holds no DATA here: what goes is a mirrored
+    # boxmeta and META sync records, both of which the live registration also
+    # has. A stale name that DOES have a directory under a checkout root is
+    # left alone (doctor's `duplicate-box-id` says what to do); so is one whose
+    # checkout root is unavailable, because "absent" cannot be told from
+    # "unreachable" there. The placement record is keyed by box id and belongs
+    # to the live registration: never touched.
+    if _stale_twins:
+        import shutil
+        from boxyard._checkout import get_box_checkout_status, LocalCheckoutState
+        from boxyard._sync_policy import check_record_path
+        from boxyard._utils.locking import BoxyardLockManager
+
+        for _stale_index_name, _remote_index_name in _stale_twins:
+            _stale_meta = BoxMeta.load(config, sl_name, _stale_index_name)
+            _stale_checkout = get_box_checkout_status(config, _stale_meta)
+            if _stale_checkout.state not in (
+                LocalCheckoutState.EXCLUDED,
+                LocalCheckoutState.MISSING,
+            ):
+                print(
+                    f"WARNING: '{_stale_index_name}' is a stale registration of "
+                    f"the box the remote holds as '{_remote_index_name}', but its "
+                    f"checkout reads '{_stale_checkout.state.value}' at "
+                    f"'{_stale_checkout.local_path}', so it is left alone. See "
+                    f"`boxyard doctor` (duplicate-box-id)."
+                )
+                continue
+            if verbose:
+                print(
+                    f"Dropping stale registration '{_stale_index_name}': the remote "
+                    f"holds this box as '{_remote_index_name}', which is also "
+                    f"registered here, and no DATA exists here under the old name."
+                )
+            for _p in (
+                _stale_meta.get_local_path(config),
+                _stale_meta.get_local_sync_record_path(config, BoxPart.DATA).parent,
+                check_record_path(config, _stale_index_name, BoxPart.DATA).parent,
+            ):
+                if _p.is_dir():
+                    shutil.rmtree(_p)
+            _lock = BoxyardLockManager(config.boxyard_data_path).box_sync_lock_path(
+                _stale_index_name
+            )
+            if _lock.exists():
+                _lock.unlink()
+            _ls_local = {
+                _p for _p in _ls_local if Path(_p).parts[0] != _stale_index_name
+            }
 
     if _renames:
         from boxyard._enums import RenameScope

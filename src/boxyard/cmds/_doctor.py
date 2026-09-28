@@ -468,11 +468,17 @@ async def run_doctor(
                 "duplicate-box-id",
                 f"Box id '{_box_id}' is registered {len(_bms)} times: {_locations}",
                 "Box ids must be unique. This usually means the box was RENAMED on "
-                "another machine: `sync-missing-meta` fetched the new name while the "
-                "old registration stayed behind. The remote's name is authoritative "
-                "— check it with `boxyard copy`/`rclone lsf` or on the machine that "
-                "owns the box, then remove the registration whose name the remote "
-                "does not have. Do NOT re-create the box; that would mint a new id.",
+                "another machine while this one held the old registration (an older "
+                "`sync-missing-meta` fetched the new name and left the old one). The "
+                "remote's name is authoritative. Run `boxyard sync-missing-meta`: it "
+                "drops a registration whose name the remote does not have when that "
+                "registration holds no DATA here. If it stays, one of the stale-named "
+                "registrations has a directory under a checkout root: move that "
+                "directory out of the root (its contents are the OLD name's, the "
+                "live box is the other registration) and run it again. Never "
+                "`boxyard delete` the stale name -- that would tombstone the id, i.e. "
+                "the live box, on every machine. Do NOT re-create the box either; "
+                "that would mint a new id.",
                 box_id=_box_id,
             )
     if not config.boxyard_meta_path.is_file():
@@ -1332,6 +1338,25 @@ async def run_doctor(
                 )
             continue
     
+        if config.known_machines is not None:
+            if bm.write_owner not in config.known_machines:
+                _add_finding(
+                    "stale-owner",
+                    f"Box '{bm.index_name}' is owned by '{bm.write_owner}', which is "
+                    f"not a machine in this fleet (`known_machines` in "
+                    f"'{config.config_path}' lists {config.known_machines})",
+                    f"A renamed or retired machine: no machine can push this box. "
+                    f"Take it over from the machine that should have it with "
+                    f"`boxyard claim --steal -r '{bm.index_name}'`. If "
+                    f"'{bm.write_owner}' is a real machine, the fleet list is what "
+                    f"is wrong: add it to `known_machines` (in myrig, which renders "
+                    f"the list from its `machines` table).",
+                    index_name=bm.index_name,
+                    write_owner=bm.write_owner,
+                    storage_location=bm.storage_location,
+                )
+            continue
+    
         if _yard_has_an_established_owner and _owner_counts[bm.write_owner] == 1:
             _add_finding(
                 "stale-owner",
@@ -1339,9 +1364,10 @@ async def run_doctor(
                 f"other box in this yard",
                 f"Probably a machine that was renamed or retired, in which case no "
                 f"machine can push this box. If '{bm.write_owner}' is real and simply "
-                f"owns only this box, nothing is wrong. Otherwise take it over from "
-                f"the machine that should have it: `boxyard claim --steal -r "
-                f"'{bm.index_name}'`.",
+                f"owns only this box, nothing is wrong -- and listing the fleet as "
+                f"`known_machines` in '{config.config_path}' makes this check exact "
+                f"instead of a guess. Otherwise take it over from the machine that "
+                f"should have it: `boxyard claim --steal -r '{bm.index_name}'`.",
                 index_name=bm.index_name,
                 write_owner=bm.write_owner,
                 storage_location=bm.storage_location,
