@@ -17,10 +17,13 @@ resolve from this skill directory; no source checkout is required.
   `copy`, `force-push`, `claim`, `release`, `discard-local`, and non-dry-run `convert`.
   Examples are not authorization. Read-only queries, `--help`, `doctor`, and
   `convert --dry-run` may run without confirmation.
-- **Never create ad-hoc folders/clones/worktrees in `~/dev`.** Find the existing
-  box or use `boxyard new` with approval; put non-box scratch outside managed roots.
-  Keep generated data, even large outputs, **inside its related box**. Use sync
-  excludes, not sibling folders, to avoid uploading it.
+- **Boxyard owns the top level of `~/dev`: never create a folder there manually.**
+  All creation at that level must go through Boxyard. Find the existing box or, with
+  approval, use `boxyard new`; never use `mkdir`, `git clone`, or `git worktree` with
+  a destination directly under `~/dev`. Creating directories inside an existing box's
+  DATA is normal project work. Put non-box scratch outside managed roots. Keep generated
+  data, even large outputs, **inside its related box**. Use sync excludes, not sibling
+  folders, to avoid uploading it.
 - **Resolve identity and placement, don't guess.** Both timestamp format and subid
   length are configurable; `index_name` is `{box_id}__{name}`. Use `which`/`path`:
   DATA may be in any checkout root, not just `user_boxes_path` (`default`). An
